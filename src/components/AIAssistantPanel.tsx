@@ -4,14 +4,14 @@ import { GlassPanel } from './GlassPanel';
 import { Colors } from '@/constants/Colors';
 import { Sparkles } from 'lucide-react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
-import type { MeterState } from '@/context/energy-types';
+import type { HomeState } from '@/context/energy-types';
 
 interface AIAssistantPanelProps {
-  activeState: MeterState;
+  home: HomeState;
 }
 
-export const AIAssistantPanel = ({ activeState }: AIAssistantPanelProps) => {
-  const isSafe = activeState.projectedMonthly <= 200;
+export const AIAssistantPanel = ({ home }: AIAssistantPanelProps) => {
+  const isSafe = home.projectedMonthly <= 200;
   const riskColor = isSafe ? Colors.dark.success : Colors.dark.critical;
 
   return (
@@ -25,13 +25,13 @@ export const AIAssistantPanel = ({ activeState }: AIAssistantPanelProps) => {
       
       <View style={styles.content}>
         <Animated.Text entering={FadeIn} exiting={FadeOut} style={styles.reasoningText}>
-          {activeState.explanation || "Analyzing meter pattern..."}
+          {home.explanation || "Analyzing unified home pattern..."}
         </Animated.Text>
         
         <View style={styles.metricsRow}>
           <View style={styles.metric}>
             <Text style={styles.metricLabel}>CONFIDENCE</Text>
-            <Text style={styles.metricValue}>{activeState.confidencePercent.toFixed(0)}%</Text>
+            <Text style={styles.metricValue}>{home.confidencePercent.toFixed(0)}%</Text>
           </View>
           <View style={styles.metric}>
             <Text style={styles.metricLabel}>ACTIVE MODEL</Text>
