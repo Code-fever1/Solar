@@ -27,16 +27,18 @@ export default function DashboardScreen() {
   const m1State = meters.meter1;
   const m2State = meters.meter2;
 
-  // Derive "mock" instant values for the EnergyCore from the current meter states
-  // Normally this would come from a live inverter feed.
+  // Derive instant values for the EnergyCore directly from the Prediction Algorithm's output
   const activeState = activeMeter === 'meter1' ? m1State : m2State;
-  const loadKw = activeState.expectedRateKwH > 0 ? activeState.expectedRateKwH : 0;
   
-  // Simulated day/night solar logic based on expected load
+  // The prediction algorithm calculates exactly how fast the WAPDA meter is expected to be moving right now.
+  const gridKw = Math.max(0, activeState.expectedDrawNow || 0);
+  
+  // Since we don't have live inverter telemetry hooked up to the frontend yet,
+  // we simulate a generic house load by adding a rough solar estimate during the day.
   const currentHour = new Date().getHours();
   const isDaytime = currentHour > 6 && currentHour < 18;
-  const solarKw = isDaytime ? (loadKw > 0.5 ? loadKw - 0.5 : loadKw) : 0; 
-  const gridKw = Math.max(0, loadKw - solarKw);
+  const solarKw = isDaytime ? 1.2 : 0; 
+  const loadKw = gridKw + solarKw;
 
   const greeting =
     currentHour >= 5 && currentHour < 12 ? 'Good Morning' :
@@ -95,12 +97,12 @@ export default function DashboardScreen() {
           <View style={styles.metersList}>
             <SmartMeter 
               reading={m2State.reading} 
-              expectedRateKwH={m2State.expectedRateKwH} 
+              expectedRateKwH={m2State.expectedDrawNow} 
               isActive={activeMeter === 'meter2'} 
             />
             <MechanicalMeter 
               reading={m1State.reading} 
-              expectedRateKwH={m1State.expectedRateKwH} 
+              expectedRateKwH={m1State.expectedDrawNow} 
               isActive={activeMeter === 'meter1'} 
             />
           </View>
