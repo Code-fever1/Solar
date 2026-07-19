@@ -5,14 +5,24 @@ import { Colors } from '@/constants/Colors';
 import { Sparkles } from 'lucide-react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import type { HomeState } from '@/context/energy-types';
+import type { MeterProfile } from '@/utils/MeterLearningEngine';
 
 interface AIAssistantPanelProps {
   home: HomeState;
+  activeProfile?: MeterProfile;
 }
 
-export const AIAssistantPanel = ({ home }: AIAssistantPanelProps) => {
+export const AIAssistantPanel = ({ home, activeProfile }: AIAssistantPanelProps) => {
   const isSafe = home.projectedMonthly <= 200;
   const riskColor = isSafe ? Colors.dark.success : Colors.dark.critical;
+
+  const aiConfidence = activeProfile && activeProfile.observationsCount > 0 
+    ? (activeProfile.confidences.overall * 100).toFixed(0) + '%' 
+    : 'Learning...';
+  
+  const aiBias = activeProfile && activeProfile.observationsCount > 0
+    ? (activeProfile.overallBias > 0 ? '+' : '') + (activeProfile.overallBias * 100).toFixed(1) + '%'
+    : 'Neutral';
 
   return (
     <GlassPanel style={styles.container} intensity={25} glowColor="rgba(0, 229, 255, 0.2)">
@@ -30,16 +40,16 @@ export const AIAssistantPanel = ({ home }: AIAssistantPanelProps) => {
         
         <View style={styles.metricsRow}>
           <View style={styles.metric}>
-            <Text style={styles.metricLabel}>CONFIDENCE</Text>
+            <Text style={styles.metricLabel}>PRED. CONF.</Text>
             <Text style={styles.metricValue}>{home.confidencePercent.toFixed(0)}%</Text>
           </View>
           <View style={styles.metric}>
-            <Text style={styles.metricLabel}>ACTIVE MODEL</Text>
-            <Text style={styles.metricValue}>Adaptive Ensemble</Text>
+            <Text style={styles.metricLabel}>METER BIAS</Text>
+            <Text style={styles.metricValue}>{aiBias}</Text>
           </View>
           <View style={styles.metric}>
-            <Text style={styles.metricLabel}>RISK LEVEL</Text>
-            <Text style={[styles.metricValue, { color: riskColor }]}>{isSafe ? 'Low' : 'High'}</Text>
+            <Text style={styles.metricLabel}>AI CONF.</Text>
+            <Text style={styles.metricValue}>{aiConfidence}</Text>
           </View>
         </View>
       </View>
