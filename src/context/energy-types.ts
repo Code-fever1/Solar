@@ -39,6 +39,7 @@ export type MeterState = {
   projectedMonthly: number;  // Projected usage for this meter's billing cycle
   
   lastLoggedAt?: number; // timestamp ms
+  lastLoggedReading?: number;
 };
 
 export type Recommendation = {

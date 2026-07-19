@@ -26,6 +26,7 @@ import type {
     Recommendation,
 } from "./energy-types";
 import { AdaptivePredictor } from "../utils/AdaptivePredictor";
+import { MeterLearningEngine, type MeterProfile } from "../utils/MeterLearningEngine";
 
 type ChangeoverState = {
   activeMeter: MeterId;
@@ -47,6 +48,7 @@ type EnergyContextValue = {
   alerts: AlertItem[];
   history: HistoryPoint[];
   manualLogs: ManualLog[];
+  learningProfiles: Record<string, MeterProfile>;
   manualBaselines: Record<MeterId, ManualBaseline | null>;
   summary: ReturnType<typeof summarizeHistory>;
   period: "day" | "week" | "month" | "year";
@@ -75,6 +77,7 @@ type EnergyContextValue = {
 const STORAGE_KEY_LOGS = "@solar_manual_logs";
 const STORAGE_KEY_ACTIVE_METER = "@solar_active_meter";
 const STORAGE_KEY_BASELINES = "@solar_manual_baselines";
+const STORAGE_KEY_PROFILES = "@solar_learning_profiles";
 
 const EnergyContext = createContext<EnergyContextValue | null>(null);
 
@@ -427,6 +430,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     meter1: null,
     meter2: null,
   });
+  const [learningProfiles, setLearningProfiles] = useState<Record<string, MeterProfile>>({});
   const [activeMeter, setActiveMeter] = useState<MeterId>("meter1");
   const [period, setPeriod] = useState<"day" | "week" | "month" | "year">(
     "day",
@@ -472,6 +476,11 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         const storedBaselines = await AsyncStorage.getItem(STORAGE_KEY_BASELINES);
         if (storedBaselines) {
           setManualBaselines(JSON.parse(storedBaselines));
+        }
+
+        const storedProfiles = await AsyncStorage.getItem(STORAGE_KEY_PROFILES);
+        if (storedProfiles) {
+          setLearningProfiles(JSON.parse(storedProfiles));
         }
 
         if (storedActiveMeter) {
@@ -524,7 +533,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     const m2Logs = manualLogs.filter((l) => l.meterId === 'meter2');
     const now = Date.now();
 
-    const predictor = new AdaptivePredictor(manualLogs, now, activeMeter);
+    const predictor = new AdaptivePredictor(manualLogs, now, activeMeter, learningProfiles);
     
     // 1. Calculate Unified Home State
     const homeState = predictor.predictHome();
@@ -599,6 +608,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
           averageError: 0,
           calibrationCount: m1Logs.length,
           lastLoggedAt: m1Logs.length > 0 ? m1Logs[m1Logs.length - 1].timestamp : undefined,
+          lastLoggedReading: m1Logs.length > 0 ? m1Logs[m1Logs.length - 1].reading : undefined,
           
           queueStatus: activeMeter === 'meter1' ? 'ACTIVE' : 'NEXT',
           projectedDaysLeft: m1DaysLeft,
@@ -616,6 +626,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
           averageError: 0,
           calibrationCount: m2Logs.length,
           lastLoggedAt: m2Logs.length > 0 ? m2Logs[m2Logs.length - 1].timestamp : undefined,
+          lastLoggedReading: m2Logs.length > 0 ? m2Logs[m2Logs.length - 1].reading : undefined,
           
           queueStatus: activeMeter === 'meter2' ? 'ACTIVE' : 'NEXT',
           projectedDaysLeft: m2DaysLeft,
@@ -679,6 +690,28 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     timestamp: number,
     notes?: string,
   ) => {
+    // 1. Predict what we EXPECTED it to be right before the log is added
+    const predictor = new AdaptivePredictor(manualLogs, timestamp, activeMeter, learningProfiles);
+    const expectedPred = predictor.predictMeter(meterId, predictor.predictHome().expectedDrawNow);
+    const expectedReading = expectedPred.predictedReading;
+
+    // 2. Fetch the previous reading for this meter
+    const meterLogs = manualLogs.filter(l => l.meterId === meterId && l.timestamp < timestamp).sort((a,b) => b.timestamp - a.timestamp);
+    const prevReading = meterLogs.length > 0 ? meterLogs[0].reading : 0;
+
+    // 3. Observe the bias using the Meter Learning Engine
+    const engine = new MeterLearningEngine(learningProfiles);
+    engine.observe(meterId, expectedReading, reading, prevReading, timestamp, predictor.predictHome().expectedDrawNow);
+    
+    const newProfiles = engine.getProfiles();
+    setLearningProfiles(newProfiles);
+    try {
+      await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(newProfiles));
+    } catch (e) {
+      console.error("Failed to save learning profiles", e);
+    }
+
+    // 4. Save the log
     const newLog: ManualLog = {
       id: `${meterId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       timestamp,
@@ -733,6 +766,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     alerts,
     history,
     manualLogs,
+    learningProfiles,
     manualBaselines,
     summary,
     period,
