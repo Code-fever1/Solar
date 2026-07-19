@@ -114,9 +114,9 @@ export const RemainingUnitsHero = ({ home, m1State, m2State, activeMeter }: Rema
         </View>
         
         <View style={styles.list}>
-          <MeterStatusRow state={m1State} home={home} isActive={activeMeter === 'meter1'} />
-          <View style={styles.divider} />
           <MeterStatusRow state={m2State} home={home} isActive={activeMeter === 'meter2'} />
+          <View style={styles.divider} />
+          <MeterStatusRow state={m1State} home={home} isActive={activeMeter === 'meter1'} />
         </View>
       </GlassPanel>
     </Animated.View>

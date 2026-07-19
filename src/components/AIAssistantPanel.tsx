@@ -103,7 +103,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   metricValue: {
-    color: Colors.dark.loadSoft,
+    color: Colors.dark.load,
     fontFamily: 'Share Tech Mono',
     fontSize: 16,
   }
