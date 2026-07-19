@@ -4,15 +4,17 @@ import { Colors } from '@/constants/Colors';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence } from 'react-native-reanimated';
 import { GlassPanel } from './GlassPanel';
 import { Radio } from 'lucide-react-native';
-import type { MeterState } from '@/context/energy-types';
+import type { MeterState, HomeState } from '@/context/energy-types';
 
 interface SmartMeterProps {
   state: MeterState;
+  home: HomeState;
   isActive: boolean;
 }
 
-export const SmartMeter: React.FC<SmartMeterProps> = ({ state, isActive }) => {
-  const { reading, expectedDrawNow: expectedRateKwH } = state;
+export const SmartMeter: React.FC<SmartMeterProps> = ({ state, home, isActive }) => {
+  const { reading } = state;
+  const expectedRateKwH = isActive ? home.expectedDrawNow : 0;
   const ledOpacity = useSharedValue(0.2);
 
   useEffect(() => {
@@ -81,16 +83,18 @@ export const SmartMeter: React.FC<SmartMeterProps> = ({ state, isActive }) => {
           <Text style={styles.statValue}>{state.remainingUnits.toFixed(1)}</Text>
         </View>
         <View style={styles.statBox}>
-          <Text style={styles.statLabel}>Avg / Day</Text>
-          <Text style={styles.statValue}>{state.recentDailyAvg.toFixed(1)}</Text>
+          <Text style={styles.statLabel}>Cons. Days</Text>
+          <Text style={styles.statValue}>{state.projectedDaysLeft}</Text>
         </View>
         <View style={styles.statBox}>
-          <Text style={styles.statLabel}>Confidence</Text>
-          <Text style={styles.statValue}>{state.confidencePercent.toFixed(0)}%</Text>
+          <Text style={styles.statLabel}>Status</Text>
+          <Text style={[styles.statValue, { color: state.queueStatus === 'ACTIVE' ? Colors.dark.info : Colors.dark.textMuted }]}>
+            {state.queueStatus}
+          </Text>
         </View>
         <View style={styles.statBox}>
           <Text style={styles.statLabel}>Current Rate</Text>
-          <Text style={styles.statValue}>{state.expectedDrawNow.toFixed(1)} kW</Text>
+          <Text style={styles.statValue}>{isActive ? home.expectedDrawNow.toFixed(1) : "0.0"} kW</Text>
         </View>
       </View>
 

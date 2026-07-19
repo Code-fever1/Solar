@@ -3,14 +3,14 @@ import { StyleSheet, View, Text } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { GlassPanel } from './GlassPanel';
 import { Colors } from '@/constants/Colors';
-import type { MeterState } from '@/context/energy-types';
+import type { HomeState } from '@/context/energy-types';
 import { Activity, Zap, TrendingUp, CalendarDays } from 'lucide-react-native';
 
 interface UsageStatisticsRowProps {
-  activeState: MeterState;
+  home: HomeState;
 }
 
-export const UsageStatisticsRow = ({ activeState }: UsageStatisticsRowProps) => {
+export const UsageStatisticsRow = ({ home }: UsageStatisticsRowProps) => {
   return (
     <Animated.View entering={FadeInUp.delay(200).springify()}>
       <View style={styles.grid}>
@@ -19,7 +19,7 @@ export const UsageStatisticsRow = ({ activeState }: UsageStatisticsRowProps) => 
           <View style={styles.iconRow}>
             <Activity color={Colors.dark.info} size={18} />
           </View>
-          <Text style={styles.value}>{activeState.todayUsage.toFixed(1)} <Text style={styles.unit}>units</Text></Text>
+          <Text style={styles.value}>{home.todayUsage.toFixed(1)} <Text style={styles.unit}>units</Text></Text>
           <Text style={styles.label}>Today's Usage</Text>
         </GlassPanel>
 
@@ -28,7 +28,7 @@ export const UsageStatisticsRow = ({ activeState }: UsageStatisticsRowProps) => 
           <View style={styles.iconRow}>
             <Zap color={Colors.dark.grid} size={18} />
           </View>
-          <Text style={styles.value}>{activeState.expectedDrawNow.toFixed(1)} <Text style={styles.unit}>kW</Text></Text>
+          <Text style={styles.value}>{home.expectedDrawNow.toFixed(1)} <Text style={styles.unit}>kW</Text></Text>
           <Text style={styles.label}>Current Speed</Text>
         </GlassPanel>
 
@@ -37,7 +37,7 @@ export const UsageStatisticsRow = ({ activeState }: UsageStatisticsRowProps) => 
           <View style={styles.iconRow}>
             <TrendingUp color={Colors.dark.meter} size={18} />
           </View>
-          <Text style={styles.value}>{activeState.recentDailyAvg.toFixed(1)} <Text style={styles.unit}>/day</Text></Text>
+          <Text style={styles.value}>{home.averageDaily.toFixed(1)} <Text style={styles.unit}>/day</Text></Text>
           <Text style={styles.label}>Average Daily</Text>
         </GlassPanel>
 
@@ -46,7 +46,7 @@ export const UsageStatisticsRow = ({ activeState }: UsageStatisticsRowProps) => 
           <View style={styles.iconRow}>
             <CalendarDays color={Colors.dark.solar} size={18} />
           </View>
-          <Text style={styles.value}>{activeState.projectedMonthly.toFixed(0)} <Text style={styles.unit}>units</Text></Text>
+          <Text style={styles.value}>{home.projectedMonthly.toFixed(0)} <Text style={styles.unit}>units</Text></Text>
           <Text style={styles.label}>Expected This Month</Text>
         </GlassPanel>
       </View>

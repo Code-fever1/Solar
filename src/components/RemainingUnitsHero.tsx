@@ -3,33 +3,39 @@ import { StyleSheet, View, Text, useWindowDimensions } from 'react-native';
 import Animated, { FadeInUp, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import { GlassPanel } from './GlassPanel';
 import { Colors } from '@/constants/Colors';
-import type { MeterState, MeterId } from '@/context/energy-types';
+import type { MeterState, MeterId, HomeState } from '@/context/energy-types';
 import { ShieldAlert, ShieldCheck, Shield, AlertTriangle } from 'lucide-react-native';
 
 interface RemainingUnitsHeroProps {
+  home: HomeState;
   m1State: MeterState;
   m2State: MeterState;
   activeMeter: MeterId;
 }
 
-const getStatusConfig = (projectedMonthly: number, remainingUnits: number) => {
-  if (remainingUnits <= 0) {
+const getStatusConfig = (homeAverage: number, meterTarget: number) => {
+  // To handle multiple meters correctly, we calculate deviation based on the combined Home target.
+  // Assuming 2 meters of 200 target each, combined target = 400.
+  // Expected average = 400 / 30 = 13.33 units/day.
+  const expectedAverage = 400 / 30;
+  const deviation = (homeAverage - expectedAverage) / expectedAverage;
+
+  if (deviation > 0.3) {
     return { color: Colors.dark.critical, text: 'CRITICAL', Icon: ShieldAlert };
-  } else if (projectedMonthly > 200) {
+  } else if (deviation > 0.15) {
     return { color: '#FF8C00', text: 'HIGH RISK', Icon: AlertTriangle };
-  } else if (projectedMonthly > 180) {
+  } else if (deviation > 0.05) {
     return { color: Colors.dark.warning, text: 'WATCH', Icon: ShieldAlert };
   } else {
     return { color: Colors.dark.success, text: 'SAFE', Icon: ShieldCheck };
   }
 };
 
-const MeterStatusRow = ({ state, isActive }: { state: MeterState; isActive: boolean }) => {
+const MeterStatusRow = ({ state, home, isActive }: { state: MeterState; home: HomeState; isActive: boolean }) => {
   const { width } = useWindowDimensions();
-  const config = getStatusConfig(state.projectedMonthly, state.remainingUnits);
+  // We use the unified home daily average vs the unified expected average to determine deviation
+  const config = getStatusConfig(home.averageDaily, state.targetUnits);
   
-  // Progress calculation (0 to 1) for the 200 unit slab
-  const progress = Math.min(1, Math.max(0, state.todayUsage / 200)); // Wait, todayUsage is daily. It should be monthly usage!
   const monthlyUsage = Math.max(0, state.targetUnits - state.remainingUnits);
   const fillPercentage = Math.min(100, Math.max(0, (monthlyUsage / state.targetUnits) * 100));
 
@@ -37,9 +43,8 @@ const MeterStatusRow = ({ state, isActive }: { state: MeterState; isActive: bool
     width: withTiming(`${fillPercentage}%`, { duration: 1000 })
   }));
 
-  const daysLeft = state.recentDailyAvg > 0 ? Math.floor(state.remainingUnits / state.recentDailyAvg) : 30;
-  const expectedDate = new Date();
-  expectedDate.setDate(expectedDate.getDate() + daysLeft);
+  const daysLeft = state.projectedDaysLeft;
+  const expectedDate = new Date(state.projectedSlabDate);
   const dateString = expectedDate.toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' });
 
   const Icon = config.Icon;
@@ -48,7 +53,13 @@ const MeterStatusRow = ({ state, isActive }: { state: MeterState; isActive: bool
     <View style={[styles.meterRow, isActive && styles.activeMeterRow]}>
       <View style={styles.meterHeader}>
         <Text style={[styles.meterName, isActive && { color: Colors.dark.text }]}>
-          {state.label} {isActive && <Text style={styles.activeBadge}>(Active)</Text>}
+          {state.label}{' '}
+          <Text style={[
+            styles.queueBadge, 
+            { color: state.queueStatus === 'ACTIVE' ? Colors.dark.info : Colors.dark.textMuted }
+          ]}>
+            ({state.queueStatus})
+          </Text>
         </Text>
         <View style={styles.statusBadge}>
           <Icon color={config.color} size={14} />
@@ -67,12 +78,21 @@ const MeterStatusRow = ({ state, isActive }: { state: MeterState; isActive: bool
       </View>
 
       <View style={styles.statsGrid}>
+        {state.queueStatus === 'NEXT' && state.startsAfterDate ? (
+          <View style={styles.statBox}>
+            <Text style={styles.statLabel}>Starts After</Text>
+            <Text style={[styles.statValueDate, { color: Colors.dark.textSecondary }]}>
+              {new Date(state.startsAfterDate).toLocaleDateString('en-US', { day: '2-digit', month: 'short' })}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.statBox}>
+            <Text style={styles.statLabel}>Average</Text>
+            <Text style={styles.statValue}>{home.averageDaily.toFixed(1)}<Text style={styles.statUnit}>/day</Text></Text>
+          </View>
+        )}
         <View style={styles.statBox}>
-          <Text style={styles.statLabel}>Average</Text>
-          <Text style={styles.statValue}>{state.recentDailyAvg.toFixed(1)}<Text style={styles.statUnit}>/day</Text></Text>
-        </View>
-        <View style={styles.statBox}>
-          <Text style={styles.statLabel}>Days Left</Text>
+          <Text style={styles.statLabel}>Cons. Days</Text>
           <Text style={styles.statValue}>{daysLeft}</Text>
         </View>
         <View style={styles.statBox}>
@@ -84,7 +104,7 @@ const MeterStatusRow = ({ state, isActive }: { state: MeterState; isActive: bool
   );
 };
 
-export const RemainingUnitsHero = ({ m1State, m2State, activeMeter }: RemainingUnitsHeroProps) => {
+export const RemainingUnitsHero = ({ home, m1State, m2State, activeMeter }: RemainingUnitsHeroProps) => {
   return (
     <Animated.View entering={FadeInUp.delay(100).springify()}>
       <GlassPanel style={styles.container}>
@@ -94,9 +114,9 @@ export const RemainingUnitsHero = ({ m1State, m2State, activeMeter }: RemainingU
         </View>
         
         <View style={styles.list}>
-          <MeterStatusRow state={m1State} isActive={activeMeter === 'meter1'} />
+          <MeterStatusRow state={m1State} home={home} isActive={activeMeter === 'meter1'} />
           <View style={styles.divider} />
-          <MeterStatusRow state={m2State} isActive={activeMeter === 'meter2'} />
+          <MeterStatusRow state={m2State} home={home} isActive={activeMeter === 'meter2'} />
         </View>
       </GlassPanel>
     </Animated.View>
@@ -143,9 +163,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: Colors.dark.textSecondary,
   },
-  activeBadge: {
+  queueBadge: {
+    fontFamily: 'Share Tech Mono',
     fontSize: 12,
-    color: Colors.dark.info,
+    letterSpacing: 1,
   },
   statusBadge: {
     flexDirection: 'row',

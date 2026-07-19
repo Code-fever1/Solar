@@ -8,26 +8,36 @@ export type LiveTelemetry = {
   powerFactor: number;
 };
 
+export type HomeState = {
+  todayUsage: number;
+  averageDaily: number;
+  expectedDrawNow: number;
+  projectedMonthly: number;
+  confidencePercent: number;
+  trend: 'increasing' | 'decreasing' | 'stable';
+  primaryPattern: 'solar' | 'night' | 'weekend' | 'transition' | 'grid-only' | 'high-load';
+  explanation: string;
+};
+
+export type QueueStatus = 'ACTIVE' | 'NEXT' | 'QUEUED';
+
 export type MeterState = {
   id: MeterId;
   label: string;
   reading: number;
-  todayUsage: number;
   remainingUnits: number;
   targetUnits: number;
   driftOffset: number;
   averageError: number;
   calibrationCount: number;
-  averageDaily: number;       // full-history weighted rate × 24 (used for prediction fallback)
-  recentDailyAvg: number;     // last 1-2 days actual kWh/day (displayed to user)
-  expectedDrawNow: number;    // expected kWh/h at the current hour from learned time-slot patterns
-  minLikelyReading: number;
-  maxLikelyReading: number;
-  confidencePercent: number;
-  trend: 'increasing' | 'decreasing' | 'stable';
-  primaryPattern: 'solar' | 'night' | 'weekend' | 'transition' | 'grid-only' | 'high-load';
-  explanation: string;
-  projectedMonthly: number;
+  
+  // Sequential Forecasting Fields
+  queueStatus: QueueStatus;
+  projectedDaysLeft: number; // Consumption days
+  projectedSlabDate: number; // Calendar date it hits target
+  startsAfterDate?: number;  // Calendar date it becomes active (if NEXT or QUEUED)
+  projectedMonthly: number;  // Projected usage for this meter's billing cycle
+  
   lastLoggedAt?: number; // timestamp ms
 };
 

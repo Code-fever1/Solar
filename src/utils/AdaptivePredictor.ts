@@ -195,16 +195,17 @@ export class AdaptivePredictor {
       }
     }
 
-    // Today's Usage (Since Midnight)
+    // Today's Usage (Midnight to Midnight Extrapolation)
     const startOfToday = new Date(this.targetTime);
     startOfToday.setHours(0, 0, 0, 0);
-    const midnightReading = this.getHouseVirtualReading(startOfToday.getTime());
-    const currentReading = this.getHouseVirtualReading(this.targetTime);
+    const midnightTs = startOfToday.getTime();
     
-    let todayUsage = 0;
-    if (midnightReading !== null && currentReading !== null) {
-      todayUsage = Math.max(0, currentReading - midnightReading);
-    }
+    const m1Midnight = this.predictMeterForTime('meter1', midnightTs, finalExpectedRate);
+    const m2Midnight = this.predictMeterForTime('meter2', midnightTs, finalExpectedRate);
+    const m1Current = this.predictMeterForTime('meter1', this.targetTime, finalExpectedRate);
+    const m2Current = this.predictMeterForTime('meter2', this.targetTime, finalExpectedRate);
+    
+    const todayUsage = Math.max(0, (m1Current + m2Current) - (m1Midnight + m2Midnight));
 
     // Ensemble Blend
     let ensembleRate = todRate;
@@ -267,19 +268,25 @@ export class AdaptivePredictor {
 
   // Gets the exact live projected reading of a meter at `targetTime`
   public predictMeter(meterId: string, homeDrawNow: number): { predictedReading: number } {
+    return { predictedReading: this.predictMeterForTime(meterId, this.targetTime, homeDrawNow) };
+  }
+
+  private predictMeterForTime(meterId: string, time: number, homeDrawNow: number): number {
     const logs = meterId === 'meter1' ? this.m1Logs : this.m2Logs;
-    if (logs.length === 0) return { predictedReading: 0 };
+    if (logs.length === 0) return 0;
+    
+    if (time <= logs[logs.length - 1].timestamp) {
+      return this.getInterpolatedReading(logs, time) || logs[logs.length - 1].reading;
+    }
     
     const latestLog = logs[logs.length - 1];
     
-    // If the meter is active, it has continued moving since its last log at the Home's current draw rate
     if (meterId === this.activeMeterId) {
-      const elapsedHours = Math.max(0, this.targetTime - latestLog.timestamp) / (1000 * 60 * 60);
-      return { predictedReading: latestLog.reading + (elapsedHours * homeDrawNow) };
+      const elapsedHours = Math.max(0, time - latestLog.timestamp) / (1000 * 60 * 60);
+      return latestLog.reading + (elapsedHours * homeDrawNow);
     }
     
-    // If inactive, it hasn't moved since its last log
-    return { predictedReading: latestLog.reading };
+    return latestLog.reading;
   }
 
   private fallbackEmpty(): HomeState {
