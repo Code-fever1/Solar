@@ -1,4 +1,5 @@
 import type { ManualLog, HomeState } from '../context/energy-types';
+import { MeterLearningEngine, type MeterProfile } from './MeterLearningEngine';
 
 interface ActiveInterval {
   rate: number;
@@ -17,13 +18,15 @@ export class AdaptivePredictor {
   private activeMeterId: string;
   private m1Logs: ManualLog[];
   private m2Logs: ManualLog[];
+  private learningEngine: MeterLearningEngine;
 
-  constructor(allLogs: ManualLog[], targetTime: number, activeMeterId: string) {
+  constructor(allLogs: ManualLog[], targetTime: number, activeMeterId: string, learningProfiles: Record<string, MeterProfile> = {}) {
     this.allLogs = [...allLogs].sort((a, b) => a.timestamp - b.timestamp);
     this.m1Logs = this.allLogs.filter(l => l.meterId === 'meter1');
     this.m2Logs = this.allLogs.filter(l => l.meterId === 'meter2');
     this.targetTime = targetTime;
     this.activeMeterId = activeMeterId;
+    this.learningEngine = new MeterLearningEngine(learningProfiles);
   }
 
   private getInterpolatedReading(logs: ManualLog[], time: number): number | null {
@@ -283,7 +286,8 @@ export class AdaptivePredictor {
     
     if (meterId === this.activeMeterId) {
       const elapsedHours = Math.max(0, time - latestLog.timestamp) / (1000 * 60 * 60);
-      return latestLog.reading + (elapsedHours * homeDrawNow);
+      const learnedSpeed = this.learningEngine.estimateSpeed(meterId, homeDrawNow, time);
+      return latestLog.reading + (elapsedHours * learnedSpeed);
     }
     
     return latestLog.reading;
