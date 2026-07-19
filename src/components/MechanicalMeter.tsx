@@ -1,19 +1,19 @@
 import React, { useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Colors } from '@/constants/Colors';
-import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence, withSpring } from 'react-native-reanimated';
+import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence } from 'react-native-reanimated';
 import { GlassPanel } from './GlassPanel';
-import { Activity } from 'lucide-react-native';
+import { Radio } from 'lucide-react-native';
+import type { MeterState } from '@/context/energy-types';
 
 interface MechanicalMeterProps {
-  reading: number;
-  expectedRateKwH?: number;
+  state: MeterState;
   isActive: boolean;
 }
 
-export const MechanicalMeter: React.FC<MechanicalMeterProps> = ({ reading, expectedRateKwH = 0, isActive }) => {
+export const MechanicalMeter: React.FC<MechanicalMeterProps> = ({ state, isActive }) => {
+  const { reading, expectedDrawNow: expectedRateKwH } = state;
   const diskRotation = useSharedValue(0);
-  const needleAngle = useSharedValue(0);
 
   useEffect(() => {
     // Disk rotates faster if rate is higher.
@@ -24,29 +24,10 @@ export const MechanicalMeter: React.FC<MechanicalMeterProps> = ({ reading, expec
       -1,
       false
     );
-
-    // Needle vibration
-    if (isActive) {
-      needleAngle.value = withRepeat(
-        withSequence(
-          withSpring(5, { damping: 2, stiffness: 200 }),
-          withSpring(-5, { damping: 2, stiffness: 200 }),
-          withSpring(0, { damping: 2, stiffness: 200 })
-        ),
-        -1,
-        true
-      );
-    } else {
-      needleAngle.value = withSpring(0);
-    }
   }, [isActive, expectedRateKwH]);
 
   const animatedDisk = useAnimatedStyle(() => ({
     transform: [{ rotate: `${diskRotation.value}deg` }],
-  }));
-
-  const animatedNeedle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${needleAngle.value}deg` }],
   }));
 
   const digits = reading.toFixed(1).split('');
@@ -58,12 +39,14 @@ export const MechanicalMeter: React.FC<MechanicalMeterProps> = ({ reading, expec
       glowColor={isActive ? Colors.dark.meterGlow : 'transparent'}
     >
       <View style={styles.header}>
-        <Text style={styles.title}>ANALOG INDUCTION</Text>
+        <View style={styles.headerLeft}>
+          <Radio color={Colors.dark.textMuted} size={14} />
+          <Text style={styles.title}>ANALOG INDUCTION</Text>
+        </View>
         <View style={[styles.statusIndicator, { backgroundColor: isActive ? Colors.dark.meter : Colors.dark.textMuted }]} />
       </View>
 
       <View style={styles.mechanicalCore}>
-        {/* The rotating disk */}
         <View style={styles.diskContainer}>
           <Animated.View style={[styles.disk, animatedDisk]}>
             <View style={styles.diskMark} />
@@ -71,11 +54,9 @@ export const MechanicalMeter: React.FC<MechanicalMeterProps> = ({ reading, expec
             <View style={[styles.diskMark, { transform: [{ rotate: '180deg' }] }]} />
             <View style={[styles.diskMark, { transform: [{ rotate: '270deg' }] }]} />
           </Animated.View>
-          {/* Glass reflection over disk */}
           <View style={styles.diskGlass} />
         </View>
 
-        {/* The rolling digits */}
         <View style={styles.digitsContainer}>
           {digits.map((char, idx) => {
             const isDecimal = char === '.';
@@ -89,14 +70,28 @@ export const MechanicalMeter: React.FC<MechanicalMeterProps> = ({ reading, expec
         </View>
       </View>
 
+      <View style={styles.statsGrid}>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Remaining</Text>
+          <Text style={styles.statValue}>{state.remainingUnits.toFixed(1)}</Text>
+        </View>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Avg / Day</Text>
+          <Text style={styles.statValue}>{state.recentDailyAvg.toFixed(1)}</Text>
+        </View>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Confidence</Text>
+          <Text style={styles.statValue}>{state.confidencePercent.toFixed(0)}%</Text>
+        </View>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Current Rate</Text>
+          <Text style={styles.statValue}>{state.expectedDrawNow.toFixed(1)} kW</Text>
+        </View>
+      </View>
+
       <View style={styles.footer}>
         <Text style={styles.footerText}>Meter 1 • WAPDA</Text>
-        {isActive && expectedRateKwH > 0 && (
-          <View style={styles.rateContainer}>
-            <Activity color={Colors.dark.meter} size={12} />
-            <Text style={styles.rateText}>+{expectedRateKwH.toFixed(2)} kW/h</Text>
-          </View>
-        )}
+        <Text style={styles.idText}>S/N: 8820194</Text>
       </View>
     </GlassPanel>
   );
