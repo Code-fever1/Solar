@@ -434,11 +434,13 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const [clearedAlerts, setClearedAlerts] = useState(false);
   const [tick, setTick] = useState(0);
 
-  // Real-time ticking effect to drive live extrapolation refreshes (every 5 seconds)
+  // Real-time ticking effect to drive live extrapolation refreshes (every 60 seconds)
+  // AdaptivePredictor is heavy — no benefit running faster than a minute since
+  // manual logs don't update more frequently than that.
   useEffect(() => {
     const timer = setInterval(() => {
       setTick((t) => t + 1);
-    }, 5000);
+    }, 60_000);
     return () => clearInterval(timer);
   }, []);
 
@@ -606,15 +608,17 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     // Current draw rate uses the expected per-hour draw if available, fallback to daily avg
     const activeState = meters[activeMeter];
     const activeRate = activeState.expectedDrawNow > 0 ? activeState.expectedDrawNow : (activeState.averageDaily / 24);
+    // Stable voltage variance based on tick (avoids Math.random breaking memoization)
+    const voltageVariance = ((tick % 7) - 3);
 
     return {
       gridKw: activeRate,
       currentAmp: Number(((activeRate * 1000) / 220).toFixed(1)),
-      voltage: 220 + Math.round((Math.random() - 0.5) * 6),
+      voltage: 220 + voltageVariance,
       frequency: 50,
       powerFactor: 0.96,
     };
-  }, [meters, activeMeter]);
+  }, [meters, activeMeter, tick]);
 
   const changeover = useMemo(
     () => ({

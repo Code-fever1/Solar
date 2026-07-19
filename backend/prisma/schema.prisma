@@ -1,51 +1,180 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
-model InverterTelemetry {
-  id              String   @id @default(uuid())
-  timestamp       DateTime
-  solarPowerWatts Float
-  gridImportWatts Float
-  houseLoadWatts  Float
-  pvVoltage       Float
-  pvCurrent       Float
-  mode            String   // e.g., 'grid-tied', 'off-grid'
-  dailyYieldKwh   Float
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  homes     Home[]
+  notifications Notification[]
+}
 
-  @@index([timestamp])
+model Home {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id])
+  meters    Meter[]
+}
+
+model Meter {
+  id               String            @id @default(uuid())
+  homeId           String
+  name             String
+  type             String            // 'ANALOG' | 'DIGITAL'
+  isActive         Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  home             Home              @relation(fields: [homeId], references: [id])
+  readings         MeterReading[]
+  predictions      PredictionHistory[]
+  profile          MeterProfile?
+  changeoversAsOld ChangeoverHistory[] @relation("OldMeter")
+  changeoversAsNew ChangeoverHistory[] @relation("NewMeter")
+  calibrations     MeterCalibration[]
 }
 
 model MeterReading {
-  id            String   @id @default(uuid())
-  meterId       String   // 'meter1' | 'meter2'
-  timestamp     DateTime
-  reading       Float
-  isCalibration Boolean  @default(false)
+  id              String            @id @default(uuid())
+  meterId         String
+  timestamp       DateTime          @default(now())
+  reading         Float
+  isCalibration   Boolean           @default(false)
+  source          String            // 'MANUAL' | 'SYSTEM'
+  createdAt       DateTime          @default(now())
+  meter           Meter             @relation(fields: [meterId], references: [id])
+  learningHistory LearningHistory[]
 }
 
-model PredictionLog {
+model PredictionHistory {
   id               String   @id @default(uuid())
   meterId          String
   targetTimestamp  DateTime
   predictedReading Float
-  actualReading    Float?   // Filled in later when reading arrives
-  absoluteError    Float?
-  mape             Float?
+  predictedSpeed   Float?
   confidence       Float
-  ensembleWeights  String   // JSON string: E.g. { "holtWinters": 0.4, "tod": 0.5, "kalman": 0.1 }
+  reasoning        String?
+  actualReading    Float?
+  absoluteError    Float?
+  createdAt        DateTime @default(now())
+  meter            Meter    @relation(fields: [meterId], references: [id])
 }
 
-model MeterPersonality {
-  meterId         String   @id
-  inertiaOffset   Float    @default(0)
-  driftMultiplier Float    @default(1.0)
-  lastUpdated     DateTime @updatedAt
+model PredictionModel {
+  id          String   @id @default(uuid())
+  name        String   @unique // e.g. 'HoltWinters', 'Kalman'
+  description String?
+  weight      Float    @default(1.0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  accuracies  PredictionAccuracy[]
+}
+
+model MeterProfile {
+  id              String   @id @default(uuid())
+  meterId         String   @unique
+  responseDelay   Float    @default(0)
+  mechanicalLag   Float    @default(0)
+  drift           Float    @default(0)
+  dayBehavior     Json?
+  nightBehavior   Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  meter           Meter    @relation(fields: [meterId], references: [id])
+}
+
+model MeterCalibration {
+  id          String   @id @default(uuid())
+  meterId     String
+  timestamp   DateTime @default(now())
+  factor      Float
+  reason      String
+  meter       Meter    @relation(fields: [meterId], references: [id])
+}
+
+model PredictionAccuracy {
+  id          String   @id @default(uuid())
+  modelId     String
+  timestamp   DateTime @default(now())
+  mae         Float
+  mape        Float
+  rmse        Float
+  model       PredictionModel @relation(fields: [modelId], references: [id])
+}
+
+model LearningHistory {
+  id               String       @id @default(uuid())
+  readingId        String
+  timestamp        DateTime     @default(now())
+  residual         Float
+  adjustments      Json
+  reading          MeterReading @relation(fields: [readingId], references: [id])
+}
+
+model ChangeoverHistory {
+  id              String   @id @default(uuid())
+  timestamp       DateTime @default(now())
+  oldMeterId      String
+  newMeterId      String
+  expectedTransfer Float?
+  oldMeter        Meter    @relation("OldMeter", fields: [oldMeterId], references: [id])
+  newMeter        Meter    @relation("NewMeter", fields: [newMeterId], references: [id])
+}
+
+model TelemetryCache {
+  id                 String   @id @default(uuid())
+  timestamp          DateTime @default(now())
+  currentLoad        Float
+  gridConsumption    Float
+  voltage            Float
+  current            Float
+  frequency          Float
+  operatingMode      String
+  createdAt          DateTime @default(now())
+}
+
+model Analytics {
+  id              String   @id @default(uuid())
+  timestamp       DateTime @default(now())
+  metricType      String
+  value           Float
+  dimensions      Json?
+}
+
+model Alert {
+  id          String   @id @default(uuid())
+  timestamp   DateTime @default(now())
+  type        String
+  message     String
+  severity    String
+  isResolved  Boolean  @default(false)
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  timestamp   DateTime @default(now())
+  message     String
+  isRead      Boolean  @default(false)
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+model SystemLog {
+  id          String   @id @default(uuid())
+  timestamp   DateTime @default(now())
+  level       String
+  context     String
+  message     String
+  metadata    Json?
 }

@@ -38,6 +38,12 @@ export default function DashboardScreen() {
   const solarKw = isDaytime ? (loadKw > 0.5 ? loadKw - 0.5 : loadKw) : 0; 
   const gridKw = Math.max(0, loadKw - solarKw);
 
+  const greeting =
+    currentHour >= 5 && currentHour < 12 ? 'Good Morning' :
+    currentHour >= 12 && currentHour < 17 ? 'Good Afternoon' :
+    currentHour >= 17 && currentHour < 21 ? 'Good Evening' :
+    'Good Night';
+
   return (
     <View style={styles.screen}>
       <BackgroundEngine />
@@ -52,7 +58,7 @@ export default function DashboardScreen() {
         {/* Top Section */}
         <Animated.View entering={FadeInDown.delay(100)} style={styles.topSection}>
           <View>
-            <Text style={styles.greeting}>Good Evening</Text>
+            <Text style={styles.greeting}>{greeting}</Text>
             <Text style={styles.time}>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
           </View>
           <View style={styles.statusPill}>

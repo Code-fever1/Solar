@@ -1,21 +1,23 @@
 import { Plus } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import {
-    Alert,
-    Pressable,
     ScrollView,
     StyleSheet,
     Text,
     View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { ChangeoverSwitch } from "@/components/ChangeoverSwitch";
-import { GlassCard } from "@/components/GlassCard";
+import { GlassPanel } from "@/components/GlassPanel";
+import { GlowButton } from "@/components/GlowButton";
 import { LogReadingModal } from "@/components/LogReadingModal";
-import { MeterCard } from "@/components/MeterCard";
+import { MechanicalMeter } from "@/components/MechanicalMeter";
+import { SmartMeter } from "@/components/SmartMeter";
+import { BackgroundEngine } from "@/components/BackgroundEngine";
 import { Colors } from "@/constants/Colors";
-import type { ManualLog, MeterId } from "@/context/EnergyContext";
+import type { ManualLog } from "@/context/EnergyContext";
 import { useEnergy } from "@/context/EnergyContext";
 
 export default function MetersScreen() {
@@ -25,10 +27,10 @@ export default function MetersScreen() {
     manualLogs,
     addManualLog,
     editManualLog,
-    deleteManualLog,
     activeMeter,
     swapChangeover,
   } = useEnergy();
+  
   const [modalOpen, setModalOpen] = useState(false);
   const [editLogItem, setEditLogItem] = useState<ManualLog | null>(null);
 
@@ -41,67 +43,82 @@ export default function MetersScreen() {
   }, [manualLogs, activeMeter]);
 
   return (
-    <>
+    <View style={styles.screen}>
+      <BackgroundEngine />
       <ScrollView
-        style={styles.screen}
         contentContainerStyle={[
           styles.container,
           { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 120 },
         ]}
+        showsVerticalScrollIndicator={false}
       >
-        <View style={styles.hero}>
-          <Text style={styles.title}>Meters Control</Text>
+        <Animated.View entering={FadeInDown.delay(100)} style={styles.hero}>
+          <Text style={styles.title}>Supply Control</Text>
           <Text style={styles.subtitle}>
-            Toggle active lines and modify manual reading units.
+            Active line changeover and physical meter synchronisation.
           </Text>
-        </View>
+        </Animated.View>
 
-        {/* Changeover Switch Active Selection Casing */}
-        <GlassCard style={styles.controlCard}>
-          <Text style={styles.controlLabel}>Select Active Supply Line</Text>
-          <ChangeoverSwitch
-            activeMeter={activeMeter}
-            onToggle={() => swapChangeover()}
-          />
-        </GlassCard>
+        {/* Changeover Switch */}
+        <Animated.View entering={FadeInDown.delay(200)}>
+          <GlassPanel style={styles.controlCard}>
+            <Text style={styles.controlLabel}>ACTIVE SUPPLY LINE</Text>
+            <ChangeoverSwitch
+              activeMeter={activeMeter}
+              onToggle={() => swapChangeover()}
+            />
+          </GlassPanel>
+        </Animated.View>
 
-        {/* Dual Modification Controls Row */}
-        <View style={styles.actionsRow}>
-          <Pressable
+        {/* Logging Actions */}
+        <Animated.View entering={FadeInDown.delay(300)} style={styles.actionsRow}>
+          <GlowButton 
+            label="Log Reading" 
+            variant="primary" 
+            style={styles.primaryLogBtn}
             onPress={() => {
               setEditLogItem(null);
               setModalOpen(true);
-            }}
-            style={styles.primaryLogBtn}
-          >
-            <Plus color="#0A1018" size={14} />
-            <Text style={styles.primaryLogBtnText}>Log Reading</Text>
-          </Pressable>
-          {latestActiveLog ? (
-            <Pressable
+            }} 
+          />
+          {latestActiveLog && (
+            <GlowButton 
+              label="Edit Last" 
+              variant="secondary" 
+              style={styles.secondaryLogBtn}
               onPress={() => {
                 setEditLogItem(latestActiveLog);
                 setModalOpen(true);
-              }}
-              style={styles.secondaryLogBtn}
-            >
-              <Text style={styles.secondaryLogBtnText}>Edit Last</Text>
-            </Pressable>
-          ) : null}
-        </View>
+              }} 
+            />
+          )}
+        </Animated.View>
 
-        {/* Show only the currently selected meter */}
-        <GlassCard style={styles.sectionCard}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Selected Meter</Text>
-            <Text style={styles.selectedMeterLabel}>
-              {activeMeter === "meter1"
-                ? "Meter 1 (Analog)"
-                : "Meter 2 (Digital)"}
-            </Text>
-          </View>
-          <MeterCard meter={activeMeterState} isActive />
-        </GlassCard>
+        {/* Active Meter Display */}
+        <Animated.View entering={FadeInDown.delay(400)}>
+          <GlassPanel style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Physical Telemetry</Text>
+              <Text style={styles.selectedMeterLabel}>
+                {activeMeter === "meter1" ? "Meter 1 (Analog)" : "Meter 2 (Digital)"}
+              </Text>
+            </View>
+            
+            {activeMeter === 'meter2' ? (
+              <SmartMeter 
+                reading={activeMeterState.reading} 
+                expectedRateKwH={activeMeterState.expectedRateKwH} 
+                isActive={true} 
+              />
+            ) : (
+              <MechanicalMeter 
+                reading={activeMeterState.reading} 
+                expectedRateKwH={activeMeterState.expectedRateKwH} 
+                isActive={true} 
+              />
+            )}
+          </GlassPanel>
+        </Animated.View>
       </ScrollView>
 
       {/* Log Reading Modal */}
@@ -123,7 +140,7 @@ export default function MetersScreen() {
           setEditLogItem(null);
         }}
       />
-    </>
+    </View>
   );
 }
 
@@ -134,78 +151,55 @@ const styles = StyleSheet.create({
   },
   container: {
     paddingHorizontal: 16,
-    gap: 16,
+    gap: 20,
   },
   hero: {
     gap: 4,
+    marginBottom: 8,
   },
   title: {
     color: Colors.dark.text,
     fontFamily: "Outfit",
     fontSize: 28,
     fontWeight: "700",
+    letterSpacing: -0.5,
   },
   subtitle: {
     color: Colors.dark.textSecondary,
     fontFamily: "Outfit",
-    fontSize: 12.5,
+    fontSize: 13,
     lineHeight: 18,
   },
   controlCard: {
-    padding: 14,
-    gap: 10,
+    padding: 16,
+    gap: 16,
   },
   controlLabel: {
-    color: Colors.dark.text,
+    color: Colors.dark.textMuted,
     fontFamily: "Outfit",
-    fontSize: 13.5,
+    fontSize: 10,
     fontWeight: "700",
+    letterSpacing: 1.5,
   },
   actionsRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: 12,
     width: "100%",
   },
   primaryLogBtn: {
-    flex: 1.5,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: Colors.dark.solar,
-  },
-  primaryLogBtnText: {
-    color: "#0E1015",
-    fontFamily: "Outfit",
-    fontWeight: "700",
-    fontSize: 14,
+    flex: 2,
   },
   secondaryLogBtn: {
     flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)",
-  },
-  secondaryLogBtnText: {
-    color: Colors.dark.text,
-    fontFamily: "Outfit",
-    fontWeight: "700",
-    fontSize: 14,
   },
   sectionCard: {
-    padding: 14,
-    gap: 12,
+    padding: 16,
+    gap: 16,
   },
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    justifyContent: "space-between",
   },
   sectionTitle: {
     color: Colors.dark.text,
@@ -218,78 +212,5 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit",
     fontSize: 11,
     fontWeight: "600",
-  },
-  segmentRow: {
-    flexDirection: "row",
-    gap: 6,
-  },
-  segment: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: "rgba(255,255,255,0.03)",
-  },
-  segmentActive: {
-    backgroundColor: "rgba(255,255,255,0.08)",
-  },
-  segmentText: {
-    color: Colors.dark.textSecondary,
-    fontFamily: "Outfit",
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-  },
-  segmentTextActive: {
-    color: Colors.dark.text,
-  },
-  timeline: {
-    gap: 8,
-  },
-  timelineItem: {
-    backgroundColor: "rgba(255,255,255,0.01)",
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.04)",
-  },
-  timelineContent: {
-    gap: 2,
-  },
-  timelineHeaderRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  timelineTitle: {
-    color: Colors.dark.text,
-    fontFamily: "Share Tech Mono",
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  actionButtonsRow: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  iconBtn: {
-    padding: 2,
-  },
-  timelineTime: {
-    color: Colors.dark.textSecondary,
-    fontFamily: "Outfit",
-    fontSize: 11,
-  },
-  timelineNotes: {
-    color: Colors.dark.solar,
-    fontFamily: "Outfit",
-    fontSize: 10,
-    fontStyle: "italic",
-    marginTop: 1,
-  },
-  emptyText: {
-    color: Colors.dark.textSecondary,
-    fontFamily: "Outfit",
-    fontSize: 12,
-    textAlign: "center",
-    paddingVertical: 12,
   },
 });

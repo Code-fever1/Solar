@@ -157,7 +157,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: inset }, // simulate inset
+    shadowOffset: { width: 0, height: -2 }, // inset simulation
   },
   disk: {
     width: 100,
@@ -244,5 +244,3 @@ const styles = StyleSheet.create({
     fontSize: 12,
   }
 });
-
-const inset = -2; // Fake inset for TS

@@ -19,13 +19,9 @@ export const GlassPanel: React.FC<GlassPanelProps> = ({
   delay = 0,
   ...rest 
 }) => {
-  const AnimatedBlurView = Animated.createAnimatedComponent(BlurView);
-
   return (
-    <AnimatedBlurView 
+    <Animated.View 
       entering={FadeInUp.delay(delay).springify().damping(18).stiffness(150)}
-      intensity={Platform.OS === 'ios' ? intensity : intensity * 2} 
-      tint="dark" 
       style={[
         styles.container, 
         { shadowColor: glowColor },
@@ -33,10 +29,15 @@ export const GlassPanel: React.FC<GlassPanelProps> = ({
       ]} 
       {...rest}
     >
+      <BlurView
+        intensity={Platform.OS === 'ios' ? intensity : intensity * 2} 
+        tint="dark"
+        style={StyleSheet.absoluteFill}
+      />
       {/* Inner gradient border simulation */}
       <View style={styles.innerBorder} pointerEvents="none" />
       {children}
-    </AnimatedBlurView>
+    </Animated.View>
   );
 };
 
