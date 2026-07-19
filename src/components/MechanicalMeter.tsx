@@ -4,6 +4,7 @@ import { Colors } from '@/constants/Colors';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence } from 'react-native-reanimated';
 import { GlassPanel } from './GlassPanel';
 import { Radio } from 'lucide-react-native';
+import { getRelativeTime } from '@/utils/calculations';
 import type { MeterState, HomeState } from '@/context/energy-types';
 
 interface MechanicalMeterProps {
@@ -32,12 +33,15 @@ export const MechanicalMeter: React.FC<MechanicalMeterProps> = ({ state, home, i
     transform: [{ rotate: `${diskRotation.value}deg` }],
   }));
 
+  const offset = state.lastLoggedReading !== undefined ? state.reading - state.lastLoggedReading : 0;
+  const showOffset = isActive && offset > 0.05;
+
   const digits = reading.toFixed(1).split('');
 
   return (
     <GlassPanel 
       style={[styles.container, !isActive && styles.inactive]} 
-      intensity={isActive ? 30 : 10}
+      intensity={isActive ? 45 : 15}
       glowColor={isActive ? Colors.dark.meterGlow : 'transparent'}
     >
       <View style={styles.header}>
@@ -59,16 +63,23 @@ export const MechanicalMeter: React.FC<MechanicalMeterProps> = ({ state, home, i
           <View style={styles.diskGlass} />
         </View>
 
-        <View style={styles.digitsContainer}>
-          {digits.map((char, idx) => {
-            const isDecimal = char === '.';
-            const isFraction = idx === digits.length - 1;
-            return (
-              <View key={idx} style={[styles.digitBox, isFraction && styles.fractionBox, isDecimal && styles.decimalBox]}>
-                <Text style={[styles.digitText, isFraction && styles.fractionText, isDecimal && styles.decimalText]}>{char}</Text>
-              </View>
-            );
-          })}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          {showOffset && (
+            <View style={styles.offsetBadge}>
+              <Text style={styles.offsetText}>↑ {offset.toFixed(1)}</Text>
+            </View>
+          )}
+          <View style={styles.digitsContainer}>
+            {digits.map((char, idx) => {
+              const isDecimal = char === '.';
+              const isFraction = idx === digits.length - 1;
+              return (
+                <View key={idx} style={[styles.digitBox, isFraction && styles.fractionBox, isDecimal && styles.decimalBox]}>
+                  <Text style={[styles.digitText, isFraction && styles.fractionText, isDecimal && styles.decimalText]}>{char}</Text>
+                </View>
+              );
+            })}
+          </View>
         </View>
       </View>
 
@@ -95,7 +106,7 @@ export const MechanicalMeter: React.FC<MechanicalMeterProps> = ({ state, home, i
 
       <View style={styles.footer}>
         <Text style={styles.footerText}>Meter 1 • WAPDA</Text>
-        <Text style={styles.idText}>S/N: 8820194</Text>
+        <Text style={styles.idText}>{getRelativeTime(state.lastLoggedAt)}</Text>
       </View>
     </GlassPanel>
   );
@@ -109,8 +120,8 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   inactive: {
-    opacity: 0.6,
-    transform: [{ scale: 0.98 }],
+    opacity: 0.7,
+    transform: [{ scale: 0.95 }],
   },
   header: {
     flexDirection: 'row',
@@ -221,6 +232,43 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-end',
     marginBottom: 4,
   },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  statBox: {
+    width: '45%',
+    marginBottom: 4,
+  },
+  statLabel: {
+    color: Colors.dark.textMuted,
+    fontFamily: 'Inter-Medium',
+    fontSize: 10,
+    textTransform: 'uppercase',
+  },
+  statValue: {
+    color: Colors.dark.text,
+    fontFamily: 'Inter-SemiBold',
+    fontSize: 14,
+  },
+  offsetBadge: {
+    backgroundColor: 'rgba(0, 229, 255, 0.1)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 229, 255, 0.3)',
+  },
+  offsetText: {
+    color: Colors.dark.meter,
+    fontFamily: 'Share Tech Mono',
+    fontSize: 12,
+  },
   footer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -231,6 +279,11 @@ const styles = StyleSheet.create({
     fontFamily: 'Outfit',
     fontSize: 10,
     fontWeight: '600',
+  },
+  idText: {
+    color: Colors.dark.textMuted,
+    fontFamily: 'Share Tech Mono',
+    fontSize: 10,
   },
   rateContainer: {
     flexDirection: 'row',
