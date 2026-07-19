@@ -1,24 +1,23 @@
 {
   "expo": {
-    "name": "Solar",
+    "name": "GridWise",
     "slug": "Solar",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/meter.png",
     "scheme": "solar",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon"
     },
     "android": {
+      "icon": "./assets/images/meter.png",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./assets/images/meter.png",
+        "backgroundColor": "#0A0E1A"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.Solar"
+      "package": "com.gridwise.app"
     },
     "web": {
       "output": "static",
@@ -29,9 +28,9 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "backgroundColor": "#0A0E1A",
+          "image": "./assets/images/meter.png",
+          "imageWidth": 120
         }
       ]
     ],
