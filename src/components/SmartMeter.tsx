@@ -4,6 +4,7 @@ import { Colors } from '@/constants/Colors';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence } from 'react-native-reanimated';
 import { GlassPanel } from './GlassPanel';
 import { Radio } from 'lucide-react-native';
+import { getRelativeTime } from '@/utils/calculations';
 import type { MeterState, HomeState } from '@/context/energy-types';
 
 interface SmartMeterProps {
@@ -38,10 +39,13 @@ export const SmartMeter: React.FC<SmartMeterProps> = ({ state, home, isActive })
     opacity: ledOpacity.value,
   }));
 
+  const offset = state.lastLoggedReading !== undefined ? state.reading - state.lastLoggedReading : 0;
+  const showOffset = isActive && offset > 0.05;
+
   return (
     <GlassPanel 
       style={[styles.container, !isActive && styles.inactive]} 
-      intensity={isActive ? 30 : 10}
+      intensity={isActive ? 45 : 15}
       glowColor={isActive ? Colors.dark.meterGlow : 'transparent'}
     >
       <View style={styles.header}>
@@ -60,6 +64,11 @@ export const SmartMeter: React.FC<SmartMeterProps> = ({ state, home, isActive })
           </View>
           
           <View style={styles.lcdMainRow}>
+            {showOffset && (
+              <View style={styles.offsetBadge}>
+                <Text style={styles.offsetText}>↑ {offset.toFixed(1)}</Text>
+              </View>
+            )}
             <Text style={styles.lcdDigits}>{reading.toFixed(1).padStart(7, '0')}</Text>
             <Text style={styles.lcdUnit}>kWh</Text>
           </View>
@@ -100,7 +109,7 @@ export const SmartMeter: React.FC<SmartMeterProps> = ({ state, home, isActive })
 
       <View style={styles.footer}>
         <Text style={styles.footerText}>Meter 2 • WAPDA</Text>
-        <Text style={styles.idText}>S/N: 04519223</Text>
+        <Text style={styles.idText}>{getRelativeTime(state.lastLoggedAt)}</Text>
       </View>
     </GlassPanel>
   );
@@ -114,8 +123,8 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   inactive: {
-    opacity: 0.6,
-    transform: [{ scale: 0.98 }],
+    opacity: 0.7,
+    transform: [{ scale: 0.95 }],
   },
   header: {
     flexDirection: 'row',
@@ -240,5 +249,19 @@ const styles = StyleSheet.create({
     color: Colors.dark.textMuted,
     fontFamily: 'Share Tech Mono',
     fontSize: 10,
+  },
+  offsetBadge: {
+    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.15)',
+    marginRight: 'auto',
+  },
+  offsetText: {
+    color: 'rgba(0, 0, 0, 0.7)',
+    fontFamily: 'Share Tech Mono',
+    fontSize: 12,
   }
 });
