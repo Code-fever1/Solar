@@ -22,7 +22,7 @@ import { getStartOfBillingCycle } from "@/utils/calculations";
 
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
-  const { activeMeter, meters, home, setManualBaseline } = useEnergy();
+  const { activeMeter, meters, home, setManualBaseline, learningProfiles } = useEnergy();
   
   const [baselineModalVisible, setBaselineModalVisible] = useState(false);
   const [baselineMeterId, setBaselineMeterId] = useState<MeterId | null>(null);
@@ -131,7 +131,7 @@ export default function DashboardScreen() {
 
         {/* Priority 3: AI Assistant Section */}
         <Animated.View entering={FadeInDown.delay(300)}>
-          <AIAssistantPanel home={home} />
+          <AIAssistantPanel home={home} activeProfile={learningProfiles[activeMeter]} />
         </Animated.View>
 
 
