@@ -83,7 +83,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
   },
-  },
   metricsRow: {
     flexDirection: 'row',
     gap: 16,
