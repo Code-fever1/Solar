@@ -1,17 +1,18 @@
 import React, { useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Colors } from '@/constants/Colors';
-import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence, withDelay } from 'react-native-reanimated';
+import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence } from 'react-native-reanimated';
 import { GlassPanel } from './GlassPanel';
 import { Radio } from 'lucide-react-native';
+import type { MeterState } from '@/context/energy-types';
 
 interface SmartMeterProps {
-  reading: number;
-  expectedRateKwH?: number;
+  state: MeterState;
   isActive: boolean;
 }
 
-export const SmartMeter: React.FC<SmartMeterProps> = ({ reading, expectedRateKwH = 0, isActive }) => {
+export const SmartMeter: React.FC<SmartMeterProps> = ({ state, isActive }) => {
+  const { reading, expectedDrawNow: expectedRateKwH } = state;
   const ledOpacity = useSharedValue(0.2);
 
   useEffect(() => {
@@ -71,6 +72,25 @@ export const SmartMeter: React.FC<SmartMeterProps> = ({ reading, expectedRateKwH
             <View style={[styles.led, { backgroundColor: isActive ? Colors.dark.success : Colors.dark.textMuted }]} />
             <Text style={styles.ledLabel}>POWER</Text>
           </View>
+        </View>
+      </View>
+
+      <View style={styles.statsGrid}>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Remaining</Text>
+          <Text style={styles.statValue}>{state.remainingUnits.toFixed(1)}</Text>
+        </View>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Avg / Day</Text>
+          <Text style={styles.statValue}>{state.recentDailyAvg.toFixed(1)}</Text>
+        </View>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Confidence</Text>
+          <Text style={styles.statValue}>{state.confidencePercent.toFixed(0)}%</Text>
+        </View>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Current Rate</Text>
+          <Text style={styles.statValue}>{state.expectedDrawNow.toFixed(1)} kW</Text>
         </View>
       </View>
 
@@ -147,6 +167,30 @@ const styles = StyleSheet.create({
     fontFamily: 'Share Tech Mono',
     fontSize: 32,
     letterSpacing: 2,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  statBox: {
+    width: '45%',
+    marginBottom: 4,
+  },
+  statLabel: {
+    color: Colors.dark.textMuted,
+    fontFamily: 'Inter-Medium',
+    fontSize: 10,
+    textTransform: 'uppercase',
+  },
+  statValue: {
+    color: Colors.dark.text,
+    fontFamily: 'Inter-SemiBold',
+    fontSize: 14,
   },
   lcdUnit: {
     color: 'rgba(0,0,0,0.85)',
