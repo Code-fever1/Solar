@@ -5,8 +5,10 @@ import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 
 import { BackgroundEngine } from "@/components/BackgroundEngine";
 import { GlassPanel } from "@/components/GlassPanel";
-import { EnergyCore } from "@/components/EnergyCore";
+import { RemainingUnitsHero } from "@/components/RemainingUnitsHero";
+import { UsageStatisticsRow } from "@/components/UsageStatisticsRow";
 import { AIAssistantPanel } from "@/components/AIAssistantPanel";
+import { EnergyCore } from "@/components/EnergyCore";
 import { MechanicalMeter } from "@/components/MechanicalMeter";
 import { SmartMeter } from "@/components/SmartMeter";
 import { BaselineOverrideModal } from "@/components/BaselineOverrideModal";
@@ -69,20 +71,29 @@ export default function DashboardScreen() {
           </View>
         </Animated.View>
 
-        {/* Hero Section: Energy Core */}
-        <Animated.View entering={FadeInDown.delay(200)}>
-          <GlassPanel style={styles.heroPanel}>
+        {/* Priority 1: Monthly WAPDA Status */}
+        <RemainingUnitsHero m1State={m1State} m2State={m2State} activeMeter={activeMeter} />
+
+        {/* Priority 2: Usage Statistics */}
+        <UsageStatisticsRow activeState={activeState} />
+
+        {/* Priority 3: AI Assistant Section */}
+        <Animated.View entering={FadeInDown.delay(300)}>
+          <AIAssistantPanel activeState={activeState} />
+        </Animated.View>
+
+        {/* Priority 4: Power Flow (Visual Only) */}
+        <Animated.View entering={FadeInDown.delay(400)}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Real-time Flow</Text>
+          </View>
+          <GlassPanel style={styles.secondaryPanel}>
             <EnergyCore solarKw={solarKw} gridKw={gridKw} loadKw={loadKw} />
           </GlassPanel>
         </Animated.View>
 
-        {/* AI Assistant Section */}
-        <Animated.View entering={FadeInDown.delay(300)}>
-          <AIAssistantPanel />
-        </Animated.View>
-
-        {/* Meter Section */}
-        <Animated.View entering={FadeInDown.delay(400)} style={styles.metersSection}>
+        {/* Priority 5: Meter Section */}
+        <Animated.View entering={FadeInDown.delay(500)} style={styles.metersSection}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Physical Meters</Text>
             <GlowButton 
@@ -96,13 +107,11 @@ export default function DashboardScreen() {
 
           <View style={styles.metersList}>
             <SmartMeter 
-              reading={m2State.reading} 
-              expectedRateKwH={m2State.expectedDrawNow} 
+              state={m2State} 
               isActive={activeMeter === 'meter2'} 
             />
             <MechanicalMeter 
-              reading={m1State.reading} 
-              expectedRateKwH={m1State.expectedDrawNow} 
+              state={m1State} 
               isActive={activeMeter === 'meter1'} 
             />
           </View>
@@ -189,7 +198,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   heroPanel: {
-    paddingVertical: 8,
+    height: 280,
+    overflow: 'hidden',
+    padding: 0,
+  },
+  secondaryPanel: {
+    height: 180,
+    overflow: 'hidden',
+    padding: 0,
   },
   metersSection: {
     gap: 12,
