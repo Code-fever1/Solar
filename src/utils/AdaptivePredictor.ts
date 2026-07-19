@@ -195,6 +195,13 @@ export class AdaptivePredictor {
       }
     }
 
+    // Ensemble Blend
+    let ensembleRate = todRate;
+    if (todWeightSum > 0) {
+      ensembleRate = (todRate * 0.90) + (ema * 0.10);
+    }
+    const finalExpectedRate = Math.min(8.0, Math.max(0.01, ensembleRate * trendMultiplier));
+
     // Today's Usage (Midnight to Midnight Extrapolation)
     const startOfToday = new Date(this.targetTime);
     startOfToday.setHours(0, 0, 0, 0);
@@ -206,13 +213,6 @@ export class AdaptivePredictor {
     const m2Current = this.predictMeterForTime('meter2', this.targetTime, finalExpectedRate);
     
     const todayUsage = Math.max(0, (m1Current + m2Current) - (m1Midnight + m2Midnight));
-
-    // Ensemble Blend
-    let ensembleRate = todRate;
-    if (todWeightSum > 0) {
-      ensembleRate = (todRate * 0.90) + (ema * 0.10);
-    }
-    const finalExpectedRate = Math.min(8.0, Math.max(0.01, ensembleRate * trendMultiplier));
 
     // Confidence
     const predictions = [ema, todRate];

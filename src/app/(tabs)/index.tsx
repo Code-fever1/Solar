@@ -82,15 +82,7 @@ export default function DashboardScreen() {
           <AIAssistantPanel home={home} />
         </Animated.View>
 
-        {/* Priority 4: Power Flow (Visual Only) */}
-        <Animated.View entering={FadeInDown.delay(400)}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Real-time Flow</Text>
-          </View>
-          <GlassPanel style={styles.secondaryPanel}>
-            <EnergyCore solarKw={solarKw} gridKw={gridKw} loadKw={loadKw} />
-          </GlassPanel>
-        </Animated.View>
+
 
         {/* Priority 5: Meter Section */}
         <Animated.View entering={FadeInDown.delay(500)} style={styles.metersSection}>
