@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { StyleSheet, Text, View, ScrollView } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { MapPin, Sun, Moon, CloudRain, Cloud } from 'lucide-react-native';
 
 import { BackgroundEngine } from "@/components/BackgroundEngine";
 import { GlassPanel } from "@/components/GlassPanel";
@@ -26,6 +27,38 @@ export default function DashboardScreen() {
   const [baselineModalVisible, setBaselineModalVisible] = useState(false);
   const [baselineMeterId, setBaselineMeterId] = useState<MeterId | null>(null);
 
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [locationName, setLocationName] = useState<string>("Locating...");
+  const [weatherCode, setWeatherCode] = useState<number | null>(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    fetch('https://ipapi.co/json/')
+      .then(r => r.json())
+      .then(data => {
+        const city = data.city || 'Bhakkar';
+        setLocationName(city);
+        const lat = data.latitude || 31.6269;
+        const lon = data.longitude || 71.0645;
+        
+        return fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`);
+      })
+      .then(r => r.json())
+      .then(wData => {
+         if (wData?.current_weather) {
+            setWeatherCode(wData.current_weather.weathercode);
+         }
+      })
+      .catch(() => {
+         setLocationName('Bhakkar');
+         setWeatherCode(0); 
+      });
+  }, []);
+
   const m1State = meters.meter1;
   const m2State = meters.meter2;
 
@@ -37,10 +70,24 @@ export default function DashboardScreen() {
   
   // Since we don't have live inverter telemetry hooked up to the frontend yet,
   // we simulate a generic house load by adding a rough solar estimate during the day.
-  const currentHour = new Date().getHours();
+  const currentHour = currentTime.getHours();
   const isDaytime = currentHour > 6 && currentHour < 18;
   const solarKw = isDaytime ? 1.2 : 0; 
   const loadKw = gridKw + solarKw;
+
+  const h = currentTime.getHours();
+  const m = currentTime.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const displayH = h % 12 || 12;
+  const timeString = `${displayH}:${m.toString().padStart(2, '0')} ${ampm}`;
+
+  const getWeatherIcon = () => {
+    if (weatherCode === null) return null;
+    if (weatherCode === 0) return isDaytime ? <Sun size={14} color={Colors.dark.solar} /> : <Moon size={14} color={Colors.dark.textSecondary} />;
+    if (weatherCode >= 1 && weatherCode <= 3) return <Cloud size={14} color={Colors.dark.textSecondary} />;
+    if (weatherCode >= 51 && weatherCode <= 65) return <CloudRain size={14} color={Colors.dark.info} />;
+    return <Cloud size={14} color={Colors.dark.textSecondary} />;
+  };
 
   const greeting =
     currentHour >= 5 && currentHour < 12 ? 'Good Morning' :
@@ -63,7 +110,12 @@ export default function DashboardScreen() {
         <Animated.View entering={FadeInDown.delay(100)} style={styles.topSection}>
           <View>
             <Text style={styles.greeting}>{greeting}</Text>
-            <Text style={styles.time}>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+            <View style={styles.weatherRow}>
+              {getWeatherIcon()}
+              <MapPin size={12} color={Colors.dark.textSecondary} style={{ marginLeft: 4 }} />
+              <Text style={styles.locationText}>{locationName}</Text>
+            </View>
+            <Text style={styles.time}>{timeString}</Text>
           </View>
           <View style={styles.statusPill}>
             <View style={styles.statusDot} />
@@ -71,11 +123,11 @@ export default function DashboardScreen() {
           </View>
         </Animated.View>
 
-        {/* Priority 1: Monthly WAPDA Status */}
-        <RemainingUnitsHero home={home} m1State={m1State} m2State={m2State} activeMeter={activeMeter} />
-
-        {/* Priority 2: Usage Statistics */}
+        {/* Priority 1: Usage Statistics */}
         <UsageStatisticsRow home={home} />
+
+        {/* Priority 2: Monthly WAPDA Status */}
+        <RemainingUnitsHero home={home} m1State={m1State} m2State={m2State} activeMeter={activeMeter} />
 
         {/* Priority 3: AI Assistant Section */}
         <Animated.View entering={FadeInDown.delay(300)}>
@@ -98,16 +150,19 @@ export default function DashboardScreen() {
           </View>
 
           <View style={styles.metersList}>
-            <SmartMeter 
-              state={m2State} 
-              home={home}
-              isActive={activeMeter === 'meter2'} 
-            />
-            <MechanicalMeter 
-              state={m1State} 
-              home={home}
-              isActive={activeMeter === 'meter1'} 
-            />
+            {activeMeter === 'meter2' ? (
+              <SmartMeter 
+                state={m2State} 
+                home={home}
+                isActive={true} 
+              />
+            ) : (
+              <MechanicalMeter 
+                state={m1State} 
+                home={home}
+                isActive={true} 
+              />
+            )}
           </View>
         </Animated.View>
 
@@ -153,8 +208,20 @@ const styles = StyleSheet.create({
   greeting: {
     color: Colors.dark.textSecondary,
     fontFamily: 'Outfit',
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
+    marginBottom: 2,
+  },
+  weatherRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  locationText: {
+    color: Colors.dark.textSecondary,
+    fontFamily: 'Outfit',
+    fontSize: 13,
   },
   time: {
     color: Colors.dark.text,

@@ -97,28 +97,22 @@ export default function MetersScreen() {
 
         {/* Active Meter Display */}
         <Animated.View entering={FadeInDown.delay(400)}>
-          <GlassPanel style={styles.sectionCard}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Physical Telemetry</Text>
-              <Text style={styles.selectedMeterLabel}>
-                {activeMeter === "meter1" ? "Meter 1 (Analog)" : "Meter 2 (Digital)"}
-              </Text>
-            </View>
-            
-            {activeMeter === 'meter2' ? (
+          <View style={styles.metersList}>
+            <View style={{ opacity: activeMeter === 'meter2' ? 1 : 0.4 }}>
               <SmartMeter 
-                state={activeMeterState} 
+                state={meters.meter2} 
                 home={home} 
-                isActive={true} 
+                isActive={activeMeter === 'meter2'} 
               />
-            ) : (
+            </View>
+            <View style={{ opacity: activeMeter === 'meter1' ? 1 : 0.4 }}>
               <MechanicalMeter 
-                state={activeMeterState} 
+                state={meters.meter1} 
                 home={home} 
-                isActive={true} 
+                isActive={activeMeter === 'meter1'} 
               />
-            )}
-          </GlassPanel>
+            </View>
+          </View>
         </Animated.View>
       </ScrollView>
 
@@ -185,7 +179,10 @@ const styles = StyleSheet.create({
   actionsRow: {
     flexDirection: "row",
     gap: 12,
-    width: "100%",
+    marginBottom: 24,
+  },
+  metersList: {
+    gap: 16,
   },
   primaryLogBtn: {
     flex: 2,
