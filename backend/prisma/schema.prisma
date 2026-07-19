@@ -1,0 +1,51 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model InverterTelemetry {
+  id              String   @id @default(uuid())
+  timestamp       DateTime
+  solarPowerWatts Float
+  gridImportWatts Float
+  houseLoadWatts  Float
+  pvVoltage       Float
+  pvCurrent       Float
+  mode            String   // e.g., 'grid-tied', 'off-grid'
+  dailyYieldKwh   Float
+
+  @@index([timestamp])
+}
+
+model MeterReading {
+  id            String   @id @default(uuid())
+  meterId       String   // 'meter1' | 'meter2'
+  timestamp     DateTime
+  reading       Float
+  isCalibration Boolean  @default(false)
+}
+
+model PredictionLog {
+  id               String   @id @default(uuid())
+  meterId          String
+  targetTimestamp  DateTime
+  predictedReading Float
+  actualReading    Float?   // Filled in later when reading arrives
+  absoluteError    Float?
+  mape             Float?
+  confidence       Float
+  ensembleWeights  String   // JSON string: E.g. { "holtWinters": 0.4, "tod": 0.5, "kalman": 0.1 }
+}
+
+model MeterPersonality {
+  meterId         String   @id
+  inertiaOffset   Float    @default(0)
+  driftMultiplier Float    @default(1.0)
+  lastUpdated     DateTime @updatedAt
+}
