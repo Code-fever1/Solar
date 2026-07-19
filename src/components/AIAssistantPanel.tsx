@@ -1,30 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { GlassPanel } from './GlassPanel';
 import { Colors } from '@/constants/Colors';
 import { Sparkles } from 'lucide-react-native';
-import Animated, { FadeIn, FadeOut, Easing, useSharedValue, useAnimatedStyle, withRepeat, withTiming } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import type { MeterState } from '@/context/energy-types';
 
-export const AIAssistantPanel = () => {
-  const [dots, setDots] = useState('');
-  
-  // Blinking cursor
-  const opacity = useSharedValue(1);
+interface AIAssistantPanelProps {
+  activeState: MeterState;
+}
 
-  useEffect(() => {
-    opacity.value = withRepeat(
-      withTiming(0, { duration: 500, easing: Easing.linear }),
-      -1,
-      true
-    );
-    
-    const interval = setInterval(() => {
-      setDots(prev => prev.length >= 3 ? '' : prev + '.');
-    }, 500);
-    return () => clearInterval(interval);
-  }, []);
-
-  const cursorStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
+export const AIAssistantPanel = ({ activeState }: AIAssistantPanelProps) => {
+  const isSafe = activeState.projectedMonthly <= 200;
+  const riskColor = isSafe ? Colors.dark.success : Colors.dark.critical;
 
   return (
     <GlassPanel style={styles.container} intensity={25} glowColor="rgba(0, 229, 255, 0.2)">
@@ -32,23 +20,26 @@ export const AIAssistantPanel = () => {
         <View style={styles.iconBox}>
           <Sparkles color={Colors.dark.load} size={14} />
         </View>
-        <Text style={styles.title}>Grid Intelligence</Text>
+        <Text style={styles.title}>Prediction Engine</Text>
       </View>
       
       <View style={styles.content}>
         <Animated.Text entering={FadeIn} exiting={FadeOut} style={styles.reasoningText}>
-          Analyzing grid patterns and solar yield{dots}
-          <Animated.View style={[styles.cursor, cursorStyle]} />
+          {activeState.explanation || "Analyzing meter pattern..."}
         </Animated.Text>
         
         <View style={styles.metricsRow}>
           <View style={styles.metric}>
-            <Text style={styles.metricLabel}>PREDICTION CONFIDENCE</Text>
-            <Text style={styles.metricValue}>85%</Text>
+            <Text style={styles.metricLabel}>CONFIDENCE</Text>
+            <Text style={styles.metricValue}>{activeState.confidencePercent.toFixed(0)}%</Text>
           </View>
           <View style={styles.metric}>
             <Text style={styles.metricLabel}>ACTIVE MODEL</Text>
-            <Text style={styles.metricValue}>Solar-Adjusted</Text>
+            <Text style={styles.metricValue}>Adaptive Ensemble</Text>
+          </View>
+          <View style={styles.metric}>
+            <Text style={styles.metricLabel}>RISK LEVEL</Text>
+            <Text style={[styles.metricValue, { color: riskColor }]}>{isSafe ? 'Low' : 'High'}</Text>
           </View>
         </View>
       </View>
@@ -92,12 +83,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
   },
-  cursor: {
-    width: 6,
-    height: 12,
-    backgroundColor: Colors.dark.load,
-    marginLeft: 2,
-    top: 2,
   },
   metricsRow: {
     flexDirection: 'row',
