@@ -98,20 +98,16 @@ export default function MetersScreen() {
         {/* Active Meter Display */}
         <Animated.View entering={FadeInDown.delay(400)}>
           <View style={styles.metersList}>
-            <View style={{ opacity: activeMeter === 'meter2' ? 1 : 0.4 }}>
-              <SmartMeter 
-                state={meters.meter2} 
-                home={home} 
-                isActive={activeMeter === 'meter2'} 
-              />
-            </View>
-            <View style={{ opacity: activeMeter === 'meter1' ? 1 : 0.4 }}>
-              <MechanicalMeter 
-                state={meters.meter1} 
-                home={home} 
-                isActive={activeMeter === 'meter1'} 
-              />
-            </View>
+            <SmartMeter 
+              state={meters.meter2} 
+              home={home} 
+              isActive={activeMeter === 'meter2'} 
+            />
+            <MechanicalMeter 
+              state={meters.meter1} 
+              home={home} 
+              isActive={activeMeter === 'meter1'} 
+            />
           </View>
         </Animated.View>
       </ScrollView>
