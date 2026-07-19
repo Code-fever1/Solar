@@ -21,7 +21,7 @@ import { getStartOfBillingCycle } from "@/utils/calculations";
 
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
-  const { activeMeter, meters, setManualBaseline } = useEnergy();
+  const { activeMeter, meters, home, setManualBaseline } = useEnergy();
   
   const [baselineModalVisible, setBaselineModalVisible] = useState(false);
   const [baselineMeterId, setBaselineMeterId] = useState<MeterId | null>(null);
@@ -33,7 +33,7 @@ export default function DashboardScreen() {
   const activeState = activeMeter === 'meter1' ? m1State : m2State;
   
   // The prediction algorithm calculates exactly how fast the WAPDA meter is expected to be moving right now.
-  const gridKw = Math.max(0, activeState.expectedDrawNow || 0);
+  const gridKw = Math.max(0, home.expectedDrawNow || 0);
   
   // Since we don't have live inverter telemetry hooked up to the frontend yet,
   // we simulate a generic house load by adding a rough solar estimate during the day.
@@ -72,14 +72,14 @@ export default function DashboardScreen() {
         </Animated.View>
 
         {/* Priority 1: Monthly WAPDA Status */}
-        <RemainingUnitsHero m1State={m1State} m2State={m2State} activeMeter={activeMeter} />
+        <RemainingUnitsHero home={home} m1State={m1State} m2State={m2State} activeMeter={activeMeter} />
 
         {/* Priority 2: Usage Statistics */}
-        <UsageStatisticsRow activeState={activeState} />
+        <UsageStatisticsRow home={home} />
 
         {/* Priority 3: AI Assistant Section */}
         <Animated.View entering={FadeInDown.delay(300)}>
-          <AIAssistantPanel activeState={activeState} />
+          <AIAssistantPanel home={home} />
         </Animated.View>
 
         {/* Priority 4: Power Flow (Visual Only) */}
@@ -108,10 +108,12 @@ export default function DashboardScreen() {
           <View style={styles.metersList}>
             <SmartMeter 
               state={m2State} 
+              home={home}
               isActive={activeMeter === 'meter2'} 
             />
             <MechanicalMeter 
               state={m1State} 
+              home={home}
               isActive={activeMeter === 'meter1'} 
             />
           </View>
