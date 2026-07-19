@@ -22,6 +22,7 @@ import type {
     ManualLog,
     MeterId,
     MeterState,
+    HomeState,
     Recommendation,
 } from "./energy-types";
 import { AdaptivePredictor } from "../utils/AdaptivePredictor";
@@ -38,6 +39,7 @@ export interface ManualBaseline {
 
 type EnergyContextValue = {
   live: LiveTelemetry;
+  home: HomeState;
   meters: Record<MeterId, MeterState>;
   activeMeter: MeterId;
   changeover: ChangeoverState;
@@ -514,18 +516,22 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       console.error("Failed to save manual baselines", e);
     }
-  };
-
+  };  // ─────────────────────────────────────────────────────────────────────────
+  // ADAPTIVE PREDICTION ENGINE v4 — Unified Home Architecture
   // ─────────────────────────────────────────────────────────────────────────
-  // ADAPTIVE PREDICTION ENGINE v3 — Ensemble Forecasting
-  // ─────────────────────────────────────────────────────────────────────────
-  const meters = useMemo<Record<MeterId, MeterState>>(() => {
+  const { home, meters } = useMemo(() => {
     const m1Logs = manualLogs.filter((l) => l.meterId === 'meter1');
     const m2Logs = manualLogs.filter((l) => l.meterId === 'meter2');
     const now = Date.now();
 
-    const m1Pred = new AdaptivePredictor('meter1', manualLogs, now, activeMeter === 'meter1').predict();
-    const m2Pred = new AdaptivePredictor('meter2', manualLogs, now, activeMeter === 'meter2').predict();
+    const predictor = new AdaptivePredictor(manualLogs, now, activeMeter);
+    
+    // 1. Calculate Unified Home State
+    const homeState = predictor.predictHome();
+
+    // 2. Predict individual meter readings
+    const m1Pred = predictor.predictMeter('meter1', homeState.expectedDrawNow);
+    const m2Pred = predictor.predictMeter('meter2', homeState.expectedDrawNow);
 
     const m1PredictedReading = m1Pred.predictedReading;
     const m2PredictedReading = m2Pred.predictedReading;
@@ -545,69 +551,85 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     const m1MonthUsage = Math.max(0, m1PredictedReading - m1StartReading);
     const m2MonthUsage = Math.max(0, m2PredictedReading - m2StartReading);
 
-    // Today's usage (since midnight)
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    const m1Midnight = getReadingAt(m1Logs, startOfToday.getTime()) || m1StartReading;
-    const m2Midnight = getReadingAt(m2Logs, startOfToday.getTime()) || m2StartReading;
+    const m1Remaining = Math.max(0, 200 - m1MonthUsage);
+    const m2Remaining = Math.max(0, 200 - m2MonthUsage);
 
-    const m1TodayUsage = Math.max(0, m1PredictedReading - m1Midnight);
-    const m2TodayUsage = Math.max(0, m2PredictedReading - m2Midnight);
+    // Calculate raw consumption days needed based on the UNIFIED home average
+    const effectiveAvg = homeState.averageDaily > 0 ? homeState.averageDaily : 5; // fallback to 5 units/day if avg is 0
+    const m1DaysLeft = Math.floor(m1Remaining / effectiveAvg);
+    const m2DaysLeft = Math.floor(m2Remaining / effectiveAvg);
+
+    // 3. Sequential Simulation Engine
+    const activeDaysLeft = activeMeter === 'meter1' ? m1DaysLeft : m2DaysLeft;
+    const inactiveDaysLeft = activeMeter === 'meter1' ? m2DaysLeft : m1DaysLeft;
+
+    const activeEndDate = now + (activeDaysLeft * 24 * 60 * 60 * 1000);
+    const inactiveStartDate = activeEndDate;
+    const inactiveEndDate = inactiveStartDate + (inactiveDaysLeft * 24 * 60 * 60 * 1000);
+
+    // 4. Billing Cycle Expected Usage
+    const daysPassedInCycle = (now - cycleStartTs) / (1000 * 60 * 60 * 24);
+    const daysLeftInCycle = Math.max(0, 30 - daysPassedInCycle);
+    
+    // Override naive 30-day run-rate with true billing cycle projection
+    homeState.projectedMonthly = m1MonthUsage + m2MonthUsage + (daysLeftInCycle * effectiveAvg);
+
+    // Calculate per-meter projected monthly usage for the slab warnings
+    const m1ActiveDaysInCycle = activeMeter === 'meter1' 
+      ? Math.min(daysLeftInCycle, activeDaysLeft) 
+      : Math.max(0, Math.min(daysLeftInCycle - activeDaysLeft, inactiveDaysLeft));
+      
+    const m2ActiveDaysInCycle = activeMeter === 'meter2' 
+      ? Math.min(daysLeftInCycle, activeDaysLeft) 
+      : Math.max(0, Math.min(daysLeftInCycle - activeDaysLeft, inactiveDaysLeft));
+
+    const m1ProjectedMonthly = m1MonthUsage + (m1ActiveDaysInCycle * effectiveAvg);
+    const m2ProjectedMonthly = m2MonthUsage + (m2ActiveDaysInCycle * effectiveAvg);
 
     return {
-      meter1: {
-        id: 'meter1',
-        label: "Meter 1 (Analog)",
-        reading: m1PredictedReading,
-        todayUsage: m1TodayUsage,
-        remainingUnits: Math.max(0, 200 - m1MonthUsage),
-        targetUnits: 200,
-        driftOffset: 0,
-        averageError: 0,
-        calibrationCount: m1Logs.length,
-        averageDaily: m1Pred.recentDailyAvg, // Use stable 5-day average for daily projections
-        recentDailyAvg: m1Pred.recentDailyAvg,
-        expectedDrawNow: m1Pred.expectedRateKwH,
-        minLikelyReading: m1Pred.minLikelyReading,
-        maxLikelyReading: m1Pred.maxLikelyReading,
-        confidencePercent: m1Pred.confidencePercent,
-        trend: m1Pred.trend,
-        primaryPattern: m1Pred.primaryPattern,
-        explanation: m1Pred.explanation,
-        projectedMonthly: m1Pred.recentDailyAvg * 30,
-        lastLoggedAt:
-          m1Logs.length > 0 ? m1Logs[m1Logs.length - 1].timestamp : undefined,
-      },
-      meter2: {
-        id: 'meter2',
-        label: "Meter 2 (Digital)",
-        reading: m2PredictedReading,
-        todayUsage: m2TodayUsage,
-        remainingUnits: Math.max(0, 200 - m2MonthUsage),
-        targetUnits: 200,
-        driftOffset: 0,
-        averageError: 0,
-        calibrationCount: m2Logs.length,
-        averageDaily: m2Pred.recentDailyAvg,
-        recentDailyAvg: m2Pred.recentDailyAvg,
-        expectedDrawNow: m2Pred.expectedRateKwH,
-        minLikelyReading: m2Pred.minLikelyReading,
-        maxLikelyReading: m2Pred.maxLikelyReading,
-        confidencePercent: m2Pred.confidencePercent,
-        trend: m2Pred.trend,
-        primaryPattern: m2Pred.primaryPattern,
-        explanation: m2Pred.explanation,
-        projectedMonthly: m2Pred.recentDailyAvg * 30,
-        lastLoggedAt:
-          m2Logs.length > 0 ? m2Logs[m2Logs.length - 1].timestamp : undefined,
-      },
+      home: homeState,
+      meters: {
+        meter1: {
+          id: 'meter1',
+          label: "Meter 1 (Analog)",
+          reading: m1PredictedReading,
+          remainingUnits: m1Remaining,
+          targetUnits: 200,
+          driftOffset: 0,
+          averageError: 0,
+          calibrationCount: m1Logs.length,
+          lastLoggedAt: m1Logs.length > 0 ? m1Logs[m1Logs.length - 1].timestamp : undefined,
+          
+          queueStatus: activeMeter === 'meter1' ? 'ACTIVE' : 'NEXT',
+          projectedDaysLeft: m1DaysLeft,
+          projectedSlabDate: activeMeter === 'meter1' ? activeEndDate : inactiveEndDate,
+          startsAfterDate: activeMeter === 'meter1' ? undefined : inactiveStartDate,
+          projectedMonthly: m1ProjectedMonthly,
+        },
+        meter2: {
+          id: 'meter2',
+          label: "Meter 2 (Digital)",
+          reading: m2PredictedReading,
+          remainingUnits: m2Remaining,
+          targetUnits: 200,
+          driftOffset: 0,
+          averageError: 0,
+          calibrationCount: m2Logs.length,
+          lastLoggedAt: m2Logs.length > 0 ? m2Logs[m2Logs.length - 1].timestamp : undefined,
+          
+          queueStatus: activeMeter === 'meter2' ? 'ACTIVE' : 'NEXT',
+          projectedDaysLeft: m2DaysLeft,
+          projectedSlabDate: activeMeter === 'meter2' ? activeEndDate : inactiveEndDate,
+          startsAfterDate: activeMeter === 'meter2' ? undefined : inactiveStartDate,
+          projectedMonthly: m2ProjectedMonthly,
+        }
+      }
     };
-  }, [manualLogs, activeMeter, tick]);
+  }, [manualLogs, activeMeter, tick, manualBaselines]);
 
   const live = useMemo<LiveTelemetry>(() => {
-    // Current draw rate uses the expected per-hour draw if available, fallback to daily avg
-    const activeState = meters[activeMeter];
-    const activeRate = activeState.expectedDrawNow > 0 ? activeState.expectedDrawNow : (activeState.averageDaily / 24);
+    // Current draw rate uses the expected per-hour draw from the Unified Home State
+    const activeRate = home.expectedDrawNow > 0 ? home.expectedDrawNow : (home.averageDaily / 24);
     // Stable voltage variance based on tick (avoids Math.random breaking memoization)
     const voltageVariance = ((tick % 7) - 3);
 
@@ -616,9 +638,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       currentAmp: Number(((activeRate * 1000) / 220).toFixed(1)),
       voltage: 220 + voltageVariance,
       frequency: 50,
-      powerFactor: 0.96,
+      powerFactor: 0.98,
     };
-  }, [meters, activeMeter, tick]);
+  }, [home.expectedDrawNow, home.averageDaily, tick]);
 
   const changeover = useMemo(
     () => ({
@@ -703,6 +725,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
   const value: EnergyContextValue = {
     live,
+    home,
     meters,
     activeMeter,
     changeover,
@@ -745,6 +768,7 @@ export type {
     ManualLog,
     MeterId,
     MeterState,
+    HomeState,
     Recommendation
 } from "./energy-types";
 

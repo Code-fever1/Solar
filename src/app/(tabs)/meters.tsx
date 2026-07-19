@@ -24,6 +24,7 @@ export default function MetersScreen() {
   const insets = useSafeAreaInsets();
   const {
     meters,
+    home,
     manualLogs,
     addManualLog,
     editManualLog,
@@ -106,14 +107,14 @@ export default function MetersScreen() {
             
             {activeMeter === 'meter2' ? (
               <SmartMeter 
-                reading={activeMeterState.reading} 
-                expectedRateKwH={activeMeterState.expectedRateKwH} 
+                state={activeMeterState} 
+                home={home} 
                 isActive={true} 
               />
             ) : (
               <MechanicalMeter 
-                reading={activeMeterState.reading} 
-                expectedRateKwH={activeMeterState.expectedRateKwH} 
+                state={activeMeterState} 
+                home={home} 
                 isActive={true} 
               />
             )}
