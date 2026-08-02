@@ -5,6 +5,7 @@ node_modules/
 
 # Expo
 .expo/
+.expo_home/
 dist/
 web-build/
 expo-env.d.ts
@@ -41,3 +42,6 @@ example
 # generated native folders
 /ios
 /android
+
+# local build artifacts
+build_output/

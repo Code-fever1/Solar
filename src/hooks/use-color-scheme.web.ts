@@ -1,21 +1,26 @@
 import { useEffect, useState } from 'react';
 import { useColorScheme as useRNColorScheme } from 'react-native';
+import { addThemeListener, getThemeOverride, type ThemeMode } from './theme-state';
 
-/**
- * To support static rendering, this value needs to be re-calculated on the client side for web
- */
 export function useColorScheme() {
   const [hasHydrated, setHasHydrated] = useState(false);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(getThemeOverride());
 
   useEffect(() => {
     setHasHydrated(true);
+    return addThemeListener((newTheme) => {
+      setThemeMode(newTheme);
+    });
   }, []);
 
-  const colorScheme = useRNColorScheme();
+  const rnScheme = useRNColorScheme();
 
-  if (hasHydrated) {
-    return colorScheme;
+  if (!hasHydrated) {
+    return 'light';
   }
 
-  return 'light';
+  if (themeMode === 'system') {
+    return rnScheme;
+  }
+  return themeMode;
 }

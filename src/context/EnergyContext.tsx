@@ -1,45 +1,69 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
-    createContext,
-    useContext,
-    useEffect,
-    useMemo,
-    useState,
-    type ReactNode,
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
 } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { interpolateUsageHistory, summarizeHistory } from "@/utils/calculations";
 import {
-    buildRecommendations,
-    getReadingAt,
-    getStartOfBillingCycle,
-    interpolateUsageHistory,
-    summarizeHistory
-} from "@/utils/calculations";
+  applyOfflineBaseline,
+  applyOfflineChangeover,
+  applyOfflineManualReading,
+  estimateOfflineDashboard,
+  type CachedDashboardSnapshot,
+  type CachedTomznLive,
+} from "@/utils/offline-dashboard";
 import type {
-    AlertItem,
-    HistoryPoint,
-    LiveTelemetry,
-    ManualLog,
-    MeterId,
-    MeterState,
-    HomeState,
-    Recommendation,
+  AlertItem,
+  HistoryPoint,
+  HomeState,
+  LiveTelemetry,
+  ManualLog,
+  MeterId,
+  MeterState,
+  Recommendation,
 } from "./energy-types";
-import { AdaptivePredictor } from "../utils/AdaptivePredictor";
-import { MeterLearningEngine, type MeterProfile } from "../utils/MeterLearningEngine";
 
-type ChangeoverState = {
-  activeMeter: MeterId;
-  lastSwitchedAt: Date;
-};
+export type {
+  AlertItem,
+  HistoryPoint,
+  HomeState,
+  LiveTelemetry,
+  ManualLog,
+  MeterId,
+  MeterState,
+  Recommendation,
+} from "./energy-types";
 
 export interface ManualBaseline {
   reading: number;
   cycleStartTs: number;
 }
 
+export type TomznLive = CachedTomznLive;
+
+type ChangeoverState = { activeMeter: MeterId; lastSwitchedAt: Date };
+
+type DashboardSnapshot = CachedDashboardSnapshot;
+
+type PendingOperation = {
+  id: string;
+  path: "/changeover" | "/manual-readings" | "/baselines";
+  method: "POST";
+  body: Record<string, unknown>;
+  createdAt: number;
+};
+
+type StoredDashboard = { snapshot: DashboardSnapshot; savedAt: number };
+
 type EnergyContextValue = {
   live: LiveTelemetry;
+  tomznLive: TomznLive;
   home: HomeState;
   meters: Record<MeterId, MeterState>;
   activeMeter: MeterId;
@@ -48,761 +72,314 @@ type EnergyContextValue = {
   alerts: AlertItem[];
   history: HistoryPoint[];
   manualLogs: ManualLog[];
-  learningProfiles: Record<string, MeterProfile>;
+  learningProfiles: Record<string, never>;
   manualBaselines: Record<MeterId, ManualBaseline | null>;
+  tomznHistory: any[];
   summary: ReturnType<typeof summarizeHistory>;
   period: "day" | "week" | "month" | "year";
   loading: boolean;
+  isOffline: boolean;
+  pendingSyncCount: number;
+  lastSyncedAt: number | null;
   setPeriod: (period: "day" | "week" | "month" | "year") => void;
   swapChangeover: (target?: MeterId) => void;
   calibrateMeter: (meterId: MeterId, manualReading: number) => void;
   setManualBaseline: (meterId: MeterId, reading: number, cycleStartTs: number) => Promise<void>;
-  addManualLog: (
-    meterId: MeterId,
-    reading: number,
-    timestamp: number,
-    notes?: string,
-  ) => Promise<void>;
-  editManualLog: (
-    id: string,
-    reading: number,
-    timestamp: number,
-    notes?: string,
-  ) => Promise<void>;
+  addManualLog: (meterId: MeterId, reading: number, timestamp: number, notes?: string) => Promise<void>;
+  editManualLog: (id: string, reading: number, timestamp: number, notes?: string) => Promise<void>;
   deleteManualLog: (id: string) => Promise<void>;
   clearAlerts: () => void;
   resetAllLogs: () => Promise<void>;
+  refreshTomzn: () => Promise<void>;
 };
 
-const STORAGE_KEY_LOGS = "@solar_manual_logs";
-const STORAGE_KEY_ACTIVE_METER = "@solar_active_meter";
-const STORAGE_KEY_BASELINES = "@solar_manual_baselines";
-const STORAGE_KEY_PROFILES = "@solar_learning_profiles";
+const API_URL = "http://104.43.56.204:3001/api/solar";
+const POLL_INTERVAL_MS = 30_000;
+const DASHBOARD_CACHE_KEY = "voltx.solar.dashboard.v1";
+const PENDING_OPERATIONS_KEY = "voltx.solar.pending-operations.v1";
+
+const EMPTY_TOMZN: TomznLive = {
+  energyKwh: 0, voltageV: 0, currentA: 0, powerW: 0, powerDisplay: "-- W",
+  frequencyHz: 50, isOnline: false, fetchedAt: "", isLive: false,
+};
+
+const EMPTY_HOME: HomeState = {
+  todayUsage: 0, averageDaily: 0, expectedDrawNow: 0, projectedMonthly: 0,
+  confidencePercent: 0, trend: "stable", primaryPattern: "transition",
+  explanation: "Waiting for the server-side TOMZN engine.",
+};
+
+function emptyMeter(id: MeterId): MeterState {
+  return {
+    id, label: id === "meter1" ? "Meter 1 (Analog)" : "Meter 2 (Digital)", reading: 0,
+    remainingUnits: 200, cycleUsage: 0, targetUnits: 200, driftOffset: 0,
+    averageError: 0, calibrationCount: 0, queueStatus: id === "meter1" ? "ACTIVE" : "NEXT",
+    projectedDaysLeft: 0, projectedSlabDate: 0, projectedMonthly: 0, averageDaily: 0,
+    averageLast3Days: 0, currentDaily: 0, targetDaily: 0, paceRatio: 0,
+    trendStatus: "stable", predictionConfidence: 0, healthScore: 0, healthColor: "#64748B",
+    consumptionSpeedScore: 0, consumptionSpeedColor: "#64748B", remainingColor: "#64748B",
+    todayUsage: 0, recentDailyAvg: 0, expectedDrawNow: 0,
+    explanation: "Waiting for the server-side TOMZN engine.", confidencePercent: 0,
+    minLikelyReading: 0, maxLikelyReading: 0, trend: "stable",
+  };
+}
+
+const EMPTY_METERS: Record<MeterId, MeterState> = { meter1: emptyMeter("meter1"), meter2: emptyMeter("meter2") };
+const EMPTY_LIVE: LiveTelemetry = { gridKw: 0, currentAmp: 0, voltage: 0, frequency: 50, powerFactor: 0 };
 
 const EnergyContext = createContext<EnergyContextValue | null>(null);
 
-// User's Real Billing Cycle Logs from 28 Jun 2026 to 18 Jul 2026
-const generateMockLogs = (): ManualLog[] => {
-  const logs: ManualLog[] = [];
+/**
+ * The phone renders a server snapshot only. It no longer estimates readings,
+ * stores baselines, or assigns TOMZN deltas locally; that work is authoritative
+ * on the VM so every device sees the same dashboard.
+ */
+export function EnergyProvider({ children }: { children: ReactNode }) {
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+  const [tomznHistory, setTomznHistory] = useState<any[]>([]);
+  const [manualBaselines, setManualBaselines] = useState<Record<MeterId, ManualBaseline | null>>({ meter1: null, meter2: null });
+  const [period, setPeriod] = useState<"day" | "week" | "month" | "year">("day");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isOffline, setIsOffline] = useState(false);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const cacheRef = useRef<StoredDashboard | null>(null);
+  const queueSyncRef = useRef<Promise<void> | null>(null);
 
-  // 1: 28 Jun (Cycle Start baseline)
-  logs.push({
-    id: "real-0a",
-    timestamp: new Date(2026, 5, 28, 0, 0).getTime(),
-    meterId: "meter1",
-    reading: 59358.0,
-    notes: "Billing Start Baseline",
-  });
-  logs.push({
-    id: "real-0b",
-    timestamp: new Date(2026, 5, 28, 0, 0).getTime(),
-    meterId: "meter2",
-    reading: 14881.0,
-    notes: "Billing Start Baseline",
-  });
-
-  // 2: 8 Jul, 4:30 AM
-  logs.push({
-    id: "real-1a",
-    timestamp: new Date(2026, 6, 8, 4, 30).getTime(),
-    meterId: "meter1",
-    reading: 59405.7,
-    notes: "Log 8-Jul 04:30",
-  });
-  logs.push({
-    id: "real-1b",
-    timestamp: new Date(2026, 6, 8, 4, 30).getTime(),
-    meterId: "meter2",
-    reading: 14982.6,
-    notes: "Log 8-Jul 04:30",
-  });
-
-  // 3: 10 Jul, 6:00 PM
-  logs.push({
-    id: "real-2a",
-    timestamp: new Date(2026, 6, 10, 18, 0).getTime(),
-    meterId: "meter1",
-    reading: 59423.5,
-    notes: "Log 10-Jul 18:00",
-  });
-  logs.push({
-    id: "real-2b",
-    timestamp: new Date(2026, 6, 10, 18, 0).getTime(),
-    meterId: "meter2",
-    reading: 14985.1,
-    notes: "Log 10-Jul 18:00",
-  });
-
-  // 4: 11 Jul, 8:20 PM
-  logs.push({
-    id: "real-3a",
-    timestamp: new Date(2026, 6, 11, 20, 20).getTime(),
-    meterId: "meter1",
-    reading: 59436.0,
-    notes: "Log 11-Jul 20:20",
-  });
-  logs.push({
-    id: "real-3b",
-    timestamp: new Date(2026, 6, 11, 20, 20).getTime(),
-    meterId: "meter2",
-    reading: 15002.8,
-    notes: "Log 11-Jul 20:20",
-  });
-
-  // 5: 13 Jul, 7:30 AM (Meter 2 is standby, keeps last reading 15002.8)
-  logs.push({
-    id: "real-4a",
-    timestamp: new Date(2026, 6, 13, 7, 30).getTime(),
-    meterId: "meter1",
-    reading: 59445.0,
-    notes: "Log 13-Jul 07:30",
-  });
-
-  // 6: 13 Jul, 6:30 PM
-  logs.push({
-    id: "real-5a",
-    timestamp: new Date(2026, 6, 13, 18, 30).getTime(),
-    meterId: "meter1",
-    reading: 59446.0,
-    notes: "Log 13-Jul 18:30",
-  });
-  logs.push({
-    id: "real-5b",
-    timestamp: new Date(2026, 6, 13, 18, 30).getTime(),
-    meterId: "meter2",
-    reading: 15002.9,
-    notes: "Log 13-Jul 18:30",
-  });
-
-  // 7: 14 Jul, 9:10 AM
-  logs.push({
-    id: "real-6a",
-    timestamp: new Date(2026, 6, 14, 9, 10).getTime(),
-    meterId: "meter1",
-    reading: 59447.0,
-    notes: "Log 14-Jul 09:10",
-  });
-  logs.push({
-    id: "real-6b",
-    timestamp: new Date(2026, 6, 14, 9, 10).getTime(),
-    meterId: "meter2",
-    reading: 15009.4,
-    notes: "Log 14-Jul 09:10",
-  });
-
-  // 8: 14 Jul, 4:12 PM
-  logs.push({
-    id: "real-7a",
-    timestamp: new Date(2026, 6, 14, 16, 12).getTime(),
-    meterId: "meter1",
-    reading: 59447.0,
-    notes: "Log 14-Jul 16:12",
-  });
-  logs.push({
-    id: "real-7b",
-    timestamp: new Date(2026, 6, 14, 16, 12).getTime(),
-    meterId: "meter2",
-    reading: 15009.4,
-    notes: "Log 14-Jul 16:12",
-  });
-
-  // 9: 15 Jul, 10:30 AM
-  logs.push({
-    id: "real-8a",
-    timestamp: new Date(2026, 6, 15, 10, 30).getTime(),
-    meterId: "meter1",
-    reading: 59452.0,
-    notes: "Log 15-Jul 10:30",
-  });
-  logs.push({
-    id: "real-8b",
-    timestamp: new Date(2026, 6, 15, 10, 30).getTime(),
-    meterId: "meter2",
-    reading: 15017.4,
-    notes: "Log 15-Jul 10:30",
-  });
-
-  // 10: 15 Jul, 6:30 PM (approximate time for later reading)
-  logs.push({
-    id: "real-9a",
-    timestamp: new Date(2026, 6, 15, 18, 30).getTime(),
-    meterId: "meter1",
-    reading: 59453.0,
-    notes: "Log 15-Jul Later",
-  });
-  logs.push({
-    id: "real-9b",
-    timestamp: new Date(2026, 6, 15, 18, 30).getTime(),
-    meterId: "meter2",
-    reading: 15025.8,
-    notes: "Log 15-Jul Later",
-  });
-
-  // 11: 16 Jul, 9:00 AM
-  logs.push({
-    id: "real-10a",
-    timestamp: new Date(2026, 6, 16, 9, 0).getTime(),
-    meterId: "meter1",
-    reading: 59457.0,
-    notes: "Log 16-Jul 09:00",
-  });
-  logs.push({
-    id: "real-10b",
-    timestamp: new Date(2026, 6, 16, 9, 0).getTime(),
-    meterId: "meter2",
-    reading: 15025.8,
-    notes: "Log 16-Jul 09:00 (standby)",
-  });
-
-  // 12: 16 Jul, 10:50 PM
-  logs.push({
-    id: "real-11a",
-    timestamp: new Date(2026, 6, 16, 22, 50).getTime(),
-    meterId: "meter1",
-    reading: 59458.5,
-    notes: "Log 16-Jul 22:50",
-  });
-  logs.push({
-    id: "real-11b",
-    timestamp: new Date(2026, 6, 16, 22, 50).getTime(),
-    meterId: "meter2",
-    reading: 15025.8,
-    notes: "Log 16-Jul 22:50 (standby)",
-  });
-
-  // 13: 17 Jul, 9:20 AM
-  logs.push({
-    id: "real-12a",
-    timestamp: new Date(2026, 6, 17, 9, 20).getTime(),
-    meterId: "meter1",
-    reading: 59458.5,
-    notes: "Log 17-Jul 09:20 (standby)",
-  });
-  logs.push({
-    id: "real-12b",
-    timestamp: new Date(2026, 6, 17, 9, 20).getTime(),
-    meterId: "meter2",
-    reading: 15034.6,
-    notes: "Log 17-Jul 09:20",
-  });
-
-  // 14: 17 Jul, 6:00 PM
-  logs.push({
-    id: "real-13a",
-    timestamp: new Date(2026, 6, 17, 18, 0).getTime(),
-    meterId: "meter1",
-    reading: 59459.0,
-    notes: "Log 17-Jul 18:00 (standby)",
-  });
-  logs.push({
-    id: "real-13b",
-    timestamp: new Date(2026, 6, 17, 18, 0).getTime(),
-    meterId: "meter2",
-    reading: 15034.6,
-    notes: "Log 17-Jul 18:00",
-  });
-
-  // 15: 17 Jul, 10:22 PM
-  logs.push({
-    id: "real-14a",
-    timestamp: new Date(2026, 6, 17, 22, 22).getTime(),
-    meterId: "meter1",
-    reading: 59460.6,
-    notes: "Log 17-Jul 22:22 (standby)",
-  });
-  logs.push({
-    id: "real-14b",
-    timestamp: new Date(2026, 6, 17, 22, 22).getTime(),
-    meterId: "meter2",
-    reading: 15034.6,
-    notes: "Log 17-Jul 22:22",
-  });
-
-  // 16: 18 Jul, 6:21 AM
-  logs.push({
-    id: "real-15a",
-    timestamp: new Date(2026, 6, 18, 6, 21).getTime(),
-    meterId: "meter1",
-    reading: 59468.5,
-    notes: "Log 18-Jul 06:21",
-  });
-  logs.push({
-    id: "real-15b",
-    timestamp: new Date(2026, 6, 18, 6, 21).getTime(),
-    meterId: "meter2",
-    reading: 15034.6,
-    notes: "Log 18-Jul 06:21 (standby)",
-  });
-
-  // 17: 18 Jul, 5:00 PM
-  logs.push({
-    id: "real-16a",
-    timestamp: new Date(2026, 6, 18, 17, 0).getTime(),
-    meterId: "meter1",
-    reading: 59470.0,
-    notes: "Log 18-Jul 17:00",
-  });
-  logs.push({
-    id: "real-16b",
-    timestamp: new Date(2026, 6, 18, 17, 0).getTime(),
-    meterId: "meter2",
-    reading: 15034.6,
-    notes: "Log 18-Jul 17:00 (standby)",
-  });
-
-  // 18: 18 Jul, 7:12 PM
-  logs.push({
-    id: "real-17a",
-    timestamp: new Date(2026, 6, 18, 19, 12).getTime(),
-    meterId: "meter1",
-    reading: 59471.5,
-    notes: "Log 18-Jul 19:12",
-  });
-  logs.push({
-    id: "real-17b",
-    timestamp: new Date(2026, 6, 18, 19, 12).getTime(),
-    meterId: "meter2",
-    reading: 15034.6,
-    notes: "Log 18-Jul 19:12 (standby)",
-  });
-
-  return logs.sort((a, b) => a.timestamp - b.timestamp);
-};
-
-const buildManualAlerts = (
-  logs: ManualLog[],
-  metersData: Record<MeterId, MeterState>,
-): AlertItem[] => {
-  const alerts: AlertItem[] = [];
-  const now = Date.now();
-
-  const lastLogTime = Math.max(
-    metersData.meter1.lastLoggedAt || 0,
-    metersData.meter2.lastLoggedAt || 0,
-  );
-
-  if (lastLogTime > 0 && now - lastLogTime > 24 * 60 * 60 * 1000) {
-    const hours = Math.round((now - lastLogTime) / (1000 * 60 * 60));
-    alerts.push({
-      id: "stale-logs",
-      title: "Logs are stale",
-      description: `It has been ${hours} hours since your last manual reading. Please enter current units.`,
-      severity: "warning",
-      source: "System",
-      createdAt: new Date(lastLogTime),
+  const normaliseSnapshot = (data: DashboardSnapshot): DashboardSnapshot => ({
+      ...data,
+      changeover: { ...data.changeover, lastSwitchedAt: Number(data.changeover.lastSwitchedAt) },
+      manualLogs: [...(data.manualLogs || [])].sort((a, b) => a.timestamp - b.timestamp),
     });
-  }
 
-  const checkSlabAlert = (id: "meter1" | "meter2", name: string) => {
-    const meter = metersData[id];
-    const consumed = meter.targetUnits - meter.remainingUnits;
+  const saveSnapshot = (data: DashboardSnapshot, savedAt = Date.now()) => {
+    const stored = { snapshot: normaliseSnapshot(data), savedAt };
+    cacheRef.current = stored;
+    setLastSyncedAt(savedAt);
+    void AsyncStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify(stored)).catch(() => undefined);
+  };
 
-    if (consumed > 170 && consumed < 200) {
-      alerts.push({
-        id: `slab-alert-${id}-200`,
-        title: `${name} slab warning`,
-        description: `Cumulative monthly usage is ${consumed.toFixed(1)} units, very close to the 200 unit slab limit. Consider switching active meter!`,
-        severity: "warning",
-        source: name,
-        createdAt: new Date(),
-      });
-    } else if (consumed >= 200) {
-      alerts.push({
-        id: `slab-alert-${id}-exceeded`,
-        title: `${name} slab exceeded`,
-        description: `Cumulative monthly usage of ${consumed.toFixed(1)} units has exceeded the 200 unit slab limit. Flip active changeover!`,
-        severity: "critical",
-        source: name,
-        createdAt: new Date(),
-      });
+  const applySnapshot = (data: DashboardSnapshot, options: { persist?: boolean; clearError?: boolean } = {}) => {
+    const next = normaliseSnapshot(data);
+    setSnapshot(next);
+    if (options.persist !== false) saveSnapshot(next);
+    if (options.clearError !== false) {
+      setIsOffline(false);
+      setError(null);
     }
   };
 
-  checkSlabAlert("meter1", "Meter 1 (Analog)");
-  checkSlabAlert("meter2", "Meter 2 (Digital)");
+  const readPendingOperations = async (): Promise<PendingOperation[]> => {
+    try {
+      const raw = await AsyncStorage.getItem(PENDING_OPERATIONS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((item): item is PendingOperation => Boolean(item?.id && item?.path && item?.body)) : [];
+    } catch {
+      return [];
+    }
+  };
 
-  return alerts;
-};
+  const savePendingOperations = async (operations: PendingOperation[]) => {
+    setPendingSyncCount(operations.length);
+    await AsyncStorage.setItem(PENDING_OPERATIONS_KEY, JSON.stringify(operations));
+  };
 
-export function EnergyProvider({ children }: { children: ReactNode }) {
-  const [manualLogs, setManualLogs] = useState<ManualLog[]>([]);
-  const [manualBaselines, setManualBaselines] = useState<Record<MeterId, ManualBaseline | null>>({
-    meter1: null,
-    meter2: null,
-  });
-  const [learningProfiles, setLearningProfiles] = useState<Record<string, MeterProfile>>({});
-  const [activeMeter, setActiveMeter] = useState<MeterId>("meter1");
-  const [period, setPeriod] = useState<"day" | "week" | "month" | "year">(
-    "day",
-  );
-  const [loading, setLoading] = useState(true);
-  const [lastSwitchedAt, setLastSwitchedAt] = useState<Date>(new Date());
-  const [clearedAlerts, setClearedAlerts] = useState(false);
-  const [tick, setTick] = useState(0);
+  const enqueueOperation = async (operation: PendingOperation) => {
+    const queued = await readPendingOperations();
+    await savePendingOperations([...queued, operation].sort((a, b) => a.createdAt - b.createdAt));
+  };
 
-  // Real-time ticking effect to drive live extrapolation refreshes (every 60 seconds)
-  // AdaptivePredictor is heavy — no benefit running faster than a minute since
-  // manual logs don't update more frequently than that.
+  const request = async (path: string, init?: RequestInit) => {
+    const response = await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Solar server request failed");
+    return data;
+  };
+
+  const flushPendingOperations = async () => {
+    if (queueSyncRef.current) return queueSyncRef.current;
+    queueSyncRef.current = (async () => {
+      const queued = await readPendingOperations();
+      if (!queued.length) {
+        setPendingSyncCount(0);
+        return;
+      }
+      let remaining = queued;
+      for (let index = 0; index < queued.length; index += 1) {
+        const operation = queued[index];
+        try {
+          const data = await request(operation.path, { method: operation.method, body: JSON.stringify(operation.body) });
+          applySnapshot(data);
+          remaining = queued.slice(index + 1);
+        } catch (cause) {
+          setIsOffline(true);
+          setError(cause instanceof Error ? cause.message : "Pending solar changes are waiting to sync");
+          break;
+        }
+      }
+      await savePendingOperations(remaining);
+    })();
+    try {
+      await queueSyncRef.current;
+    } finally {
+      queueSyncRef.current = null;
+    }
+  };
+
+  const showOfflineEstimate = (cause: unknown) => {
+    setError(cause instanceof Error ? cause.message : "Unable to reach solar server");
+    setIsOffline(true);
+    const cached = cacheRef.current;
+    if (cached) applySnapshot(estimateOfflineDashboard(cached.snapshot, cached.savedAt), { persist: false, clearError: false });
+  };
+
+  const loadDashboard = async (refresh = true) => {
+    try {
+      const data = await request(`/dashboard?refresh=${refresh ? "true" : "false"}`);
+      applySnapshot(data);
+      await flushPendingOperations();
+    } catch (cause) {
+      showOfflineEstimate(cause);
+      console.warn("[Solar Engine] dashboard fetch failed", cause);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadHistory = async () => {
+    try { setTomznHistory(await request("/tomzn/history")); } catch { /* dashboard remains usable */ }
+  };
+
   useEffect(() => {
-    const timer = setInterval(() => {
-      setTick((t) => t + 1);
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    const loadStoredData = async () => {
+    let disposed = false;
+    const bootstrap = async () => {
       try {
-        const storedLogs = await AsyncStorage.getItem(STORAGE_KEY_LOGS);
-        const storedActiveMeter = await AsyncStorage.getItem(
-          STORAGE_KEY_ACTIVE_METER,
-        );
-
-        let parsedLogs = storedLogs ? JSON.parse(storedLogs) : [];
-        // Detect if the database contains the correct start baseline reading 59358.0
-        const hasStartFreshLogs = parsedLogs.some(
-          (l: any) => l.reading === 59358.0,
-        );
-
-        if (!storedLogs || !hasStartFreshLogs) {
-          // Clear and initialize with the new official logs
-          const demo = generateMockLogs();
-          setManualLogs(demo);
-          await AsyncStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(demo));
-        } else {
-          setManualLogs(parsedLogs);
+        const raw = await AsyncStorage.getItem(DASHBOARD_CACHE_KEY);
+        const cached = raw ? JSON.parse(raw) as StoredDashboard : null;
+        if (!disposed && cached?.snapshot?.meters && Number.isFinite(cached.savedAt)) {
+          cacheRef.current = { snapshot: normaliseSnapshot(cached.snapshot), savedAt: cached.savedAt };
+          setLastSyncedAt(cached.savedAt);
+          applySnapshot(estimateOfflineDashboard(cacheRef.current.snapshot, cached.savedAt), { persist: false, clearError: false });
+          setIsOffline(true);
+          setLoading(false);
         }
-
-        const storedBaselines = await AsyncStorage.getItem(STORAGE_KEY_BASELINES);
-        if (storedBaselines) {
-          setManualBaselines(JSON.parse(storedBaselines));
-        }
-
-        const storedProfiles = await AsyncStorage.getItem(STORAGE_KEY_PROFILES);
-        if (storedProfiles) {
-          setLearningProfiles(JSON.parse(storedProfiles));
-        }
-
-        if (storedActiveMeter) {
-          setActiveMeter(storedActiveMeter as MeterId);
-        }
-      } catch (e) {
-        console.error("Failed to load storage data", e);
-      } finally {
-        setLoading(false);
+        const queued = await readPendingOperations();
+        if (!disposed) setPendingSyncCount(queued.length);
+      } catch {
+        // A bad cache must never prevent the fresh server engine from loading.
+      }
+      if (!disposed) {
+        void loadDashboard(true);
+        void loadHistory();
       }
     };
-    loadStoredData();
+    void bootstrap();
+    const interval = setInterval(() => loadDashboard(true), POLL_INTERVAL_MS);
+    return () => { disposed = true; clearInterval(interval); };
   }, []);
 
-  const saveLogs = async (newLogs: ManualLog[]) => {
-    const sorted = [...newLogs].sort((a, b) => a.timestamp - b.timestamp);
-    setManualLogs(sorted);
+  const activeMeter = snapshot?.activeMeter || "meter1";
+  const meters = snapshot?.meters || EMPTY_METERS;
+  const home = snapshot?.home || (error ? { ...EMPTY_HOME, explanation: error } : EMPTY_HOME);
+  const live = snapshot?.live || EMPTY_LIVE;
+  const tomznLive = snapshot?.tomznLive || EMPTY_TOMZN;
+  const manualLogs = snapshot?.manualLogs || [];
+  const changeover: ChangeoverState = {
+    activeMeter,
+    lastSwitchedAt: new Date(snapshot?.changeover.lastSwitchedAt || Date.now()),
+  };
+
+  const history = useMemo(() => interpolateUsageHistory(manualLogs, period), [manualLogs, period]);
+  const summary = useMemo(() => summarizeHistory(history), [history]);
+  const recommendations = useMemo<Recommendation[]>(() => {
+    if (!snapshot) return [];
+    if (home.averageDaily === 0) return [{ id: "learning", title: "Learning TOMZN usage", description: "A daily forecast appears after the server has enough TOMZN intervals.", action: "Keep TOMZN online", priority: "low", trend: "flat" }];
+    return [{ id: "server-forecast", title: "Server forecast active", description: home.explanation, action: "Review meter pace", priority: "low", trend: "flat" }];
+  }, [snapshot, home.averageDaily, home.explanation]);
+  const alerts = useMemo<AlertItem[]>(() => {
+    const result: AlertItem[] = [];
+    for (const meter of Object.values(meters)) {
+      if (meter.remainingUnits <= 0) result.push({ id: `slab-${meter.id}`, title: `${meter.label} slab reached`, description: "Switch the active meter to keep the slab plan aligned.", severity: "critical", source: meter.label, createdAt: new Date() });
+    }
+    return result;
+  }, [meters]);
+
+  const submitOrQueue = async (
+    operation: PendingOperation,
+    optimistic: (current: DashboardSnapshot) => DashboardSnapshot,
+  ) => {
     try {
-      await AsyncStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(sorted));
-    } catch (e) {
-      console.error("Failed to save manual logs", e);
+      applySnapshot(await request(operation.path, { method: operation.method, body: JSON.stringify(operation.body) }));
+    } catch (cause) {
+      await enqueueOperation(operation);
+      setIsOffline(true);
+      setError("Saved on this phone. It will sync automatically when Voltix reconnects.");
+      const base = snapshot || cacheRef.current?.snapshot;
+      if (base) applySnapshot(optimistic(base), { clearError: false });
+      console.warn("[Solar Engine] operation queued for sync", cause);
     }
   };
 
-  const saveActiveMeter = async (meter: MeterId) => {
-    setActiveMeter(meter);
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY_ACTIVE_METER, meter);
-    } catch (e) {
-      console.error("Failed to save active meter", e);
-    }
+  const swapChangeover = async (target?: MeterId) => {
+    const meterId = target || (activeMeter === "meter1" ? "meter2" : "meter1");
+    const timestamp = Date.now();
+    await submitOrQueue(
+      { id: `changeover-${timestamp}`, path: "/changeover", method: "POST", body: { meterId, timestamp }, createdAt: timestamp },
+      (current) => applyOfflineChangeover(current, meterId, timestamp),
+    );
   };
 
   const setManualBaseline = async (meterId: MeterId, reading: number, cycleStartTs: number) => {
-    const updated = {
-      ...manualBaselines,
-      [meterId]: { reading, cycleStartTs },
-    };
-    setManualBaselines(updated);
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY_BASELINES, JSON.stringify(updated));
-    } catch (e) {
-      console.error("Failed to save manual baselines", e);
-    }
-  };  // ─────────────────────────────────────────────────────────────────────────
-  // ADAPTIVE PREDICTION ENGINE v4 — Unified Home Architecture
-  // ─────────────────────────────────────────────────────────────────────────
-  const { home, meters } = useMemo(() => {
-    const m1Logs = manualLogs.filter((l) => l.meterId === 'meter1');
-    const m2Logs = manualLogs.filter((l) => l.meterId === 'meter2');
-    const now = Date.now();
-
-    const predictor = new AdaptivePredictor(manualLogs, now, activeMeter, learningProfiles);
-    
-    // 1. Calculate Unified Home State
-    const homeState = predictor.predictHome();
-
-    // 2. Predict individual meter readings
-    const m1Pred = predictor.predictMeter('meter1', homeState.expectedDrawNow);
-    const m2Pred = predictor.predictMeter('meter2', homeState.expectedDrawNow);
-
-    const m1PredictedReading = m1Pred.predictedReading;
-    const m2PredictedReading = m2Pred.predictedReading;
-
-    const cycleStartTs = getStartOfBillingCycle(now);
-    
-    let m1StartReading = getReadingAt(m1Logs, cycleStartTs) || (m1Logs.length > 0 ? m1Logs[0].reading : 0);
-    if (manualBaselines.meter1?.cycleStartTs === cycleStartTs) {
-      m1StartReading = manualBaselines.meter1.reading;
-    }
-
-    let m2StartReading = getReadingAt(m2Logs, cycleStartTs) || (m2Logs.length > 0 ? m2Logs[0].reading : 0);
-    if (manualBaselines.meter2?.cycleStartTs === cycleStartTs) {
-      m2StartReading = manualBaselines.meter2.reading;
-    }
-
-    const m1MonthUsage = Math.max(0, m1PredictedReading - m1StartReading);
-    const m2MonthUsage = Math.max(0, m2PredictedReading - m2StartReading);
-
-    const m1Remaining = Math.max(0, 200 - m1MonthUsage);
-    const m2Remaining = Math.max(0, 200 - m2MonthUsage);
-
-    // Calculate raw consumption days needed based on the UNIFIED home average
-    const effectiveAvg = homeState.averageDaily > 0 ? homeState.averageDaily : 5; // fallback to 5 units/day if avg is 0
-    const m1DaysLeft = Math.floor(m1Remaining / effectiveAvg);
-    const m2DaysLeft = Math.floor(m2Remaining / effectiveAvg);
-
-    // 3. Sequential Simulation Engine
-    const activeDaysLeft = activeMeter === 'meter1' ? m1DaysLeft : m2DaysLeft;
-    const inactiveDaysLeft = activeMeter === 'meter1' ? m2DaysLeft : m1DaysLeft;
-
-    const activeEndDate = now + (activeDaysLeft * 24 * 60 * 60 * 1000);
-    const inactiveStartDate = activeEndDate;
-    const inactiveEndDate = inactiveStartDate + (inactiveDaysLeft * 24 * 60 * 60 * 1000);
-
-    // 4. Billing Cycle Expected Usage
-    const daysPassedInCycle = (now - cycleStartTs) / (1000 * 60 * 60 * 24);
-    const daysLeftInCycle = Math.max(0, 30 - daysPassedInCycle);
-    
-    // Override naive 30-day run-rate with true billing cycle projection
-    homeState.projectedMonthly = m1MonthUsage + m2MonthUsage + (daysLeftInCycle * effectiveAvg);
-
-    // Calculate per-meter projected monthly usage for the slab warnings
-    const m1ActiveDaysInCycle = activeMeter === 'meter1' 
-      ? Math.min(daysLeftInCycle, activeDaysLeft) 
-      : Math.max(0, Math.min(daysLeftInCycle - activeDaysLeft, inactiveDaysLeft));
-      
-    const m2ActiveDaysInCycle = activeMeter === 'meter2' 
-      ? Math.min(daysLeftInCycle, activeDaysLeft) 
-      : Math.max(0, Math.min(daysLeftInCycle - activeDaysLeft, inactiveDaysLeft));
-
-    const m1ProjectedMonthly = m1MonthUsage + (m1ActiveDaysInCycle * effectiveAvg);
-    const m2ProjectedMonthly = m2MonthUsage + (m2ActiveDaysInCycle * effectiveAvg);
-
-    return {
-      home: homeState,
-      meters: {
-        meter1: {
-          id: 'meter1',
-          label: "Meter 1 (Analog)",
-          reading: m1PredictedReading,
-          remainingUnits: m1Remaining,
-          targetUnits: 200,
-          driftOffset: 0,
-          averageError: 0,
-          calibrationCount: m1Logs.length,
-          lastLoggedAt: m1Logs.length > 0 ? m1Logs[m1Logs.length - 1].timestamp : undefined,
-          lastLoggedReading: m1Logs.length > 0 ? m1Logs[m1Logs.length - 1].reading : undefined,
-          
-          queueStatus: activeMeter === 'meter1' ? 'ACTIVE' : 'NEXT',
-          projectedDaysLeft: m1DaysLeft,
-          projectedSlabDate: activeMeter === 'meter1' ? activeEndDate : inactiveEndDate,
-          startsAfterDate: activeMeter === 'meter1' ? undefined : inactiveStartDate,
-          projectedMonthly: m1ProjectedMonthly,
-        },
-        meter2: {
-          id: 'meter2',
-          label: "Meter 2 (Digital)",
-          reading: m2PredictedReading,
-          remainingUnits: m2Remaining,
-          targetUnits: 200,
-          driftOffset: 0,
-          averageError: 0,
-          calibrationCount: m2Logs.length,
-          lastLoggedAt: m2Logs.length > 0 ? m2Logs[m2Logs.length - 1].timestamp : undefined,
-          lastLoggedReading: m2Logs.length > 0 ? m2Logs[m2Logs.length - 1].reading : undefined,
-          
-          queueStatus: activeMeter === 'meter2' ? 'ACTIVE' : 'NEXT',
-          projectedDaysLeft: m2DaysLeft,
-          projectedSlabDate: activeMeter === 'meter2' ? activeEndDate : inactiveEndDate,
-          startsAfterDate: activeMeter === 'meter2' ? undefined : inactiveStartDate,
-          projectedMonthly: m2ProjectedMonthly,
-        }
-      }
-    };
-  }, [manualLogs, activeMeter, tick, manualBaselines]);
-
-  const live = useMemo<LiveTelemetry>(() => {
-    // Current draw rate uses the expected per-hour draw from the Unified Home State
-    const activeRate = home.expectedDrawNow > 0 ? home.expectedDrawNow : (home.averageDaily / 24);
-    // Stable voltage variance based on tick (avoids Math.random breaking memoization)
-    const voltageVariance = ((tick % 7) - 3);
-
-    return {
-      gridKw: activeRate,
-      currentAmp: Number(((activeRate * 1000) / 220).toFixed(1)),
-      voltage: 220 + voltageVariance,
-      frequency: 50,
-      powerFactor: 0.98,
-    };
-  }, [home.expectedDrawNow, home.averageDaily, tick]);
-
-  const changeover = useMemo(
-    () => ({
-      activeMeter,
-      lastSwitchedAt,
-    }),
-    [activeMeter, lastSwitchedAt],
-  );
-
-  const recommendations = useMemo(
-    () => buildRecommendations(live, activeMeter),
-    [activeMeter, live],
-  );
-
-  const alerts = useMemo(() => {
-    if (clearedAlerts) return [];
-    return buildManualAlerts(manualLogs, meters);
-  }, [manualLogs, meters, clearedAlerts]);
-
-  const history = useMemo(
-    () => interpolateUsageHistory(manualLogs, period),
-    [manualLogs, period],
-  );
-
-  const summary = useMemo(() => summarizeHistory(history), [history]);
-
-  const swapChangeover = (target?: MeterId) => {
-    const next = target ?? (activeMeter === "meter1" ? "meter2" : "meter1");
-    saveActiveMeter(next);
-    setLastSwitchedAt(new Date());
+    setManualBaselines((previous) => ({ ...previous, [meterId]: { reading, cycleStartTs } }));
+    const timestamp = Date.now();
+    await submitOrQueue(
+      { id: `baseline-${meterId}-${timestamp}`, path: "/baselines", method: "POST", body: { meterId, reading, cycleStartTs, timestamp }, createdAt: timestamp },
+      (current) => applyOfflineBaseline(current, meterId, reading),
+    );
   };
 
-  const addManualLog = async (
-    meterId: MeterId,
-    reading: number,
-    timestamp: number,
-    notes?: string,
-  ) => {
-    // 1. Predict what we EXPECTED it to be right before the log is added
-    const predictor = new AdaptivePredictor(manualLogs, timestamp, activeMeter, learningProfiles);
-    const expectedPred = predictor.predictMeter(meterId, predictor.predictHome().expectedDrawNow);
-    const expectedReading = expectedPred.predictedReading;
-
-    // 2. Fetch the previous reading for this meter
-    const meterLogs = manualLogs.filter(l => l.meterId === meterId && l.timestamp < timestamp).sort((a,b) => b.timestamp - a.timestamp);
-    const prevReading = meterLogs.length > 0 ? meterLogs[0].reading : 0;
-
-    // 3. Observe the bias using the Meter Learning Engine
-    const engine = new MeterLearningEngine(learningProfiles);
-    engine.observe(meterId, expectedReading, reading, prevReading, timestamp, predictor.predictHome().expectedDrawNow);
-    
-    const newProfiles = engine.getProfiles();
-    setLearningProfiles(newProfiles);
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY_PROFILES, JSON.stringify(newProfiles));
-    } catch (e) {
-      console.error("Failed to save learning profiles", e);
-    }
-
-    // 4. Save the log
-    const newLog: ManualLog = {
-      id: `${meterId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      timestamp,
-      meterId,
-      reading,
-      notes,
-    };
-    const updated = [newLog, ...manualLogs];
-    await saveLogs(updated);
-    setClearedAlerts(false);
+  const addManualLog = async (meterId: MeterId, reading: number, timestamp: number, notes?: string) => {
+    const entryTimestamp = Number.isFinite(timestamp) ? timestamp : Date.now();
+    await submitOrQueue(
+      { id: `manual-${meterId}-${entryTimestamp}`, path: "/manual-readings", method: "POST", body: { meterId, reading, timestamp: entryTimestamp, notes }, createdAt: entryTimestamp },
+      (current) => applyOfflineManualReading(current, meterId, reading, entryTimestamp, notes),
+    );
   };
 
-  const editManualLog = async (
-    id: string,
-    reading: number,
-    timestamp: number,
-    notes?: string,
-  ) => {
-    const updated = manualLogs.map((log) => {
-      if (log.id === id) {
-        return { ...log, reading, timestamp, notes };
-      }
-      return log;
-    });
-    await saveLogs(updated);
+  const editManualLog = async (id: string, reading: number, _timestamp: number, notes?: string) => {
+    applySnapshot(await request(`/manual-readings/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ reading, notes }) }));
   };
 
   const deleteManualLog = async (id: string) => {
-    const updated = manualLogs.filter((log) => log.id !== id);
-    await saveLogs(updated);
+    applySnapshot(await request(`/manual-readings/${encodeURIComponent(id)}`, { method: "DELETE" }));
   };
 
-  const calibrateMeter = (meterId: MeterId, manualReading: number) => {
-    addManualLog(meterId, manualReading, Date.now(), "Manual Calibration");
-  };
-
-  const clearAlerts = () => setClearedAlerts(true);
-
-  const resetAllLogs = async () => {
-    const demo = generateMockLogs();
-    await saveLogs(demo);
-    setClearedAlerts(false);
+  const refreshTomzn = async () => {
+    const data = await request("/refresh", { method: "POST" });
+    applySnapshot(data.dashboard);
+    await loadHistory();
   };
 
   const value: EnergyContextValue = {
-    live,
-    home,
-    meters,
-    activeMeter,
-    changeover,
-    recommendations,
-    alerts,
-    history,
-    manualLogs,
-    learningProfiles,
-    manualBaselines,
-    summary,
-    period,
-    loading,
-    setPeriod,
-    swapChangeover,
-    calibrateMeter,
-    setManualBaseline,
-    addManualLog,
-    editManualLog,
-    deleteManualLog,
-    clearAlerts,
-    resetAllLogs,
+    live, tomznLive, home, meters, activeMeter, changeover, recommendations, alerts,
+    history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, summary,
+    period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
+    calibrateMeter: (meterId, reading) => { void addManualLog(meterId, reading, Date.now(), "Manual calibration"); },
+    setManualBaseline, addManualLog, editManualLog, deleteManualLog,
+    clearAlerts: () => undefined,
+    resetAllLogs: async () => { await loadDashboard(false); },
+    refreshTomzn,
   };
 
-  return (
-    <EnergyContext.Provider value={value}>{children}</EnergyContext.Provider>
-  );
+  return <EnergyContext.Provider value={value}>{children}</EnergyContext.Provider>;
 }
 
 export function useEnergy() {
-  const value = useContext(EnergyContext);
-  if (!value) {
-    throw new Error("useEnergy must be used within EnergyProvider");
-  }
-  return value;
+  const context = useContext(EnergyContext);
+  if (!context) throw new Error("useEnergy must be used inside EnergyProvider");
+  return context;
 }
-
-export type {
-    AlertItem,
-    HistoryPoint,
-    LiveTelemetry,
-    ManualLog,
-    MeterId,
-    MeterState,
-    HomeState,
-    Recommendation
-} from "./energy-types";
-

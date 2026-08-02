@@ -14,7 +14,7 @@ function buildCsv(history: HistoryPoint[], period: ExportPeriod) {
       point.voltage.toFixed(0),
     ].join(","),
   );
-  return [`# GridWise ${period} export`, header, ...rows].join("\n");
+  return [`# Voltix ${period} export`, header, ...rows].join("\n");
 }
 
 async function shareTextFile(fileName: string, content: string) {
@@ -25,20 +25,20 @@ async function shareTextFile(fileName: string, content: string) {
 }
 
 export async function exportCsv(history: HistoryPoint[], period: ExportPeriod) {
-  await shareTextFile(`gridwise-${period}.csv`, buildCsv(history, period));
+  await shareTextFile(`voltix-${period}.csv`, buildCsv(history, period));
 }
 
 export async function exportExcel(
   history: HistoryPoint[],
   period: ExportPeriod,
 ) {
-  const xml = `<?xml version="1.0"?><worksheet><name>GridWise ${period}</name><rows>${history
+  const xml = `<?xml version="1.0"?><worksheet><name>Voltix ${period}</name><rows>${history
     .map(
       (point) =>
         `<row><c>${point.time}</c><c>${point.meter1.toFixed(2)}</c><c>${point.meter2.toFixed(2)}</c><c>${point.voltage.toFixed(0)}</c></row>`,
     )
     .join("")}</rows></worksheet>`;
-  await shareTextFile(`gridwise-${period}.xls`, xml);
+  await shareTextFile(`voltix-${period}.xls`, xml);
 }
 
 export async function exportPdf(history: HistoryPoint[], period: ExportPeriod) {
@@ -54,9 +54,9 @@ export async function exportPdf(history: HistoryPoint[], period: ExportPeriod) {
     .join("\n");
 
   const content = [
-    `GridWise ${period} report`,
+    `Voltix ${period} report`,
     "time | meter1_kw | meter2_kw | voltage",
     rows,
   ].join("\n");
-  await shareTextFile(`gridwise-${period}.pdf`, content);
+  await shareTextFile(`voltix-${period}.pdf`, content);
 }

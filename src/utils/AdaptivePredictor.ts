@@ -274,6 +274,187 @@ export class AdaptivePredictor {
     return { predictedReading: this.predictMeterForTime(meterId, this.targetTime, homeDrawNow) };
   }
 
+  private static lastSmoothedHealth: Record<string, number> = {};
+
+  // Calculates independent multi-factor health telemetry for a specific meter
+  public predictMeterTelemetry(
+    meterId: string,
+    homeDrawNow: number,
+    targetUnits = 200,
+    billingStartTs = Date.now() - 15 * 86400000,
+    billingEndTs = Date.now() + 15 * 86400000,
+    startReading = 0,
+    projectedMonthly = 180,
+    projectedSlabDate = billingEndTs
+  ): {
+    currentDaily: number;
+    targetDaily: number;
+    averageLast3Days: number;
+    paceRatio: number;
+    trendStatus: 'improving' | 'worsening' | 'stable';
+    predictionConfidence: number;
+    healthScore: number;
+    consumptionSpeedScore: number;
+  } {
+    const logs = meterId === 'meter1' ? this.m1Logs : this.m2Logs;
+    const isActive = meterId === this.activeMeterId;
+    const now = this.targetTime;
+
+    // 1. Current reading and total usage in this billing cycle
+    const currentReading = this.predictMeterForTime(meterId, now, homeDrawNow);
+    const cycleUsage = Math.max(0, currentReading - startReading);
+    const remainingUnits = Math.max(0, targetUnits - cycleUsage);
+
+    // 2. Calculate currentDaily (recent daily consumption rate)
+    const daysPassedInCycle = Math.max(0.1, (now - billingStartTs) / (1000 * 60 * 60 * 24));
+    let currentDaily = cycleUsage / daysPassedInCycle;
+    if (isActive && homeDrawNow > 0) {
+      currentDaily = (currentDaily * 0.7) + (homeDrawNow * 24 * 0.3);
+    } else if (!isActive && cycleUsage === 0) {
+      currentDaily = 0;
+    }
+
+    // 2. Exponential Moving Average for last 3 days
+    let day1Usage = currentDaily;
+    let day2Usage = currentDaily;
+    let day3Usage = currentDaily;
+
+    const rNow = this.predictMeterForTime(meterId, now, homeDrawNow);
+    const r1d = this.getInterpolatedReading(logs, now - 86400000) || (rNow - currentDaily);
+    const r2d = this.getInterpolatedReading(logs, now - 2 * 86400000) || (r1d - currentDaily);
+    const r3d = this.getInterpolatedReading(logs, now - 3 * 86400000) || (r2d - currentDaily);
+
+    day1Usage = Math.max(0, rNow - r1d);
+    day2Usage = Math.max(0, r1d - r2d);
+    day3Usage = Math.max(0, r2d - r3d);
+
+    let averageLast3Days = day1Usage;
+    if (now - billingStartTs >= 3 * 86400000) {
+      averageLast3Days = 0.5 * day1Usage + 0.3 * day2Usage + 0.2 * day3Usage;
+    } else if (now - billingStartTs >= 2 * 86400000) {
+      averageLast3Days = 0.6 * day1Usage + 0.4 * day2Usage;
+    }
+
+    if (averageLast3Days <= 0 && currentDaily > 0) {
+      averageLast3Days = currentDaily;
+    }
+
+    // 3. Determine trend compared to previous 3 days
+    let trendStatus: 'improving' | 'worsening' | 'stable' = 'stable';
+    if (currentDaily > 0.2 && averageLast3Days > 0.2) {
+      if (currentDaily < averageLast3Days * 0.93) {
+        trendStatus = 'improving';
+      } else if (currentDaily > averageLast3Days * 1.07) {
+        trendStatus = 'worsening';
+      }
+    }
+
+    // 4. Target daily rate and pace ratio
+    const remainingCycleDays = Math.max(0.5, (billingEndTs - now) / (1000 * 60 * 60 * 24));
+    const targetDaily = remainingUnits / remainingCycleDays;
+    const paceRatio = targetDaily > 0 ? currentDaily / targetDaily : (currentDaily > 0 ? 2.0 : 0);
+
+    // 5. Prediction confidence (%)
+    let predictionConfidence = 95;
+    if (logs.length < 2) {
+      predictionConfidence = 58;
+    } else if (logs.length < 4) {
+      predictionConfidence = 78;
+    } else if (logs.length >= 6) {
+      predictionConfidence = Math.min(98, 88 + (logs.length * 1.5));
+    }
+    if (!isActive) {
+      predictionConfidence = Math.min(96, predictionConfidence + 4);
+    }
+
+    // 6. Multi-factor Consumption Health Score (0 - 100) — used for the MONTHLY STATUS tag
+    const baseScore = 50;
+
+    // - 45% Current Daily Pace vs target (paceRatio)
+    let paceModifier = 0;
+    if (paceRatio < 1.0) {
+      paceModifier = (1.0 - paceRatio) * 20;
+    } else if (paceRatio > 1.0) {
+      paceModifier = -(paceRatio - 1.0) * 45 * 1.5;
+    }
+
+    // - Spike Penalty (Current usage vs recent average)
+    let spikePenalty = 0;
+    if (currentDaily > 0.5 && averageLast3Days > 0.5) {
+      const spikeRatio = currentDaily / averageLast3Days;
+      if (spikeRatio > 2.0) {
+        spikePenalty = -(spikeRatio - 1.0) * 15;
+      }
+    }
+
+    // - 25% Monthly Projection vs target
+    const monthlyRatio = targetUnits > 0 ? projectedMonthly / targetUnits : 0;
+    let monthlyModifier = 0;
+    if (monthlyRatio < 1.0) {
+      monthlyModifier = (1.0 - monthlyRatio) * 20;
+    } else if (monthlyRatio > 1.0) {
+      monthlyModifier = -(monthlyRatio - 1.0) * 25 * 2.0;
+    }
+
+    // - 20% Trend vs 3-day average
+    let trendModifier = 0;
+    if (trendStatus === 'improving') trendModifier = 10;
+    if (trendStatus === 'worsening') trendModifier = -15;
+
+    // - 10% Remaining days safety (predictedEndDate vs billingEndDate)
+    const safetyDays = (projectedSlabDate - billingEndTs) / (1000 * 60 * 60 * 24);
+    let safetyModifier = 0;
+    if (safetyDays >= 0) {
+      safetyModifier = Math.min(10, safetyDays * 1.5);
+    } else {
+      safetyModifier = Math.max(-25, safetyDays * 4);
+    }
+
+    const clamp = (val: number, min: number, max: number) => Math.min(Math.max(val, min), max);
+    const rawHealth = clamp(baseScore + paceModifier + spikePenalty + monthlyModifier + trendModifier + safetyModifier, 0, 100);
+
+    // Light EMA smoothing for health (used for tag — doesn't need to be super reactive)
+    const prevSmoothed = AdaptivePredictor.lastSmoothedHealth[meterId];
+    const smoothedHealth = prevSmoothed !== undefined
+      ? 0.5 * prevSmoothed + 0.5 * rawHealth
+      : rawHealth;
+    AdaptivePredictor.lastSmoothedHealth[meterId] = smoothedHealth;
+    const healthScore = clamp(Math.round(smoothedHealth), 0, 100);
+
+    // 7. Consumption Speed Score (0 - 100) — used for the OUTER RING color
+    // Smooth 50/50 blend of: (A) current pace vs target, (B) remaining units position
+    // Both use linear interpolation for seamless color gradients
+
+    // --- Component A: Pace Score (50%) ---
+    // paceRatio=0 idle → 90, paceRatio=1.0 on-target → 50, paceRatio=2.0 → 10
+    const paceScore = clamp(50 + (1.0 - paceRatio) * 40, 0, 95);
+
+    // --- Component B: Remaining Units Position Score (50%) ---
+    // Compares where your remaining units ARE vs where they SHOULD be at this point in the cycle
+    const totalCycleDays = Math.max(1, daysPassedInCycle + remainingCycleDays);
+    const expectedRemainingFraction = remainingCycleDays / totalCycleDays;
+    const actualRemainingFraction = remainingUnits / (targetUnits > 0 ? targetUnits : 200);
+    // delta > 0 means you have MORE remaining than expected (good)
+    // delta < 0 means you have LESS remaining than expected (bad)
+    const remainingDelta = actualRemainingFraction - expectedRemainingFraction;
+    // Map: delta +0.3 → 95, delta 0 → 50, delta -0.3 → 5
+    const remainingScore = clamp(50 + remainingDelta * 150, 0, 95);
+
+    // --- Blend 80/20 (Fast / Reactive) ---
+    const consumptionSpeedScore = clamp(Math.round(0.8 * paceScore + 0.2 * remainingScore), 0, 100);
+
+    return {
+      currentDaily,
+      targetDaily,
+      averageLast3Days,
+      paceRatio,
+      trendStatus,
+      predictionConfidence: Math.round(predictionConfidence),
+      healthScore,
+      consumptionSpeedScore,
+    };
+  }
+
   private predictMeterForTime(meterId: string, time: number, homeDrawNow: number): number {
     const logs = meterId === 'meter1' ? this.m1Logs : this.m2Logs;
     if (logs.length === 0) return 0;

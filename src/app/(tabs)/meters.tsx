@@ -1,51 +1,20 @@
-import { Plus } from "lucide-react-native";
-import { useMemo, useState } from "react";
-import {
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
-} from "react-native";
+import React from "react";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Animated, { FadeInDown } from "react-native-reanimated";
-
-import { ChangeoverSwitch } from "@/components/ChangeoverSwitch";
-import { GlassPanel } from "@/components/GlassPanel";
-import { GlowButton } from "@/components/GlowButton";
-import { LogReadingModal } from "@/components/LogReadingModal";
-import { MechanicalMeter } from "@/components/MechanicalMeter";
-import { SmartMeter } from "@/components/SmartMeter";
-import { BackgroundEngine } from "@/components/BackgroundEngine";
 import { Colors } from "@/constants/Colors";
-import type { ManualLog } from "@/context/EnergyContext";
+import { TomznCard } from "@/components/TomznCard";
+import { Info } from "lucide-react-native";
+import { SmartMeter } from "@/components/SmartMeter";
+import { MechanicalMeter } from "@/components/MechanicalMeter";
 import { useEnergy } from "@/context/EnergyContext";
 
 export default function MetersScreen() {
   const insets = useSafeAreaInsets();
-  const {
-    meters,
-    home,
-    manualLogs,
-    addManualLog,
-    editManualLog,
-    activeMeter,
-    swapChangeover,
-  } = useEnergy();
-  
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editLogItem, setEditLogItem] = useState<ManualLog | null>(null);
-
-  const activeMeterState = meters[activeMeter];
-
-  const latestActiveLog = useMemo(() => {
-    const activeLogs = manualLogs.filter((l) => l.meterId === activeMeter);
-    if (activeLogs.length === 0) return null;
-    return [...activeLogs].sort((a, b) => b.timestamp - a.timestamp)[0];
-  }, [manualLogs, activeMeter]);
+  const theme = Colors.dark;
+  const { activeMeter, meters, home, learningProfiles } = useEnergy();
 
   return (
     <View style={styles.screen}>
-      <BackgroundEngine />
       <ScrollView
         contentContainerStyle={[
           styles.container,
@@ -53,84 +22,38 @@ export default function MetersScreen() {
         ]}
         showsVerticalScrollIndicator={false}
       >
-        <Animated.View entering={FadeInDown.delay(100)} style={styles.hero}>
-          <Text style={styles.title}>Supply Control</Text>
-          <Text style={styles.subtitle}>
-            Active line changeover and physical meter synchronisation.
-          </Text>
-        </Animated.View>
-
-        {/* Changeover Switch */}
-        <Animated.View entering={FadeInDown.delay(200)}>
-          <GlassPanel style={styles.controlCard}>
-            <Text style={styles.controlLabel}>ACTIVE SUPPLY LINE</Text>
-            <ChangeoverSwitch
-              activeMeter={activeMeter}
-              onToggle={() => swapChangeover()}
-            />
-          </GlassPanel>
-        </Animated.View>
-
-        {/* Logging Actions */}
-        <Animated.View entering={FadeInDown.delay(300)} style={styles.actionsRow}>
-          <GlowButton 
-            label="Log Reading" 
-            variant="primary" 
-            style={styles.primaryLogBtn}
-            onPress={() => {
-              setEditLogItem(null);
-              setModalOpen(true);
-            }} 
-          />
-          {latestActiveLog && (
-            <GlowButton 
-              label="Edit Last" 
-              variant="secondary" 
-              style={styles.secondaryLogBtn}
-              onPress={() => {
-                setEditLogItem(latestActiveLog);
-                setModalOpen(true);
-              }} 
-            />
-          )}
-        </Animated.View>
-
-        {/* Active Meter Display */}
-        <Animated.View entering={FadeInDown.delay(400)}>
-          <View style={styles.metersList}>
-            <SmartMeter 
-              state={meters.meter2} 
-              home={home} 
-              isActive={activeMeter === 'meter2'} 
-            />
-            <MechanicalMeter 
-              state={meters.meter1} 
-              home={home} 
-              isActive={activeMeter === 'meter1'} 
-            />
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.title}>Meters</Text>
+            <Text style={styles.subtitle}>Overview of your physical meters & Tomzn.</Text>
           </View>
-        </Animated.View>
-      </ScrollView>
+          <Info size={20} color={theme.textSecondary} />
+        </View>
 
-      {/* Log Reading Modal */}
-      <LogReadingModal
-        visible={modalOpen}
-        initialMeterId={activeMeter}
-        editLog={editLogItem}
-        onClose={() => {
-          setModalOpen(false);
-          setEditLogItem(null);
-        }}
-        onSave={async (mId, val, ts, note) => {
-          if (editLogItem) {
-            await editManualLog(editLogItem.id, val, ts, note);
-          } else {
-            await addManualLog(mId, val, ts, note);
-          }
-          setModalOpen(false);
-          setEditLogItem(null);
-        }}
-      />
+        {/* Tomzn integration card */}
+        <TomznCard />
+
+        <View style={styles.spacer} />
+
+        {/* Meter 1 Analog */}
+        <MechanicalMeter
+          state={meters.meter1}
+          home={home}
+          isActive={activeMeter === "meter1"}
+          activeProfile={learningProfiles["meter1"]}
+        />
+
+        <View style={styles.spacer} />
+
+        {/* Meter 2 Digital */}
+        <SmartMeter
+          state={meters.meter2}
+          home={home}
+          isActive={activeMeter === "meter2"}
+          activeProfile={learningProfiles["meter2"]}
+        />
+
+      </ScrollView>
     </View>
   );
 }
@@ -142,10 +65,12 @@ const styles = StyleSheet.create({
   },
   container: {
     paddingHorizontal: 16,
-    gap: 20,
+    gap: 16,
   },
-  hero: {
-    gap: 4,
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 8,
   },
   title: {
@@ -153,58 +78,13 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit",
     fontSize: 28,
     fontWeight: "700",
-    letterSpacing: -0.5,
   },
   subtitle: {
     color: Colors.dark.textSecondary,
-    fontFamily: "Outfit",
     fontSize: 13,
-    lineHeight: 18,
+    marginTop: 4,
   },
-  controlCard: {
-    padding: 16,
-    gap: 16,
-  },
-  controlLabel: {
-    color: Colors.dark.textMuted,
-    fontFamily: "Outfit",
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1.5,
-  },
-  actionsRow: {
-    flexDirection: "row",
-    gap: 12,
-    marginBottom: 24,
-  },
-  metersList: {
-    gap: 16,
-  },
-  primaryLogBtn: {
-    flex: 2,
-  },
-  secondaryLogBtn: {
-    flex: 1,
-  },
-  sectionCard: {
-    padding: 16,
-    gap: 16,
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  sectionTitle: {
-    color: Colors.dark.text,
-    fontFamily: "Outfit",
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  selectedMeterLabel: {
-    color: Colors.dark.textSecondary,
-    fontFamily: "Outfit",
-    fontSize: 11,
-    fontWeight: "600",
-  },
+  spacer: {
+    height: 8,
+  }
 });

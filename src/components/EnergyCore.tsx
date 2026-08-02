@@ -27,7 +27,7 @@ const PowerNode = ({ icon: Icon, value, label, color, glow, delay = 0 }: any) =>
       <MotiView
         from={{ scale: 0.9, opacity: 0.5 }}
         animate={{ scale: 1.1, opacity: 0.8 }}
-        transition={{ loop: true, type: 'timing', duration: 2000, direction: 'alternate' }}
+        transition={{ loop: true, type: 'timing', duration: 2000 }}
         style={[styles.nodeGlow, { backgroundColor: color }]}
       />
       <View style={styles.nodeInner}>
@@ -127,7 +127,7 @@ export const EnergyCore = ({ solarKw, gridKw, loadKw }: EnergyCoreProps) => {
           <MotiView
             from={{ scale: 0.9, opacity: 0.4 }}
             animate={{ scale: 1.2, opacity: 0.8 }}
-            transition={{ loop: true, type: 'timing', duration: 1500, direction: 'alternate' }}
+            transition={{ loop: true, type: 'timing', duration: 1500 }}
             style={[styles.hubGlow, { backgroundColor: solarKw > gridKw ? Colors.dark.solarGlow : Colors.dark.gridGlow }]}
           />
           <View style={styles.hubInner} />

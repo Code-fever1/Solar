@@ -1,0 +1,8 @@
+
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 && cd android && ./gradlew assembleRelease --offline --parallel --build-cache && adb -s "adb-R5CT40F8FRE-6IVUmr._adb-tls-connect._tcp" install -r app/build/outputs/apk/release/app-release.apk && adb -s "adb-R5CT40F8FRE-6IVUmr (2)._adb-tls-connect._tcp" install -r app/build/outputs/apk/release/app-release.apk
+
+
+complete rebuild
+
+
+mkdir -p ~/.expo && HOME=$HOME npx expo prebuild -p android --clean && export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 && cd android && ./gradlew clean assembleRelease && cd .. && adb -s "adb-R5CT40F8FRE-6IVUmr (2)._adb-tls-connect._tcp" install -r android/app/build/outputs/apk/release/app-release.apk

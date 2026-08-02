@@ -1,14 +1,14 @@
 {
   "expo": {
-    "name": "GridWise",
-    "slug": "Solar",
+    "name": "Voltix",
+    "slug": "voltix",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/meter.png",
-    "scheme": "solar",
+    "scheme": "voltix",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/images/meter.png"
     },
     "android": {
       "icon": "./assets/images/meter.png",
@@ -17,7 +17,8 @@
         "backgroundColor": "#0A0E1A"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.gridwise.app"
+      "package": "com.voltix.app",
+      "usesCleartextTraffic": true
     },
     "web": {
       "output": "static",
@@ -25,6 +26,7 @@
     },
     "plugins": [
       "expo-router",
+      "./plugins/with-android-cleartext-solar",
       [
         "expo-splash-screen",
         {

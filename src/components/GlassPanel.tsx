@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, View, ViewProps, ViewStyle, Platform } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { BlurView } from 'expo-blur';
 import { Colors } from '@/constants/Colors';
 import Animated, { FadeInUp } from 'react-native-reanimated';
@@ -14,28 +15,55 @@ export interface GlassPanelProps extends ViewProps {
 export const GlassPanel: React.FC<GlassPanelProps> = ({ 
   children, 
   style, 
-  intensity = 15, 
-  glowColor = 'rgba(0,0,0,0.4)',
+  intensity = 20, 
+  glowColor,
   delay = 0,
   ...rest 
 }) => {
+  const scheme = useColorScheme();
+  const isLight = scheme === 'light';
+  const theme = isLight ? Colors.light : Colors.dark;
+
+  const defaultGlow = glowColor ?? (isLight ? 'rgba(15, 23, 42, 0.06)' : 'rgba(0,0,0,0.4)');
+
   return (
     <Animated.View 
       entering={FadeInUp.delay(delay).springify().damping(18).stiffness(150)}
       style={[
         styles.container, 
-        { shadowColor: glowColor },
+        { 
+          backgroundColor: theme.backgroundElement,
+          shadowColor: defaultGlow 
+        },
         style
       ]} 
       {...rest}
     >
-      <BlurView
-        intensity={Platform.OS === 'ios' ? intensity : intensity * 2} 
-        tint="dark"
-        style={StyleSheet.absoluteFill}
+      {Platform.OS === 'ios' ? (
+        <BlurView
+          intensity={intensity} 
+          tint={isLight ? "light" : "dark"}
+          style={StyleSheet.absoluteFill}
+        />
+      ) : (
+        <View 
+          style={[
+            StyleSheet.absoluteFill, 
+            { backgroundColor: isLight ? 'rgba(255, 255, 255, 0.85)' : 'rgba(21, 26, 36, 0.97)' }
+          ]} 
+        />
+      )}
+      {/* Inner border simulation */}
+      <View 
+        style={[
+          styles.innerBorder, 
+          { 
+            borderColor: theme.border,
+            borderTopColor: theme.borderStrong 
+          }
+        ]} 
+        pointerEvents="none" 
       />
-      {/* Inner gradient border simulation */}
-      <View style={styles.innerBorder} pointerEvents="none" />
       {children}
     </Animated.View>
   );
@@ -45,19 +73,16 @@ const styles = StyleSheet.create({
   container: {
     borderRadius: 24,
     overflow: 'hidden',
-    backgroundColor: Colors.dark.backgroundElement,
     
     // Outer shadow for ambient depth
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.8,
-    shadowRadius: 24,
-    elevation: 8, // Android shadow
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: Platform.OS === 'android' ? 4 : 6,
   },
   innerBorder: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: Colors.dark.border,
-    borderTopColor: Colors.dark.borderStrong, // Light coming from top
   }
 });

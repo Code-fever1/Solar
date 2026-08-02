@@ -1,13 +1,13 @@
 import React, { useEffect, memo } from 'react';
 import { StyleSheet, View, Dimensions, Platform } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Canvas, Rect, LinearGradient, vec, Circle, Paint, RadialGradient } from '@shopify/react-native-skia';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing } from 'react-native-reanimated';
 import { Colors } from '@/constants/Colors';
 
 const { width, height } = Dimensions.get('window');
 
-// Compute grid lines once at module load — never in render
-const GRID_SPACING = 60; // increased spacing → fewer lines → less UI thread work
+const GRID_SPACING = 60;
 const H_COUNT = Math.ceil(height / GRID_SPACING) + 2;
 const V_COUNT = Math.ceil(width / GRID_SPACING) + 1;
 const gridLineStyles: { top?: number; left?: number; isH: boolean }[] = [];
@@ -18,8 +18,7 @@ for (let i = 0; i < V_COUNT; i++) {
   gridLineStyles.push({ left: i * GRID_SPACING, isH: false });
 }
 
-// Memoized grid so it never re-renders except when translateY changes (Reanimated bypasses JS)
-const AnimatedGrid = memo(() => {
+const AnimatedGrid = memo(({ isLight }: { isLight: boolean }) => {
   const translateY = useSharedValue(0);
 
   useEffect(() => {
@@ -34,61 +33,62 @@ const AnimatedGrid = memo(() => {
     transform: [{ translateY: translateY.value }],
   }));
 
+  const lineStyle = isLight ? styles.gridLineLight : styles.gridLineDark;
+
   return (
-    <Animated.View style={[StyleSheet.absoluteFill, styles.gridContainer, animatedStyle]} pointerEvents="none">
+    <Animated.View style={[StyleSheet.absoluteFill, styles.gridContainer, { opacity: isLight ? 0.25 : 0.35 }, animatedStyle]} pointerEvents="none">
       {gridLineStyles.map((s, i) =>
         s.isH ? (
-          <View key={`h-${i}`} style={[styles.gridLineHorizontal, { top: s.top }]} />
+          <View key={`h-${i}`} style={[lineStyle, styles.gridLineHorizontal, { top: s.top }]} />
         ) : (
-          <View key={`v-${i}`} style={[styles.gridLineVertical, { left: s.left }]} />
+          <View key={`v-${i}`} style={[lineStyle, styles.gridLineVertical, { left: s.left }]} />
         )
       )}
     </Animated.View>
   );
 });
 
-// Static Skia canvas for orbs — no rotation animation, no heavy blur.
-// Uses RadialGradient which is GPU-native and cheap.
-const StaticOrbs = memo(() => {
+const StaticOrbs = memo(({ isLight }: { isLight: boolean }) => {
   if (Platform.OS === 'web') {
-    // Fallback for Web: Skia requires WASM CanvasKit setup which is missing/unsupported here.
     return (
       <View style={StyleSheet.absoluteFill}>
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }]} />
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: isLight ? 'rgba(241,245,249,0.8)' : 'rgba(5,5,5,0.5)' }]} />
       </View>
     );
   }
 
+  const orb1Color = isLight ? 'rgba(2, 132, 199, 0.12)' : 'rgba(0,229,255,0.10)';
+  const orb2Color = isLight ? 'rgba(147, 51, 234, 0.10)' : 'rgba(191,90,242,0.08)';
+  const vignetteStart = isLight ? 'rgba(241,245,249,0.1)' : 'rgba(5,5,5,0.25)';
+  const vignetteEnd = isLight ? 'rgba(241,245,249,0.6)' : 'rgba(5,5,5,0.92)';
+
   return (
     <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
-      {/* Blue orb — top right */}
       <Circle cx={width * 0.75} cy={height * 0.25} r={width * 0.55}>
         <Paint>
           <RadialGradient
             c={vec(width * 0.75, height * 0.25)}
             r={width * 0.55}
-            colors={['rgba(0,229,255,0.10)', 'rgba(0,229,255,0)']}
+            colors={[orb1Color, 'rgba(0,0,0,0)']}
           />
         </Paint>
       </Circle>
 
-      {/* Purple orb — bottom left */}
       <Circle cx={width * 0.2} cy={height * 0.72} r={width * 0.5}>
         <Paint>
           <RadialGradient
             c={vec(width * 0.2, height * 0.72)}
             r={width * 0.5}
-            colors={['rgba(191,90,242,0.08)', 'rgba(191,90,242,0)']}
+            colors={[orb2Color, 'rgba(0,0,0,0)']}
           />
         </Paint>
       </Circle>
 
-      {/* Vignette — darken top and bottom edges */}
       <Rect x={0} y={0} width={width} height={height}>
         <LinearGradient
           start={vec(width / 2, 0)}
           end={vec(width / 2, height)}
-          colors={['rgba(5,5,5,0.25)', 'rgba(5,5,5,0)', 'rgba(5,5,5,0.92)']}
+          colors={[vignetteStart, 'rgba(0,0,0,0)', vignetteEnd]}
         />
       </Rect>
     </Canvas>
@@ -96,27 +96,26 @@ const StaticOrbs = memo(() => {
 });
 
 export const BackgroundEngine = memo(() => {
+  const scheme = useColorScheme();
+  const isLight = scheme === 'light';
+  const theme = isLight ? Colors.light : Colors.dark;
+
   return (
-    <View style={styles.container} pointerEvents="none">
-      {/* Base dark fill */}
-      <View style={styles.baseDark} />
-      {/* GPU-rendered static gradient orbs */}
-      <StaticOrbs />
-      {/* Scrolling grid overlay */}
-      <AnimatedGrid />
+    <View style={[styles.container, { backgroundColor: theme.background }]} pointerEvents="none">
+      <View style={[styles.baseDark, { backgroundColor: theme.background }]} />
+      <StaticOrbs isLight={isLight} />
+      <AnimatedGrid isLight={isLight} />
     </View>
   );
 });
 
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: Colors.dark.background,
+    ...StyleSheet.absoluteFill,
     zIndex: -1,
   },
   baseDark: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: Colors.dark.background,
+    ...StyleSheet.absoluteFill,
   },
   gridContainer: {
     opacity: 0.35,
@@ -125,12 +124,16 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: '100%',
     height: 1,
-    backgroundColor: 'rgba(255,255,255,0.035)',
   },
   gridLineVertical: {
     position: 'absolute',
     height: '100%',
     width: 1,
+  },
+  gridLineDark: {
     backgroundColor: 'rgba(255,255,255,0.035)',
+  },
+  gridLineLight: {
+    backgroundColor: 'rgba(15,23,42,0.04)',
   },
 });

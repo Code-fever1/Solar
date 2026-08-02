@@ -5,19 +5,24 @@ import { GlassPanel } from './GlassPanel';
 import { Colors } from '@/constants/Colors';
 import type { HomeState } from '@/context/energy-types';
 import { Activity, Zap, TrendingUp, CalendarDays } from 'lucide-react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 
 interface UsageStatisticsRowProps {
   home: HomeState;
 }
 
 export const UsageStatisticsRow = ({ home }: UsageStatisticsRowProps) => {
+  const scheme = useColorScheme();
+  const theme = scheme === 'light' ? Colors.light : Colors.dark;
+  const styles = React.useMemo(() => getStyles(theme), [theme]);
+
   return (
     <Animated.View entering={FadeInUp.delay(200).springify()}>
       <View style={styles.grid}>
         {/* Today's Usage */}
         <GlassPanel style={styles.card}>
           <View style={styles.iconRow}>
-            <Activity color={Colors.dark.info} size={18} />
+            <Activity color={theme.info} size={18} />
           </View>
           <Text style={styles.value}>{home.todayUsage.toFixed(1)} <Text style={styles.unit}>units</Text></Text>
           <Text style={styles.label}>Today's Usage</Text>
@@ -26,7 +31,7 @@ export const UsageStatisticsRow = ({ home }: UsageStatisticsRowProps) => {
         {/* Current Meter Speed */}
         <GlassPanel style={styles.card}>
           <View style={styles.iconRow}>
-            <Zap color={Colors.dark.grid} size={18} />
+            <Zap color={theme.grid} size={18} />
           </View>
           <Text style={styles.value}>{home.expectedDrawNow.toFixed(1)} <Text style={styles.unit}>kW</Text></Text>
           <Text style={styles.label}>Current Speed</Text>
@@ -35,7 +40,7 @@ export const UsageStatisticsRow = ({ home }: UsageStatisticsRowProps) => {
         {/* Average Daily */}
         <GlassPanel style={styles.card}>
           <View style={styles.iconRow}>
-            <TrendingUp color={Colors.dark.meter} size={18} />
+            <TrendingUp color={theme.meter} size={18} />
           </View>
           <Text style={styles.value}>{home.averageDaily.toFixed(1)} <Text style={styles.unit}>/day</Text></Text>
           <Text style={styles.label}>Average Daily</Text>
@@ -44,7 +49,7 @@ export const UsageStatisticsRow = ({ home }: UsageStatisticsRowProps) => {
         {/* Expected This Month */}
         <GlassPanel style={styles.card}>
           <View style={styles.iconRow}>
-            <CalendarDays color={Colors.dark.solar} size={18} />
+            <CalendarDays color={theme.solar} size={18} />
           </View>
           <Text style={styles.value}>{home.projectedMonthly.toFixed(0)} <Text style={styles.unit}>units</Text></Text>
           <Text style={styles.label}>Expected This Month</Text>
@@ -54,7 +59,7 @@ export const UsageStatisticsRow = ({ home }: UsageStatisticsRowProps) => {
   );
 };
 
-const styles = StyleSheet.create({
+const getStyles = (theme: typeof Colors.light) => StyleSheet.create({
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -72,16 +77,16 @@ const styles = StyleSheet.create({
   value: {
     fontFamily: 'Outfit-Bold',
     fontSize: 22,
-    color: Colors.dark.text,
+    color: theme.text,
   },
   unit: {
     fontSize: 14,
-    color: Colors.dark.textSecondary,
+    color: theme.textSecondary,
     fontFamily: 'Inter-Medium',
   },
   label: {
     fontFamily: 'Inter-Medium',
     fontSize: 12,
-    color: Colors.dark.textSecondary,
+    color: theme.textSecondary,
   }
 });

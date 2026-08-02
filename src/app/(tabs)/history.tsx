@@ -1,27 +1,33 @@
-import { CalendarRange, Edit3, Trash2, Download } from "lucide-react-native";
+import { CalendarRange, Edit3, Trash2 } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import {
     Alert,
+    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
     Text,
     View,
 } from "react-native";
+import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Animated, { FadeInDown, FadeIn } from "react-native-reanimated";
 
 import { AnalyticsChart } from "@/components/AnalyticsChart";
-import { GlassPanel } from "@/components/GlassPanel";
 import { BackgroundEngine } from "@/components/BackgroundEngine";
-import { GlowButton } from "@/components/GlowButton";
+import { GlassPanel } from "@/components/GlassPanel";
 import { LogReadingModal } from "@/components/LogReadingModal";
 import { Colors } from "@/constants/Colors";
 import type { ManualLog } from "@/context/EnergyContext";
 import { useEnergy } from "@/context/EnergyContext";
-import { exportCsv, exportExcel, exportPdf } from "@/utils/export";
+
+import { useColorScheme } from "@/hooks/use-color-scheme";
+import React from "react";
 
 export default function HistoryScreen() {
+  const scheme = useColorScheme();
+  const theme = scheme === "light" ? Colors.light : Colors.dark;
+  const styles = React.useMemo(() => getStyles(theme), [theme]);
+
   const insets = useSafeAreaInsets();
   const {
     history,
@@ -31,17 +37,18 @@ export default function HistoryScreen() {
     manualLogs,
     editManualLog,
     deleteManualLog,
+    meters,
   } = useEnergy();
   const [modalOpen, setModalOpen] = useState(false);
   const [editLogItem, setEditLogItem] = useState<ManualLog | null>(null);
+  const [expandedMeters, setExpandedMeters] = useState({
+    meter1: false,
+    meter2: false,
+  });
 
   const sortedLogs = useMemo(() => {
     return [...manualLogs].sort((a, b) => b.timestamp - a.timestamp);
   }, [manualLogs]);
-
-  const getMeterLabel = (meterId: string) => {
-    return meterId === "meter1" ? "Meter 1 (Analog)" : "Meter 2 (Digital)";
-  };
 
   const handleEditPress = (log: ManualLog) => {
     setEditLogItem(log);
@@ -49,6 +56,16 @@ export default function HistoryScreen() {
   };
 
   const handleDeletePress = (id: string) => {
+    if (Platform.OS === "web") {
+      const confirmed = window.confirm(
+        "Are you sure you want to delete this meter log entry? This will update all stats and graph data."
+      );
+      if (confirmed) {
+        deleteManualLog(id);
+      }
+      return;
+    }
+
     Alert.alert(
       "Delete Entry",
       "Are you sure you want to delete this meter log entry? This will update all stats and graph data.",
@@ -60,6 +77,80 @@ export default function HistoryScreen() {
           onPress: () => deleteManualLog(id),
         },
       ],
+    );
+  };
+
+  const renderLogColumn = (meterId: "meter1" | "meter2", title: string) => {
+    const meterLogs = sortedLogs.filter((log) => log.meterId === meterId);
+    const isExpanded = expandedMeters[meterId];
+    const visibleLogs = isExpanded ? meterLogs : meterLogs.slice(0, 2);
+
+    return (
+      <View style={styles.logColumn}>
+        <View style={styles.columnHeader}>
+          <Text style={styles.columnTitle}>{title}</Text>
+          {meterLogs.length > 2 ? (
+            <Pressable
+              onPress={() =>
+                setExpandedMeters((current) => ({
+                  ...current,
+                  [meterId]: !current[meterId],
+                }))
+              }
+              style={styles.expandButton}
+            >
+              <Text style={styles.expandButtonText}>
+                {isExpanded ? "Show Less" : `Show All (${meterLogs.length})`}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        <View style={styles.columnTimeline}>
+          {visibleLogs.map((entry, index) => (
+            <View key={entry.id} style={styles.timelineItem}>
+              <View style={styles.timelineDot} />
+              {index !== visibleLogs.length - 1 ? (
+                <View style={styles.timelineLine} />
+              ) : null}
+              <View style={styles.timelineContent}>
+                <View style={styles.timelineHeaderRow}>
+                  <Text style={styles.timelineTitle}>
+                    {entry.reading.toFixed(1)} kWh
+                  </Text>
+                  <View style={styles.actionButtonsRow}>
+                    <Pressable
+                      onPress={() => handleEditPress(entry)}
+                      style={styles.iconBtn}
+                    >
+                      <Edit3 color={Colors.dark.textSecondary} size={14} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => handleDeletePress(entry.id)}
+                      style={styles.iconBtn}
+                    >
+                      <Trash2 color={Colors.dark.critical} size={14} />
+                    </Pressable>
+                  </View>
+                </View>
+                <Text style={styles.timelineTime}>
+                  {new Date(entry.timestamp).toLocaleDateString()}{" "}
+                  {new Date(entry.timestamp).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </Text>
+                {entry.notes ? (
+                  <Text style={styles.timelineNotes}>Note: {entry.notes}</Text>
+                ) : null}
+              </View>
+            </View>
+          ))}
+          {meterLogs.length === 0 ? (
+            <Text style={styles.emptyLogsText}>No logs</Text>
+          ) : null}
+        </View>
+      </View>
     );
   };
 
@@ -81,7 +172,10 @@ export default function HistoryScreen() {
         </Animated.View>
 
         {/* Period Selector */}
-        <Animated.View entering={FadeInDown.delay(200)} style={styles.segmentRow}>
+        <Animated.View
+          entering={FadeInDown.delay(200)}
+          style={styles.segmentRow}
+        >
           {(["day", "week", "month", "year"] as const).map((value) => (
             <Pressable
               key={value}
@@ -108,7 +202,10 @@ export default function HistoryScreen() {
         </Animated.View>
 
         {/* Metrics Row */}
-        <Animated.View entering={FadeInDown.delay(400)} style={styles.metricRow}>
+        <Animated.View
+          entering={FadeInDown.delay(400)}
+          style={styles.metricRow}
+        >
           <GlassPanel style={styles.metricCard}>
             <Text style={styles.metricLabel}>BEST DAY</Text>
             <Text style={styles.metricValue}>{summary.bestDay}</Text>
@@ -119,73 +216,16 @@ export default function HistoryScreen() {
           </GlassPanel>
         </Animated.View>
 
-        {/* Exports */}
+        {/* Central Logs Registry - 2 Column Layout */}
         <Animated.View entering={FadeInDown.delay(500)}>
-          <GlassPanel style={styles.reportCard}>
-            <View style={styles.reportHeader}>
-              <Download color={Colors.dark.textSecondary} size={16} />
-              <Text style={styles.sectionTitle}>Export Reports</Text>
-            </View>
-            <View style={styles.reportButtons}>
-              <GlowButton label="CSV" variant="secondary" style={styles.reportBtn} onPress={() => exportCsv(history, period)} />
-              <GlowButton label="PDF" variant="secondary" style={styles.reportBtn} onPress={() => exportPdf(history, period)} />
-              <GlowButton label="Excel" variant="secondary" style={styles.reportBtn} onPress={() => exportExcel(history, period)} />
-            </View>
-          </GlassPanel>
-        </Animated.View>
-
-        {/* Central Logs Registry */}
-        <Animated.View entering={FadeInDown.delay(600)}>
           <GlassPanel style={styles.logsCard}>
             <View style={styles.logsHeader}>
-              <CalendarRange color={Colors.dark.text} size={16} />
+              <CalendarRange color={theme.text} size={16} />
               <Text style={styles.sectionTitle}>Manual Logs Registry</Text>
             </View>
-            <View style={styles.timeline}>
-              {sortedLogs.map((entry, index) => (
-                <View key={entry.id} style={styles.timelineItem}>
-                  {/* Timeline Dot */}
-                  <View style={styles.timelineDot} />
-                  {/* Timeline Line */}
-                  {index !== sortedLogs.length - 1 && <View style={styles.timelineLine} />}
-                  
-                  <View style={styles.timelineContent}>
-                    <View style={styles.timelineHeaderRow}>
-                      <Text style={styles.timelineTitle}>
-                        {entry.reading.toFixed(1)} kWh
-                      </Text>
-                      <View style={styles.actionButtonsRow}>
-                        <Pressable onPress={() => handleEditPress(entry)} style={styles.iconBtn}>
-                          <Edit3 color={Colors.dark.textSecondary} size={14} />
-                        </Pressable>
-                        <Pressable onPress={() => handleDeletePress(entry.id)} style={styles.iconBtn}>
-                          <Trash2 color={Colors.dark.critical} size={14} />
-                        </Pressable>
-                      </View>
-                    </View>
-                    <Text style={styles.timelineTime}>
-                      <Text style={styles.boldText}>
-                        {getMeterLabel(entry.meterId)}
-                      </Text>{" "}
-                      • {new Date(entry.timestamp).toLocaleDateString()}{" "}
-                      {new Date(entry.timestamp).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </Text>
-                    {entry.notes ? (
-                      <Text style={styles.timelineNotes}>
-                        Note: {entry.notes}
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-              ))}
-              {sortedLogs.length === 0 && (
-                <Text style={styles.emptyLogsText}>
-                  No readings have been logged yet.
-                </Text>
-              )}
+            <View style={styles.logsColumns}>
+              {renderLogColumn("meter1", "Meter 1 (Analog)")}
+              {renderLogColumn("meter2", "Meter 2 (Digital)")}
             </View>
           </GlassPanel>
         </Animated.View>
@@ -199,7 +239,7 @@ export default function HistoryScreen() {
           setModalOpen(false);
           setEditLogItem(null);
         }}
-        onSave={async (mId, val, ts, note) => {
+        onSave={async (_mId, val, ts, note) => {
           if (editLogItem) {
             await editManualLog(editLogItem.id, val, ts, note);
           }
@@ -211,10 +251,10 @@ export default function HistoryScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (theme: typeof Colors.light) => StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: Colors.dark.background,
+    backgroundColor: theme.background,
   },
   container: {
     paddingHorizontal: 16,
@@ -225,14 +265,14 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   title: {
-    color: Colors.dark.text,
+    color: theme.text,
     fontFamily: "Outfit",
     fontSize: 28,
     fontWeight: "700",
     letterSpacing: -0.5,
   },
   subtitle: {
-    color: Colors.dark.textSecondary,
+    color: theme.textSecondary,
     fontFamily: "Outfit",
     fontSize: 13,
     lineHeight: 18,
@@ -245,23 +285,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "rgba(100, 100, 100, 0.05)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
+    borderColor: "rgba(100, 100, 100, 0.1)",
   },
   segmentActive: {
-    backgroundColor: "rgba(255, 255, 255, 0.1)",
-    borderColor: "rgba(255, 255, 255, 0.2)",
+    backgroundColor: theme.borderStrong,
+    borderColor: theme.border,
   },
   segmentText: {
-    color: Colors.dark.textSecondary,
+    color: theme.textSecondary,
     fontFamily: "Outfit",
     fontSize: 11,
     fontWeight: "700",
     letterSpacing: 0.5,
   },
   segmentTextActive: {
-    color: Colors.dark.text,
+    color: theme.text,
   },
   chartPanel: {
     padding: 12,
@@ -276,14 +316,14 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   metricLabel: {
-    color: Colors.dark.textMuted,
+    color: theme.textMuted,
     fontFamily: "Outfit",
     fontSize: 10,
     fontWeight: "700",
     letterSpacing: 1,
   },
   metricValue: {
-    color: Colors.dark.text,
+    color: theme.text,
     fontFamily: "Share Tech Mono",
     fontSize: 20,
   },
@@ -297,7 +337,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   sectionTitle: {
-    color: Colors.dark.text,
+    color: theme.text,
     fontFamily: "Outfit",
     fontSize: 14,
     fontWeight: "700",
@@ -320,34 +360,73 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
+  logsColumns: {
+    flexDirection: "row",
+    gap: 16,
+  },
+  logColumn: {
+    flex: 1,
+    gap: 8,
+  },
+  columnHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  columnTitle: {
+    color: theme.textSecondary,
+    fontFamily: "Outfit",
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  expandButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(100, 100, 100, 0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(100, 100, 100, 0.08)",
+  },
+  expandButtonText: {
+    color: theme.textSecondary,
+    fontFamily: "Outfit",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  columnTimeline: {
+    paddingTop: 8,
+  },
   timeline: {
     paddingTop: 8,
   },
   timelineItem: {
     paddingVertical: 12,
-    position: 'relative',
+    position: "relative",
     paddingLeft: 24,
   },
   timelineDot: {
-    position: 'absolute',
+    position: "absolute",
     left: 4,
     top: 18,
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: Colors.dark.load,
-    shadowColor: Colors.dark.loadGlow,
+    backgroundColor: theme.load,
+    shadowColor: theme.loadGlow,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 1,
     shadowRadius: 8,
   },
   timelineLine: {
-    position: 'absolute',
+    position: "absolute",
     left: 7.5,
     top: 28,
     bottom: -10,
     width: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: "rgba(150, 150, 150, 0.2)",
   },
   timelineContent: {
     gap: 4,
@@ -358,7 +437,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   timelineTitle: {
-    color: Colors.dark.text,
+    color: theme.text,
     fontFamily: "Share Tech Mono",
     fontSize: 15,
     fontWeight: "700",
@@ -371,23 +450,23 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   timelineTime: {
-    color: Colors.dark.textSecondary,
+    color: theme.textSecondary,
     fontFamily: "Outfit",
     fontSize: 11,
   },
   boldText: {
-    color: Colors.dark.text,
+    color: theme.text,
     fontWeight: "600",
   },
   timelineNotes: {
-    color: Colors.dark.solar,
+    color: theme.solar,
     fontFamily: "Outfit",
     fontSize: 11,
     fontStyle: "italic",
     marginTop: 4,
   },
   emptyLogsText: {
-    color: Colors.dark.textSecondary,
+    color: theme.textSecondary,
     fontFamily: "Outfit",
     fontSize: 12,
     textAlign: "center",

@@ -1,5 +1,5 @@
 {
-  "name": "solar",
+  "name": "voltix",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {
@@ -8,6 +8,7 @@
     "@expo/ui": "~57.0.7",
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@shopify/react-native-skia": "2.6.2",
+    "eas-cli": "^21.0.2",
     "expo": "~57.0.7",
     "expo-blur": "~57.0.2",
     "expo-constants": "~57.0.6",

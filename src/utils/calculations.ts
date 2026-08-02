@@ -36,14 +36,14 @@ export function getStartOfBillingCycle(nowTs: number) {
   let year = d.getFullYear();
   let month = d.getMonth();
   
-  if (d.getDate() < 28 || (d.getDate() === 28 && d.getHours() < 17)) {
+  if (d.getDate() < 28 || (d.getDate() === 28 && d.getHours() < 12)) {
       month -= 1;
       if (month < 0) {
           month = 11;
           year -= 1;
       }
   }
-  return new Date(year, month, 28, 17, 0, 0, 0).getTime();
+  return new Date(year, month, 28, 12, 0, 0, 0).getTime();
 }
 
 export function calibrateMeterReading(

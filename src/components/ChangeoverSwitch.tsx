@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 
 import { Colors } from '@/constants/Colors';
 import type { MeterId } from '@/context/EnergyContext';
@@ -10,6 +11,10 @@ type ChangeoverSwitchProps = {
 };
 
 export function ChangeoverSwitch({ activeMeter, onToggle }: ChangeoverSwitchProps) {
+  const scheme = useColorScheme();
+  const isLight = scheme === 'light';
+  const theme = isLight ? Colors.light : Colors.dark;
+
   const animatedValue = useRef(new Animated.Value(activeMeter === 'meter2' ? 0 : 1)).current;
 
   useEffect(() => {
@@ -27,19 +32,53 @@ export function ChangeoverSwitch({ activeMeter, onToggle }: ChangeoverSwitchProp
   });
 
   return (
-    <View style={styles.outerPanel}>
-      <Text style={styles.panelTitle}>Manual Changeover Switch</Text>
+    <View
+      style={[
+        styles.outerPanel,
+        {
+          backgroundColor: isLight ? 'rgba(0, 0, 0, 0.025)' : '#161922',
+          borderColor: theme.border,
+        },
+      ]}
+    >
+      <Text style={[styles.panelTitle, { color: theme.textSecondary }]}>
+        Manual Changeover Switch
+      </Text>
       
       <View style={styles.switchBody}>
         {/* Labels left side */}
         <View style={styles.labelsColumn}>
-          <View style={[styles.labelBlock, activeMeter === 'meter2' && styles.activeTextContainer]}>
-            <Text style={[styles.labelTitle, activeMeter === 'meter2' && styles.activeText]}>UP POSITION</Text>
-            <Text style={styles.labelText}>Meter 2 (Digital)</Text>
+          <View
+            style={[
+              styles.labelBlock,
+              activeMeter === 'meter2' && { borderLeftColor: theme.solar },
+            ]}
+          >
+            <Text
+              style={[
+                styles.labelTitle,
+                { color: activeMeter === 'meter2' ? theme.solar : theme.textMuted },
+              ]}
+            >
+              UP POSITION
+            </Text>
+            <Text style={[styles.labelText, { color: theme.text }]}>Meter 2 (Digital)</Text>
           </View>
-          <View style={[styles.labelBlock, activeMeter === 'meter1' && styles.activeTextContainer]}>
-            <Text style={[styles.labelTitle, activeMeter === 'meter1' && styles.activeText]}>DOWN POSITION</Text>
-            <Text style={styles.labelText}>Meter 1 (Analog)</Text>
+          <View
+            style={[
+              styles.labelBlock,
+              activeMeter === 'meter1' && { borderLeftColor: theme.meter },
+            ]}
+          >
+            <Text
+              style={[
+                styles.labelTitle,
+                { color: activeMeter === 'meter1' ? theme.meter : theme.textMuted },
+              ]}
+            >
+              DOWN POSITION
+            </Text>
+            <Text style={[styles.labelText, { color: theme.text }]}>Meter 1 (Analog)</Text>
           </View>
         </View>
 
@@ -69,7 +108,9 @@ export function ChangeoverSwitch({ activeMeter, onToggle }: ChangeoverSwitchProp
         </Pressable>
       </View>
       
-      <Text style={styles.actionHint}>TAP THE SWITCH BOX TO FLIP THE LEVER</Text>
+      <Text style={[styles.actionHint, { color: theme.textMuted }]}>
+        TAP THE SWITCH BOX TO FLIP THE LEVER
+      </Text>
     </View>
   );
 }
@@ -77,15 +118,12 @@ export function ChangeoverSwitch({ activeMeter, onToggle }: ChangeoverSwitchProp
 const styles = StyleSheet.create({
   outerPanel: {
     borderRadius: 14,
-    backgroundColor: '#161922',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.06)',
     padding: 12,
     alignItems: 'center',
     gap: 12,
   },
   panelTitle: {
-    color: Colors.dark.textSecondary,
     fontFamily: 'Outfit',
     fontSize: 11,
     fontWeight: '700',
@@ -96,7 +134,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     width: '100%',
-    paddingHorizontal: 24,
+    paddingHorizontal: 16,
   },
   labelsColumn: {
     flex: 1.2,
@@ -107,21 +145,13 @@ const styles = StyleSheet.create({
     borderLeftWidth: 2,
     borderLeftColor: 'transparent',
   },
-  activeTextContainer: {
-    borderLeftColor: Colors.dark.solar,
-  },
   labelTitle: {
-    color: Colors.dark.textSecondary,
     fontFamily: 'Outfit',
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
-  activeText: {
-    color: Colors.dark.solar,
-  },
   labelText: {
-    color: Colors.dark.text,
     fontFamily: 'Outfit',
     fontSize: 14,
     fontWeight: '600',
@@ -155,7 +185,7 @@ const styles = StyleSheet.create({
     borderColor: '#363C4A',
   },
   terminalActive: {
-    backgroundColor: '#E6A23C', // Copper spark active glow
+    backgroundColor: '#E6A23C',
     borderColor: '#FFD066',
   },
   leverTrack: {
@@ -171,7 +201,7 @@ const styles = StyleSheet.create({
     width: 30,
     height: 30,
     position: 'absolute',
-    left: -6, // Centering horizontal arm/knob (width 30 over width 18 track)
+    left: -6,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -185,13 +215,12 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: '#D93838', // Physical red plastic lever handle
+    backgroundColor: '#D93838',
     borderWidth: 1.5,
     borderColor: '#FFA3A3',
     position: 'absolute',
   },
   actionHint: {
-    color: 'rgba(255, 255, 255, 0.25)',
     fontFamily: 'Outfit',
     fontSize: 9,
     fontWeight: '600',

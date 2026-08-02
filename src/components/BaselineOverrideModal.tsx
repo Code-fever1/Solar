@@ -9,31 +9,40 @@ import {
 } from "react-native";
 
 import { Colors } from "@/constants/Colors";
-import type { MeterId, MeterState } from "@/context/energy-types";
+import type { MeterId } from "@/context/energy-types";
 import { GlassCard } from "./GlassCard";
+import { useColorScheme } from "@/hooks/use-color-scheme";
+import { useEnergy } from "@/context/EnergyContext";
+import React from "react";
 
 type BaselineOverrideModalProps = {
   visible: boolean;
-  meter: MeterState;
-  currentBaseline: number;
   onClose: () => void;
   onSave: (meterId: MeterId, manualReading: number) => void;
 };
 
 export function BaselineOverrideModal({
   visible,
-  meter,
-  currentBaseline,
   onClose,
   onSave,
 }: BaselineOverrideModalProps) {
-  const [value, setValue] = useState(String(currentBaseline.toFixed(1)));
+  const scheme = useColorScheme();
+  const theme = scheme === "light" ? Colors.light : Colors.dark;
+  const styles = React.useMemo(() => getStyles(theme), [theme]);
 
+  const { meters } = useEnergy();
+
+  const [meterId, setMeterId] = useState<MeterId>("meter1");
+  const [value, setValue] = useState("");
+
+  // When modal opens or meter changes, pre-fill with the computed baseline
   useEffect(() => {
     if (visible) {
-      setValue(String(currentBaseline.toFixed(1)));
+      const state = meters[meterId];
+      const computedBaseline = state.reading - (state.targetUnits - state.remainingUnits);
+      setValue(String(computedBaseline.toFixed(1)));
     }
-  }, [currentBaseline, visible]);
+  }, [visible, meterId]);
 
   return (
     <Modal
@@ -46,16 +55,58 @@ export function BaselineOverrideModal({
         <GlassCard style={styles.sheet}>
           <Text style={styles.title}>Override Bill Start Reading</Text>
           <Text style={styles.subtitle}>
-            Enter the exact baseline reading from your physical WAPDA bill for {meter.label}. This will reset automatically next month on the 28th.
+            Select a meter and enter the exact baseline reading from your physical WAPDA bill. This resets automatically next month on the 28th.
           </Text>
+
+          {/* Meter Selection */}
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Select Meter</Text>
+            <View style={styles.selectorRow}>
+              <Pressable
+                onPress={() => setMeterId("meter1")}
+                style={[
+                  styles.selectorChip,
+                  meterId === "meter1" && styles.selectorChipActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.selectorChipText,
+                    meterId === "meter1" && styles.selectorChipTextActive,
+                  ]}
+                >
+                  Meter 1 (Analog)
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setMeterId("meter2")}
+                style={[
+                  styles.selectorChip,
+                  meterId === "meter2" && styles.selectorChipActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.selectorChipText,
+                    meterId === "meter2" && styles.selectorChipTextActive,
+                  ]}
+                >
+                  Meter 2 (Digital)
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+
+          {/* Reading Input */}
           <TextInput
             value={value}
             onChangeText={setValue}
             keyboardType="decimal-pad"
             placeholder="Manual bill reading"
-            placeholderTextColor={Colors.dark.textSecondary}
+            placeholderTextColor={theme.textSecondary}
             style={styles.input}
           />
+
           <View style={styles.actions}>
             <Pressable
               onPress={onClose}
@@ -67,7 +118,7 @@ export function BaselineOverrideModal({
               onPress={() => {
                 const num = parseFloat(value);
                 if (!isNaN(num) && num > 0) {
-                  onSave(meter.id, num);
+                  onSave(meterId, num);
                 }
               }}
               style={[styles.button, styles.primaryButton]}
@@ -81,7 +132,7 @@ export function BaselineOverrideModal({
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (theme: typeof Colors.light) => StyleSheet.create({
   backdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.6)",
@@ -96,21 +147,58 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit",
     fontSize: 20,
     fontWeight: "700",
-    color: Colors.dark.text,
+    color: theme.text,
   },
   subtitle: {
     fontFamily: "Outfit",
     fontSize: 14,
-    color: Colors.dark.textSecondary,
+    color: theme.textSecondary,
     lineHeight: 20,
   },
+  formGroup: {
+    gap: 8,
+  },
+  label: {
+    fontFamily: "Inter-Medium",
+    fontSize: 13,
+    color: theme.textSecondary,
+    letterSpacing: 0.5,
+  },
+  selectorRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  selectorChip: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: theme.border,
+    backgroundColor: "transparent",
+    alignItems: "center",
+  },
+  selectorChipActive: {
+    borderColor: theme.solar,
+    backgroundColor: "rgba(255, 214, 10, 0.12)",
+  },
+  selectorChipText: {
+    fontFamily: "Outfit",
+    fontSize: 14,
+    fontWeight: "600",
+    color: theme.textSecondary,
+  },
+  selectorChipTextActive: {
+    color: theme.solar,
+    fontWeight: "700",
+  },
   input: {
-    backgroundColor: Colors.dark.background,
+    backgroundColor: theme.background,
     borderWidth: 1,
-    borderColor: Colors.dark.border,
+    borderColor: theme.border,
     borderRadius: 12,
     padding: 16,
-    color: Colors.dark.text,
+    color: theme.text,
     fontFamily: "Share Tech Mono",
     fontSize: 24,
   },
@@ -128,13 +216,13 @@ const styles = StyleSheet.create({
   secondaryButton: {
     backgroundColor: "transparent",
     borderWidth: 1,
-    borderColor: Colors.dark.border,
+    borderColor: theme.border,
   },
   primaryButton: {
-    backgroundColor: Colors.dark.solar,
+    backgroundColor: theme.solar,
   },
   secondaryButtonText: {
-    color: Colors.dark.text,
+    color: theme.text,
     fontFamily: "Outfit",
     fontWeight: "600",
   },

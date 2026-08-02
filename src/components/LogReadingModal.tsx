@@ -19,10 +19,18 @@ type LogReadingModalProps = {
   } | null;
 };
 
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useEnergy } from '@/context/EnergyContext';
+
 export function LogReadingModal({ visible, onClose, onSave, initialMeterId = 'meter1', editLog = null }: LogReadingModalProps) {
+  const scheme = useColorScheme();
+  const theme = scheme === 'light' ? Colors.light : Colors.dark;
+  const { meters } = useEnergy();
+
   const [meterId, setMeterId] = useState<MeterId>(initialMeterId);
   const [reading, setReading] = useState('');
   const [notes, setNotes] = useState('');
+  const [showNotes, setShowNotes] = useState(false);
   const [isCustomTime, setIsCustomTime] = useState(false);
   
   // Custom Date/Time states (local time)
@@ -36,6 +44,7 @@ export function LogReadingModal({ visible, onClose, onSave, initialMeterId = 'me
         setMeterId(editLog.meterId);
         setReading(String(editLog.reading));
         setNotes(editLog.notes ?? '');
+        setShowNotes(!!editLog.notes);
         setIsCustomTime(true);
         const logDate = new Date(editLog.timestamp);
         setDateStr(formatLocalDate(logDate));
@@ -44,6 +53,7 @@ export function LogReadingModal({ visible, onClose, onSave, initialMeterId = 'me
         setMeterId(initialMeterId);
         setReading('');
         setNotes('');
+        setShowNotes(false);
         setIsCustomTime(false);
         setTimeOffsetMs(0);
         const now = new Date();
@@ -161,13 +171,29 @@ export function LogReadingModal({ visible, onClose, onSave, initialMeterId = 'me
             {/* Reading Input */}
             <View style={styles.formGroup}>
               <Text style={styles.label}>Current Reading (kWh / Units)</Text>
+              
+              {(meters[meterId]?.reading !== undefined || meters[meterId]?.lastLoggedReading !== undefined) && (
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8, paddingHorizontal: 4 }}>
+                  {meters[meterId]?.lastLoggedReading !== undefined && (
+                    <Text style={{ fontFamily: 'Inter-Medium', fontSize: 11, color: theme.textSecondary }}>
+                      Last: {meters[meterId]?.lastLoggedReading.toFixed(1)}
+                    </Text>
+                  )}
+                  {meters[meterId]?.reading !== undefined && (
+                    <Text style={{ fontFamily: 'Inter-Medium', fontSize: 11, color: theme.textSecondary }}>
+                      Predicted: {meters[meterId]?.reading.toFixed(1)}
+                    </Text>
+                  )}
+                </View>
+              )}
+
               <TextInput
                 value={reading}
                 onChangeText={setReading}
                 keyboardType="decimal-pad"
                 placeholder="e.g. 5231.4"
-                placeholderTextColor={Colors.dark.textSecondary}
-                style={styles.input}
+                placeholderTextColor={theme.textSecondary}
+                style={[styles.input, { color: theme.text, backgroundColor: theme.background, borderColor: theme.border }]}
               />
             </View>
 
@@ -213,8 +239,8 @@ export function LogReadingModal({ visible, onClose, onSave, initialMeterId = 'me
                       value={dateStr}
                       onChangeText={setDateStr}
                       placeholder="YYYY-MM-DD"
-                      placeholderTextColor={Colors.dark.textSecondary}
-                      style={styles.smallInput}
+                      placeholderTextColor={theme.textSecondary}
+                      style={[styles.smallInput, { color: theme.text, backgroundColor: theme.background, borderColor: theme.border }]}
                     />
                   </View>
                   <View style={{ flex: 1 }}>
@@ -223,8 +249,8 @@ export function LogReadingModal({ visible, onClose, onSave, initialMeterId = 'me
                       value={timeStr}
                       onChangeText={setTimeStr}
                       placeholder="HH:MM"
-                      placeholderTextColor={Colors.dark.textSecondary}
-                      style={styles.smallInput}
+                      placeholderTextColor={theme.textSecondary}
+                      style={[styles.smallInput, { color: theme.text, backgroundColor: theme.background, borderColor: theme.border }]}
                     />
                   </View>
                 </View>
@@ -233,14 +259,28 @@ export function LogReadingModal({ visible, onClose, onSave, initialMeterId = 'me
 
             {/* Notes Input */}
             <View style={styles.formGroup}>
-              <Text style={styles.label}>Notes (Optional)</Text>
-              <TextInput
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="e.g. Morning reset, load peak"
-                placeholderTextColor={Colors.dark.textSecondary}
-                style={[styles.input, { height: 48 }]}
-              />
+              {!showNotes ? (
+                <Pressable onPress={() => setShowNotes(true)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8 }}>
+                  <Text style={{ color: theme.solar, fontSize: 16, fontWeight: '700' }}>+</Text>
+                  <Text style={{ color: theme.textSecondary, fontFamily: 'Outfit', fontSize: 14 }}>Add Note (Optional)</Text>
+                </Pressable>
+              ) : (
+                <>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <Text style={styles.label}>Notes (Optional)</Text>
+                    <Pressable onPress={() => { setShowNotes(false); setNotes(''); }}>
+                      <Text style={{ color: theme.textMuted, fontSize: 11, fontFamily: 'Inter-Medium' }}>Remove</Text>
+                    </Pressable>
+                  </View>
+                  <TextInput
+                    value={notes}
+                    onChangeText={setNotes}
+                    placeholder="e.g. Morning reset, load peak"
+                    placeholderTextColor={theme.textSecondary}
+                    style={[styles.input, { height: 48, color: theme.text, backgroundColor: theme.background, borderColor: theme.border }]}
+                  />
+                </>
+              )}
             </View>
 
             {/* Save / Cancel buttons */}

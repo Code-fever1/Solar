@@ -1,31 +1,32 @@
 export const Colors = {
   light: {
+    // Aliased to dark so the app is always dark mode as per design
     text: "#F4F5F8",
     textSecondary: "#8A94A6",
     textMuted: "#5C6578",
-    background: "#050505", // Deep Space Black
-    backgroundElement: "rgba(255, 255, 255, 0.03)", // Translucent Glass
-    backgroundElevated: "rgba(255, 255, 255, 0.06)", // Elevated Glass
+    background: "#0A0D14", 
+    backgroundElement: "rgba(255, 255, 255, 0.03)",
+    backgroundElevated: "rgba(255, 255, 255, 0.06)",
     backgroundSelected: "rgba(255, 255, 255, 0.1)",
     border: "rgba(255, 255, 255, 0.05)",
     borderStrong: "rgba(255, 255, 255, 0.12)",
     borderGlow: "rgba(255, 255, 255, 0.2)",
-    shadow: "rgba(0, 0, 0, 0.6)",
-    solar: "#FFD60A", // Tesla Solar Yellow
-    solarSoft: "rgba(255, 214, 10, 0.15)",
-    solarGlow: "rgba(255, 214, 10, 0.3)",
-    load: "#00E5FF", // Electric Cyan
-    loadSoft: "rgba(0, 229, 255, 0.15)",
-    loadGlow: "rgba(0, 229, 255, 0.3)",
-    grid: "#FF3B30", // Danger Red
+    shadow: "rgba(0, 0, 0, 0.8)",
+    solar: "#F59E0B", 
+    solarSoft: "rgba(245, 158, 11, 0.15)",
+    solarGlow: "rgba(245, 158, 11, 0.3)",
+    load: "#0EA5E9",
+    loadSoft: "rgba(14, 165, 233, 0.15)",
+    loadGlow: "rgba(14, 165, 233, 0.3)",
+    grid: "#FF3B30",
     gridSoft: "rgba(255, 59, 48, 0.15)",
     gridGlow: "rgba(255, 59, 48, 0.3)",
-    export: "#34C759", // Apple Green
-    exportSoft: "rgba(52, 199, 89, 0.15)",
-    exportGlow: "rgba(52, 199, 89, 0.3)",
-    meter: "#BF5AF2", // Apple Purple
+    export: "#10B981", // WAPDA active emerald
+    exportSoft: "rgba(16, 185, 129, 0.15)",
+    exportGlow: "rgba(16, 185, 129, 0.3)",
+    meter: "#BF5AF2", 
     meterSoft: "rgba(191, 90, 242, 0.15)",
-    success: "#34C759",
+    success: "#10B981",
     warning: "#FF9F0A",
     critical: "#FF3B30",
     info: "#0A84FF",
@@ -34,29 +35,29 @@ export const Colors = {
     text: "#F4F5F8",
     textSecondary: "#8A94A6",
     textMuted: "#5C6578",
-    background: "#050505", // Deep Space Black
+    background: "#0A0D14", // Deep Navy/Black from screenshot
     backgroundElement: "rgba(255, 255, 255, 0.03)", // Translucent Glass
     backgroundElevated: "rgba(255, 255, 255, 0.06)", // Elevated Glass
     backgroundSelected: "rgba(255, 255, 255, 0.1)",
     border: "rgba(255, 255, 255, 0.05)",
     borderStrong: "rgba(255, 255, 255, 0.12)",
     borderGlow: "rgba(255, 255, 255, 0.2)",
-    shadow: "rgba(0, 0, 0, 0.6)",
-    solar: "#FFD60A", // Tesla Solar Yellow
-    solarSoft: "rgba(255, 214, 10, 0.15)",
-    solarGlow: "rgba(255, 214, 10, 0.3)",
-    load: "#00E5FF", // Electric Cyan
-    loadSoft: "rgba(0, 229, 255, 0.15)",
-    loadGlow: "rgba(0, 229, 255, 0.3)",
-    grid: "#FF3B30", // Danger Red
+    shadow: "rgba(0, 0, 0, 0.8)",
+    solar: "#F59E0B", 
+    solarSoft: "rgba(245, 158, 11, 0.15)",
+    solarGlow: "rgba(245, 158, 11, 0.3)",
+    load: "#0EA5E9", 
+    loadSoft: "rgba(14, 165, 233, 0.15)",
+    loadGlow: "rgba(14, 165, 233, 0.3)",
+    grid: "#FF3B30", 
     gridSoft: "rgba(255, 59, 48, 0.15)",
     gridGlow: "rgba(255, 59, 48, 0.3)",
-    export: "#34C759", // Apple Green
-    exportSoft: "rgba(52, 199, 89, 0.15)",
-    exportGlow: "rgba(52, 199, 89, 0.3)",
-    meter: "#BF5AF2", // Apple Purple
+    export: "#10B981", 
+    exportSoft: "rgba(16, 185, 129, 0.15)",
+    exportGlow: "rgba(16, 185, 129, 0.3)",
+    meter: "#BF5AF2", 
     meterSoft: "rgba(191, 90, 242, 0.15)",
-    success: "#34C759",
+    success: "#10B981",
     warning: "#FF9F0A",
     critical: "#FF3B30",
     info: "#0A84FF",

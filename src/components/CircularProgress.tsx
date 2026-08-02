@@ -1,40 +1,75 @@
+import React, { useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
+import Animated, {
+  useSharedValue,
+  useAnimatedProps,
+  withTiming,
+  Easing,
+} from 'react-native-reanimated';
 
 import { Colors } from '@/constants/Colors';
+import { getHealthColor, getRemainingUnitsColorSmooth, clamp } from '@/utils/ColorInterpolation';
+
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 type CircularProgressProps = {
   usage: number; // monthly units consumed so far
+  target?: number;
   size?: number;
   strokeWidth?: number;
+  progressColor?: string;
+  outlineColor?: string;
+  outerScore?: number;
+  centerLabel?: string;
+  valueColor?: string;
 };
 
-export function CircularProgress({ usage, size = 180, strokeWidth = 12 }: CircularProgressProps) {
-  const target = 200;
+export function CircularProgress({
+  usage,
+  target = 200,
+  size = 180,
+  strokeWidth = 12,
+  progressColor,
+  outlineColor,
+  outerScore,
+  centerLabel = 'UNITS LEFT',
+  valueColor,
+}: CircularProgressProps) {
   const remaining = Math.max(0, target - usage);
-  const percentage = Math.min(1, Math.max(0, remaining / target));
+  const percentage = clamp(remaining / (target > 0 ? target : 200), 0, 1);
 
   const center = size / 2;
   const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference * (1 - percentage);
+  // Keep the thin pace ring inside the SVG canvas. A larger radius clips the
+  // stroke at the top/left/right/bottom and makes the circle look broken.
+  const outerRadius = radius + 1;
+  // The primary remaining-units bar is inset so the pace outline owns the edge.
+  const mainRadius = radius - 5;
+  const circumference = 2 * Math.PI * mainRadius;
+  const targetDashoffset = circumference * (1 - percentage);
 
-  // Muted, realistic colors depending on limits
-  let progressColor: string = Colors.dark.success;
-  let glowColor: string = "rgba(82, 196, 26, 0.3)";
-  if (remaining < 30) {
-    progressColor = Colors.dark.critical;
-    glowColor = "rgba(255, 77, 79, 0.3)";
-  } else if (remaining < 60) {
-    progressColor = Colors.dark.warning;
-    glowColor = "rgba(250, 173, 20, 0.3)";
-  }
+  const animatedDashoffset = useSharedValue(targetDashoffset);
+
+  useEffect(() => {
+    animatedDashoffset.value = withTiming(targetDashoffset, {
+      duration: 500,
+      easing: Easing.inOut(Easing.quad),
+    });
+  }, [targetDashoffset]);
+
+  const animatedProps = useAnimatedProps(() => ({
+    strokeDashoffset: animatedDashoffset.value,
+  }));
+
+  const resolvedProgressColor = progressColor ?? getRemainingUnitsColorSmooth(remaining);
+  const resolvedOutlineColor = outlineColor ?? (outerScore == null ? resolvedProgressColor : getHealthColor(outerScore));
+  const resolvedValueColor = valueColor ?? resolvedProgressColor;
 
   // Scale fonts dynamically based on component size prop
   const scale = size / 180;
   const remainingFontSize = Math.round(34 * scale);
   const labelFontSize = Math.round(9 * scale);
-  const subTextFontSize = Math.round(10 * scale);
 
   return (
     <View style={styles.container}>
@@ -43,30 +78,30 @@ export function CircularProgress({ usage, size = 180, strokeWidth = 12 }: Circul
         <Circle
           cx={center}
           cy={center}
-          r={radius + 4}
-          stroke={glowColor}
-          strokeWidth={2}
+          r={outerRadius}
+          stroke={resolvedOutlineColor}
+          strokeWidth={2.5}
           fill="transparent"
-          opacity={0.5}
+          opacity={0.7}
         />
         {/* Underlay track */}
         <Circle
           cx={center}
           cy={center}
-          r={radius}
+          r={mainRadius}
           stroke="rgba(255, 255, 255, 0.08)"
           strokeWidth={strokeWidth}
           fill="transparent"
         />
         {/* Progress indicator circle */}
-        <Circle
+        <AnimatedCircle
           cx={center}
           cy={center}
-          r={radius}
-          stroke={progressColor}
+          r={mainRadius}
+          stroke={resolvedProgressColor}
           strokeWidth={strokeWidth}
           strokeDasharray={circumference}
-          strokeDashoffset={strokeDashoffset}
+          animatedProps={animatedProps}
           strokeLinecap="round"
           fill="transparent"
           transform={`rotate(-90 ${center} ${center})`}
@@ -74,13 +109,10 @@ export function CircularProgress({ usage, size = 180, strokeWidth = 12 }: Circul
       </Svg>
       {/* Center Text overlay */}
       <View style={styles.contentOverlay}>
-        <Text style={[styles.remainingVal, { fontSize: remainingFontSize }]}>
+        <Text style={[styles.remainingVal, { color: resolvedValueColor, fontSize: remainingFontSize }]}>
           {remaining.toFixed(0)}
         </Text>
-        <Text style={[styles.label, { fontSize: labelFontSize }]}>UNITS LEFT</Text>
-        <Text style={[styles.subText, { fontSize: subTextFontSize }]}>
-          Used: {usage.toFixed(1)}
-        </Text>
+        <Text style={[styles.label, { color: '#8A94A6', fontSize: labelFontSize }]}>{centerLabel}</Text>
       </View>
     </View>
   );
@@ -112,10 +144,5 @@ const styles = StyleSheet.create({
     fontFamily: 'Outfit',
     fontWeight: '700',
     letterSpacing: 0.8,
-  },
-  subText: {
-    color: 'rgba(255, 255, 255, 0.3)',
-    fontFamily: 'Share Tech Mono',
-    marginTop: 2,
   },
 });

@@ -266,12 +266,6 @@ export function MeterCard({ meter, isActive = false }: MeterCardProps) {
               <Text style={styles.aiMetricValue}>{meter.minLikelyReading.toFixed(1)}</Text>
             </View>
             <View style={styles.aiMetric}>
-              <Text style={styles.aiMetricLabel}>Trend</Text>
-              <Text style={styles.aiMetricValue}>
-                {meter.trend === 'increasing' ? '↗ Increasing' : meter.trend === 'decreasing' ? '↘ Decreasing' : '→ Stable'}
-              </Text>
-            </View>
-            <View style={styles.aiMetric}>
               <Text style={styles.aiMetricLabel}>Max Range</Text>
               <Text style={styles.aiMetricValue}>{meter.maxLikelyReading.toFixed(1)}</Text>
             </View>
@@ -462,19 +456,19 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   hardwareDisplayDigital: {
-    backgroundColor: "#12141A",
+    backgroundColor: "#050C10",
     borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: "#262A36",
-    padding: 1,
+    borderColor: "rgba(0, 242, 254, 0.25)",
+    padding: 2,
   },
   lcdScreen: {
-    backgroundColor: "rgba(82, 196, 26, 0.05)",
-    borderRadius: 7,
-    padding: 8,
+    backgroundColor: "#08141A",
+    borderRadius: 8,
+    padding: 10,
     gap: 6,
     borderWidth: 1,
-    borderColor: "rgba(82, 196, 26, 0.12)",
+    borderColor: "rgba(0, 242, 254, 0.15)",
   },
   impLedRow: {
     flexDirection: 'row',
@@ -484,17 +478,17 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   impLed: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: '#FF3B30',
-    shadowColor: '#FF3B30',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FFD700',
+    shadowColor: '#FFD700',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 4,
+    shadowOpacity: 1,
+    shadowRadius: 6,
   },
   impLedText: {
-    color: '#52C41A',
+    color: '#00F2FE',
     fontFamily: 'Share Tech Mono',
     fontSize: 9,
     fontWeight: '700',
@@ -505,31 +499,33 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   lcdValue: {
-    color: "#52C41A",
+    color: "#00FFCC",
     fontFamily: "Share Tech Mono",
     fontSize: 26,
     fontWeight: "700",
-    letterSpacing: 1.5,
+    letterSpacing: 2,
+    textShadowColor: "rgba(0, 255, 204, 0.6)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   lcdUnit: {
-    color: "#52C41A",
+    color: "#00F2FE",
     fontFamily: "Outfit",
     fontSize: 12,
     fontWeight: "700",
-    marginLeft: 4,
+    marginLeft: 6,
   },
   lcdFooter: {
     flexDirection: "row",
     justifyContent: "space-between",
     borderTopWidth: 0.5,
-    borderTopColor: "rgba(82, 196, 26, 0.15)",
+    borderTopColor: "rgba(0, 242, 254, 0.15)",
     paddingTop: 4,
   },
   lcdIndicator: {
-    color: "#52C41A",
+    color: "rgba(0, 242, 254, 0.7)",
     fontFamily: "Share Tech Mono",
-    fontSize: 8,
-    opacity: 0.7,
+    fontSize: 8.5,
   },
   statsRow: {
     flexDirection: "row",

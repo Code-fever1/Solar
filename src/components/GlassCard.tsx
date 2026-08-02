@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import {
+    Platform,
     Pressable,
     StyleSheet,
     View,
@@ -32,13 +33,14 @@ export function GlassCard({ children, style, onPress }: GlassCardProps) {
 const styles = StyleSheet.create({
   card: {
     borderRadius: 20,
-    backgroundColor: "rgba(21, 24, 33, 0.8)",
+    backgroundColor: Platform.OS === "android" ? "rgba(21, 26, 36, 0.97)" : "rgba(21, 24, 33, 0.8)",
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.1)",
     shadowColor: "#000",
     shadowOpacity: 0.25,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
+    elevation: Platform.OS === "android" ? 4 : 0,
     overflow: "hidden",
   },
   pressed: {

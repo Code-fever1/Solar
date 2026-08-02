@@ -77,9 +77,12 @@ export function AnalyticsChart({ data }: AnalyticsChartProps) {
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
-        onPanResponderMove: (_, gesture) => {
+        onPanResponderMove: (event) => {
           if (!width || data.length === 0) return;
-          const ratio = Math.min(1, Math.max(0, gesture.moveX / width));
+          const ratio = Math.min(
+            1,
+            Math.max(0, event.nativeEvent.locationX / width),
+          );
           setSelectedIndex(Math.round(ratio * (data.length - 1)));
         },
         onPanResponderRelease: () => setSelectedIndex(null),
@@ -221,6 +224,7 @@ const styles = StyleSheet.create({
     padding: 14,
     borderWidth: 1,
     borderColor: Colors.dark.border,
+    overflow: "hidden",
   },
   emptyContainer: {
     alignItems: "center",
@@ -267,6 +271,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12,
     marginTop: 10,
+    flexWrap: "wrap",
   },
   legendItem: {
     flexDirection: "row",
@@ -284,10 +289,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   dragHint: {
-    marginLeft: "auto",
+    width: "100%",
     color: "rgba(255, 255, 255, 0.25)",
     fontFamily: "Outfit",
     fontSize: 10,
     fontStyle: "italic",
+    marginTop: 4,
   },
 });

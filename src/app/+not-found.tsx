@@ -8,7 +8,7 @@ export default function NotFoundScreen() {
     <View style={styles.container}>
       <Text style={styles.title}>Route not found</Text>
       <Link href="/(tabs)" style={styles.link}>
-        Return to GridWise
+        Return to Voltix
       </Link>
     </View>
   );

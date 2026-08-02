@@ -1,17 +1,19 @@
 import { Tabs } from "expo-router";
 import {
-    ChartSpline,
-    CircleGauge,
-    House,
-    TriangleAlert,
+  ChartSpline,
+  CircleGauge,
+  Zap,
+  FileText,
+  Settings as SettingsIcon,
 } from "lucide-react-native";
 import {
-    Pressable,
-    StyleSheet,
-    Text,
-    View,
-    useWindowDimensions,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
 } from "react-native";
+import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Colors } from "@/constants/Colors";
@@ -23,23 +25,44 @@ function TabBar({ state, descriptors, navigation }: any) {
   const { width } = useWindowDimensions();
   const containerWidth = Math.min(width - 24, 520);
 
+  const scheme = useColorScheme();
+  const isLight = scheme === "light";
+  const theme = isLight ? Colors.light : Colors.dark;
+
   return (
     <View
       style={[styles.outer, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}
     >
-      <View style={[styles.bar, { width: containerWidth }]}>
+      <View
+        style={[
+          styles.bar,
+          {
+            width: containerWidth,
+            backgroundColor: isLight
+              ? "rgba(255, 255, 255, 0.94)"
+              : "rgba(14, 18, 29, 0.92)",
+            borderColor: theme.borderStrong,
+            shadowColor: isLight ? "rgba(15, 23, 42, 0.15)" : "#000",
+          },
+        ]}
+      >
         {state.routes.map((route: any, index: number) => {
           const { options } = descriptors[route.key];
           const isFocused = state.index === index;
           const label = options.title ?? route.name;
           const Icon =
             route.name === "index"
-              ? House
+              ? Zap
               : route.name === "meters"
                 ? CircleGauge
-                : route.name === "history"
-                  ? ChartSpline
-                  : TriangleAlert;
+                : route.name === "logs"
+                  ? FileText
+                  : route.name === "settings"
+                    ? SettingsIcon
+                    : ChartSpline;
+
+          const activeColor = "#3B82F6";
+          const inactiveColor = "#8A94A6";
 
           const onPress = () => {
             const event = navigation.emit({
@@ -56,13 +79,26 @@ function TabBar({ state, descriptors, navigation }: any) {
             <Pressable
               key={route.key}
               onPress={onPress}
-              style={[styles.tab, isFocused && styles.tabActive]}
+              style={[
+                styles.tab,
+                isFocused && {
+                  backgroundColor: "rgba(59, 130, 246, 0.12)",
+                },
+              ]}
             >
               <Icon
-                color={isFocused ? Colors.dark.text : Colors.dark.textSecondary}
-                size={20}
+                color={isFocused ? activeColor : inactiveColor}
+                size={18}
               />
-              <Text style={[styles.label, isFocused && styles.labelActive]}>
+              <Text
+                style={[
+                  styles.label,
+                  { color: isFocused ? activeColor : inactiveColor },
+                  isFocused && styles.labelActive,
+                ]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+              >
                 {label}
               </Text>
             </Pressable>
@@ -81,10 +117,11 @@ export default function TabsLayout() {
         headerShown: false,
       }}
     >
-      <Tabs.Screen name="index" options={{ title: "Dashboard" }} />
+      <Tabs.Screen name="index" options={{ title: "Voltix" }} />
       <Tabs.Screen name="meters" options={{ title: "Meters" }} />
+      <Tabs.Screen name="logs" options={{ title: "Logs" }} />
       <Tabs.Screen name="history" options={{ title: "History" }} />
-      <Tabs.Screen name="alerts" options={{ title: "Alerts" }} />
+      <Tabs.Screen name="settings" options={{ title: "Settings" }} />
     </Tabs>
   );
 }
@@ -104,13 +141,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 12,
-    backgroundColor: "rgba(14, 18, 29, 0.92)",
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.12)",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 16 },
+    shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.4,
-    shadowRadius: 32,
+    shadowRadius: 24,
+    elevation: 8,
   },
   tab: {
     flex: 1,
@@ -120,16 +155,11 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     gap: 4,
   },
-  tabActive: {
-    backgroundColor: "rgba(255,255,255,0.06)",
-  },
   label: {
-    color: Colors.dark.textSecondary,
     fontFamily: "Outfit",
     fontSize: 11,
   },
   labelActive: {
-    color: Colors.dark.text,
     fontWeight: "700",
   },
 });
