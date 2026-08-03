@@ -19,11 +19,59 @@ export function UsageSummaryCard() {
   const dayPct  = Math.round((periodDay            / periodTotal) * 100);
   const nightPct = Math.round((periodNight          / periodTotal) * 100);
   const mePct   = Math.round((periodMorningEvening / periodTotal) * 100);
-  const trendPercent = home.usageTrendPercent;
-  const trendColor = trendPercent == null ? "#8A94A6" : trendPercent > 0 ? "#EF4444" : trendPercent < 0 ? "#10B981" : "#F8FAFC";
-  const trendText = trendPercent == null
-    ? "Trend learning"
-    : `${trendPercent > 0 ? "↑" : trendPercent < 0 ? "↓" : "•"}${Math.abs(trendPercent).toFixed(1)}%`;
+  // --- Trend: % change, recent 3 days vs earlier days of the week (server-side split algo) ---
+  const trendPct = home.usageTrendPercent;
+  const trendColor =
+    trendPct == null ? "#8A94A6"
+    : trendPct > 0   ? "#EF4444"
+    : trendPct < 0   ? "#10B981"
+    :                  "#F8FAFC";
+  const trendText =
+    trendPct == null
+      ? "Trend learning"
+      : trendPct > 0
+        ? `↑ ${Math.abs(trendPct).toFixed(1)}%`
+        : trendPct < 0
+          ? `↓ ${Math.abs(trendPct).toFixed(1)}%`
+          : "• On avg";
+
+  // --- Bar colours: white = avg, RGB-lerp INTO white from each side ---
+  // Today = always blue. Other bars merge toward white as they approach avg.
+  const nonZeroBars = dailyData.filter((d) => d.val > 0);
+  const avgBarVal   = nonZeroBars.length
+    ? nonZeroBars.reduce((s, d) => s + d.val, 0) / nonZeroBars.length
+    : 1;
+
+  // RGB lerp helper
+  const lerpRgb = (
+    [r1, g1, b1]: [number, number, number],
+    [r2, g2, b2]: [number, number, number],
+    t: number
+  ): string => {
+    const t_ = Math.max(0, Math.min(1, t));
+    return `rgb(${Math.round(r1 + (r2 - r1) * t_)},${Math.round(g1 + (g2 - g1) * t_)},${Math.round(b1 + (b2 - b1) * t_)})`;
+  };
+
+  const WHITE: [number, number, number] = [230, 234, 240]; // soft white on dark bg
+  const RED:   [number, number, number] = [239, 68,  68];
+  const GREEN: [number, number, number] = [16,  185, 129];
+
+  const getBarColor = (val: number, isActive: boolean): string => {
+    // Today always blue
+    if (isActive) return '#3B82F6';
+    if (val === 0) return 'rgba(255,255,255,0.04)';
+
+    const delta = val / avgBarVal - 1;   // 0 = exactly avg
+    const t = Math.min(1, Math.abs(delta) * 3); // full intensity at ~33% off avg
+
+    if (Math.abs(delta) < 0.05) return `rgba(230,234,240,0.80)`; // white
+    // Blend from WHITE toward RED or GREEN — the closer to avg, the whiter
+    return delta > 0
+      ? lerpRgb(WHITE, RED,   t)  // above avg → redder
+      : lerpRgb(WHITE, GREEN, t); // below avg → greener
+  };
+
+
 
   const periods = [
     { label: "Day",       time: "9AM–6PM",        pct: dayPct,   color: "#F59E0B", icon: "☀️" },
@@ -60,6 +108,8 @@ export function UsageSummaryCard() {
           <View style={styles.barChartContainer}>
             {dailyData.map((item, index) => {
               const heightPercent = (item.val / maxVal) * 100;
+              const barColor  = getBarColor(item.val, item.active);
+              const glowColor = item.active ? '#3B82F6' : 'transparent';
               return (
                 <View key={index} style={styles.barCol}>
                   <Text style={styles.barValText}>{item.val}</Text>
@@ -67,8 +117,13 @@ export function UsageSummaryCard() {
                     <View
                       style={[
                         styles.barFill,
-                        { height: `${heightPercent}%` },
-                        item.active ? styles.barFillActive : styles.barFillNormal,
+                        { height: `${heightPercent}%`, backgroundColor: barColor },
+                        item.active && {
+                          shadowColor:   glowColor,
+                          shadowOffset:  { width: 0, height: 0 },
+                          shadowOpacity: 0.85,
+                          shadowRadius:  5,
+                        },
                       ]}
                     />
                   </View>

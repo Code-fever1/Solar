@@ -25,6 +25,7 @@ export type HomeState = {
   periodNight?: number;
   periodMorningEvening?: number;
   usageTrendPercent?: number | null;
+  usageTrendDelta?: number | null;   // absolute units/day vs rolling prior-day avg
   normalDrawKw?: number;
   loadStatus?: 'Low' | 'Normal' | 'High';
   paceStatus?: 'CRITICAL' | 'AVERAGE' | 'ON PACE' | 'GOOD' | 'EXCELLENT';

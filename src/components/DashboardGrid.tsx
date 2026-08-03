@@ -48,22 +48,87 @@ export function DashboardGrid() {
   const speedUnit = speedUsesWatts ? "W" : "kW";
 
   const usageChange = change == null
-    ? "Yesterday's baseline is not ready"
-    : `${change > 0 ? "↑" : change < 0 ? "↓" : "•"} ${Math.abs(change).toFixed(1)}% vs yesterday`;
-  const usageChangeColor = change == null || change === 0 ? "#8A94A6" : change > 0 ? "#F59E0B" : "#10B981";
+    ? "7-day baseline building\u2026"
+    : change > 0
+      ? `\u2191 ${Math.abs(change).toFixed(1)}%`
+      : change < 0
+        ? `\u2193 ${Math.abs(change).toFixed(1)}%`
+        : "\u2022 On avg";
 
-  // Load status: based on historical avg at this hour — no "Live ·" prefix
-  const loadStatus = home.loadStatus || "Normal";
+  // Multi-stop RGB blend: 0% = white, positive = white→yellow→orange→red, negative = white→mint→green
+  const getChangeColor = (pct: number | null): string => {
+    if (pct == null || pct === 0) return '#F8FAFC';
+    const t = Math.min(1, Math.abs(pct) / 35); // full saturation at 35%
+    const lerp = (a: number, b: number, x: number) => Math.round(a + (b - a) * x);
+    if (pct > 0) {
+      // white → yellow (t 0..0.45) → orange (t 0.45..0.75) → red (t 0.75..1)
+      if (t < 0.45) {
+        const s = t / 0.45;
+        return `rgb(255,${lerp(255, 213, s)},${lerp(255, 80, s)})`;
+      } else if (t < 0.75) {
+        const s = (t - 0.45) / 0.30;
+        return `rgb(255,${lerp(213, 140, s)},${lerp(80, 20, s)})`;
+      } else {
+        const s = (t - 0.75) / 0.25;
+        return `rgb(${lerp(255, 239, s)},${lerp(140, 68, s)},${lerp(20, 68, s)})`;
+      }
+    }
+    // white → mint (t 0..0.45) → green (t 0.45..1)
+    if (t < 0.45) {
+      const s = t / 0.45;
+      return `rgb(${lerp(255, 120, s)},${lerp(255, 235, s)},${lerp(255, 180, s)})`;
+    }
+    const s = (t - 0.45) / 0.55;
+    return `rgb(${lerp(120, 16, s)},${lerp(235, 185, s)},${lerp(180, 129, s)})`;
+  };
+  const usageChangeColor = getChangeColor(change);
+
+  // Load status: continuous colour blend — white = on pace, red = more above, green = more below
+  // Uses the same lerpRgb system as the bar chart for visual consistency.
+  const loadStatus   = home.loadStatus || "Normal";
+  const normalDrawKw = home.normalDrawKw ?? 0;
+  // loadRatio: how current draw compares to the historical avg for this hour
+  // ratio > 1 = above normal, ratio < 1 = below normal, ratio = 1 = on pace
+  const loadRatio = normalDrawKw > 0 && live.gridKw > 0
+    ? live.gridKw / normalDrawKw
+    : 1;
+
   const powerLabel = live.gridKw <= 0
     ? "No draw right now"
-    : loadStatus === "High"   ? "↑ High vs avg this hour"
-    : loadStatus === "Low"    ? "↓ Low vs avg this hour"
-    :                           "On par with avg this hour";
-  const powerLabelColor = live.gridKw <= 0
-    ? "#6B7280"
-    : loadStatus === "High"   ? "#EF4444"
-    : loadStatus === "Low"    ? "#10B981"
-    :                           "#F8FAFC";
+    : loadStatus === "High" ? "↑ High"
+    : loadStatus === "Low"  ? "↓ Low"
+    :                         "On Pace";
+
+  // RGB lerp helper (shared pattern with bar chart)
+  const lerpSpeed = (a: number, b: number, x: number) => Math.round(a + (b - a) * Math.max(0, Math.min(1, x)));
+  const getPowerColor = (): string => {
+    if (live.gridKw <= 0) return "#6B7280";
+    const delta = loadRatio - 1; // positive = above pace, negative = below
+    if (Math.abs(delta) < 0.08) return "#F8FAFC"; // within 8% → white
+    if (delta > 0) {
+      // white → yellow → orange → red  (full red at 100% above normal)
+      const t = Math.min(1, delta / 1.0);
+      if (t < 0.4) {
+        const s = t / 0.4;
+        return `rgb(255,${lerpSpeed(255, 200, s)},${lerpSpeed(255, 50, s)})`;
+      } else if (t < 0.7) {
+        const s = (t - 0.4) / 0.3;
+        return `rgb(255,${lerpSpeed(200, 130, s)},${lerpSpeed(50, 15, s)})`;
+      }
+      const s = (t - 0.7) / 0.3;
+      return `rgb(${lerpSpeed(255, 239, s)},${lerpSpeed(130, 68, s)},${lerpSpeed(15, 68, s)})`;
+    }
+    // white → mint → green  (full green at 60% below normal)
+    const t = Math.min(1, Math.abs(delta) / 0.6);
+    if (t < 0.45) {
+      const s = t / 0.45;
+      return `rgb(${lerpSpeed(255, 100, s)},${lerpSpeed(255, 230, s)},${lerpSpeed(255, 175, s)})`;
+    }
+    const s = (t - 0.45) / 0.55;
+    return `rgb(${lerpSpeed(100, 16, s)},${lerpSpeed(230, 185, s)},${lerpSpeed(175, 129, s)})`;
+  };
+  const powerLabelColor = getPowerColor();
+
 
   const observedDays = home.dailyUsage?.filter((day) => day.usage > 0).length || 0;
   const averageLabel = observedDays ? `Measured across ${observedDays} day${observedDays === 1 ? "" : "s"}` : "Collecting TOMZN history";

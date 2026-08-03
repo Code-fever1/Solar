@@ -449,9 +449,20 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     : tomznAverageDaily || historicalAverageDaily;
   const safeAverageDaily = averageDaily || 0;
   const currentDrawKw = state.lastTomzn?.powerW ? round(state.lastTomzn.powerW / 1000, 2) : 0;
-  const sameHourSnapshots = recentSnapshots.filter((snapshot) => pakistanHour(snapshot.timestamp) === pakistanHour(now) && snapshot.powerW > 0);
-  const normalDrawKw = sameHourSnapshots.length >= 3
-    ? round(sameHourSnapshots.reduce((sum, snapshot) => sum + snapshot.powerW, 0) / sameHourSnapshots.length / 1000, 2)
+  const targetHourOfDay = pakistanHour(now);
+  const sameHourSnapshots = recentSnapshots.filter((snapshot) => pakistanHour(snapshot.timestamp) === targetHourOfDay && snapshot.powerW > 0);
+  // If fewer than 3 readings exist for this exact hour (new hour just started),
+  // widen the search to include the same clock-hour from the last 7 days so the
+  // Load status doesn't reset to "Normal" every time the clock ticks over.
+  const adjacentHourSnapshots = sameHourSnapshots.length < 3
+    ? recentSnapshots.filter((snapshot) => {
+        const h = pakistanHour(snapshot.timestamp);
+        // Accept the same hour ±1 to gather enough data points for a stable baseline
+        return (h === targetHourOfDay || h === (targetHourOfDay + 1) % 24 || h === (targetHourOfDay + 23) % 24) && snapshot.powerW > 0;
+      })
+    : sameHourSnapshots;
+  const normalDrawKw = adjacentHourSnapshots.length >= 3
+    ? round(adjacentHourSnapshots.reduce((sum, snapshot) => sum + snapshot.powerW, 0) / adjacentHourSnapshots.length / 1000, 2)
     : round(safeAverageDaily / 24, 2);
   const loadRatio = normalDrawKw > 0 ? currentDrawKw / normalDrawKw : 1;
   const loadStatus = loadRatio >= 1.2 ? "High" : loadRatio <= 0.8 ? "Low" : "Normal";
@@ -504,14 +515,37 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     else periodMorningEvening += allocation.delta;
   }
   const dailyUsage = Array.from(dailyMap.values()).map((item) => ({ ...item, usage: round(item.usage, 2) }));
-  // Compare complete calendar days only. This keeps the trend badge aligned with
-  // the bars users see and avoids partial-day/manual-reading-time distortions.
+  // Trend: split the 7 completed days into two halves and compare averages.
+  // This smooths out single-day spikes — one bad yesterday won't blow the number up.
+  // Need at least 4 days to form two meaningful groups.
   const completedUsageDays = dailyUsage.slice(0, -1).filter((day) => day.usage > 0);
-  const latestCompletedDay = completedUsageDays[completedUsageDays.length - 1];
-  const previousCompletedDay = completedUsageDays[completedUsageDays.length - 2];
-  const usageTrendPercent = previousCompletedDay?.usage > 0
-    ? round(((latestCompletedDay.usage - previousCompletedDay.usage) / previousCompletedDay.usage) * 100, 1)
-    : null;
+  let usageTrendPercent = null;
+  if (completedUsageDays.length >= 4) {
+    // Recent half: last 3 completed days. Earlier half: everything before that.
+    const recent  = completedUsageDays.slice(-3);
+    const earlier = completedUsageDays.slice(0, -3);
+    const recentAvg  = recent.reduce((s, d) => s + d.usage, 0) / recent.length;
+    const earlierAvg = earlier.reduce((s, d) => s + d.usage, 0) / earlier.length;
+    if (earlierAvg > 0) {
+      // Cap at ±50% — genuine weekly swings rarely exceed that
+      usageTrendPercent = Math.max(-50, Math.min(50,
+        round(((recentAvg - earlierAvg) / earlierAvg) * 100, 1)
+      ));
+    }
+  } else if (completedUsageDays.length >= 2) {
+    // Fallback with fewer days: compare last day vs avg of all prior days, still capped
+    const lastDay = completedUsageDays[completedUsageDays.length - 1];
+    const prior   = completedUsageDays.slice(0, -1);
+    const priorAvg = prior.reduce((s, d) => s + d.usage, 0) / prior.length;
+    if (priorAvg > 0) {
+      usageTrendPercent = Math.max(-50, Math.min(50,
+        round(((lastDay.usage - priorAvg) / priorAvg) * 100, 1)
+      ));
+    }
+  }
+  // Absolute delta kept for raw API consumers but not shown in UI
+  const usageTrendDelta = null;
+
   const currentHourStart = Math.floor(now / 3_600_000) * 3_600_000;
   const hourlyMap = new Map();
   for (let offset = 0; offset < 24; offset += 1) {
@@ -536,25 +570,83 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     if (bucket) bucket.usage += allocation.delta;
   }
   const hourlyUsage = Array.from(hourlyMap.values()).map((item) => ({ ...item, usage: round(item.usage, 3) }));
-  // Compare today vs the same elapsed window in yesterday to avoid the
-  // "1 unit today vs 100 units full-yesterday" distortion at the start of each day.
-  // We use the hourly breakdown: hours 0..H-1 from the hourly array map to
-  // yesterday (indices 0..H-1) and today's current hour is at index H (not complete).
-  // elapsed hours today = number of complete 1-hour slots since midnight PKT.
-  const elapsedHoursToday = Math.floor((now - todayStart) / 3_600_000); // e.g. 1 at 01:30
-  // hourlyMap covers last 24h. Slots 0..(23-elapsedHoursToday-1) are yesterday,
-  // slots (24-elapsedHoursToday)..(23) are today.
-  const hourlyArray = Array.from(hourlyMap.values());
-  // yesterday-equivalent: the first `elapsedHoursToday` slots (same clock hours, yesterday)
-  const yesterdaySameWindow = elapsedHoursToday > 0
-    ? round(hourlyArray.slice(0, elapsedHoursToday).reduce((sum, h) => sum + h.usage, 0), 2)
-    : 0;
+  // Build a time-of-day hourly profile from the last 7 past days.
+  // For each hour slot (0-23) we accumulate how many units were typically consumed,
+  // then use that profile to predict the remaining hours of today.
+  const elapsedHoursToday = Math.floor((now - todayStart) / 3_600_000);
+  const hourlyProfileSum   = new Array(24).fill(0); // sum of units per hour slot across days
+  const hourlyProfileCount = new Array(24).fill(0); // how many days contributed to each slot
+  let activeDaysCount = 0;
+
+  for (let i = 1; i <= 7; i++) {
+    const dayStart = todayStart - i * 86_400_000;
+    const dayEnd   = dayStart + 86_400_000;
+    const dayHourlyMap = new Map();
+    for (let h = 0; h < 24; h++) dayHourlyMap.set(h, 0);
+
+    // Seed from historical manual-reading segments
+    forEachReadingInterval(historicalLogs, (segment) => {
+      const segStart = Math.max(segment.start, dayStart);
+      const segEnd   = Math.min(segment.end, dayEnd);
+      if (segStart >= segEnd) return;
+      let cursor = segStart;
+      while (cursor < segEnd) {
+        const hourBucket = Math.floor((cursor - dayStart) / 3_600_000);
+        const hourEnd = dayStart + (hourBucket + 1) * 3_600_000;
+        const end = Math.min(segEnd, hourEnd);
+        const portion = segment.usage * ((end - cursor) / Math.max(1, segment.end - segment.start));
+        dayHourlyMap.set(hourBucket, (dayHourlyMap.get(hourBucket) || 0) + portion);
+        cursor = end;
+      }
+    });
+
+    // Seed from TOMZN allocations
+    for (const allocation of recentAllocations) {
+      if (allocation.timestamp < dayStart || allocation.timestamp >= dayEnd) continue;
+      const hourBucket = Math.floor((allocation.timestamp - dayStart) / 3_600_000);
+      dayHourlyMap.set(hourBucket, (dayHourlyMap.get(hourBucket) || 0) + allocation.delta);
+    }
+
+    // Only include days with meaningful data
+    const dayTotal = Array.from(dayHourlyMap.values()).reduce((s, v) => s + v, 0);
+    if (dayTotal > 0.01) {
+      activeDaysCount++;
+      for (let h = 0; h < 24; h++) {
+        hourlyProfileSum[h]   += dayHourlyMap.get(h) || 0;
+        hourlyProfileCount[h]++;
+      }
+    }
+  }
+
+  // Avg units consumed per hour of day (falls back to flat avg/24 when no history for that slot)
+  const flatHourlyFallback = safeAverageDaily / 24;
+  const avgHourlyProfile = hourlyProfileSum.map((sum, h) =>
+    hourlyProfileCount[h] > 0 ? sum / hourlyProfileCount[h] : flatHourlyFallback
+  );
+
+  // Predict remaining hours using the historical hourly profile
+  let predictedRemainingUnits = 0;
+  for (let h = elapsedHoursToday; h < 24; h++) {
+    predictedRemainingUnits += avgHourlyProfile[h];
+  }
+
+  // Projected full-day = units already consumed + predicted remaining
+  const predictedTodayTotal = round(totalToday + predictedRemainingUnits, 2);
+
+  // Historical full-day baseline: avg of past 7 complete days (from safeAverageDaily)
+  // If no rolling avg yet, sum the full profile as a fallback
+  const historicalFullDayAvg = safeAverageDaily > 0
+    ? safeAverageDaily
+    : (activeDaysCount > 0 ? round(hourlyProfileSum.reduce((s, v) => s + v, 0) / activeDaysCount, 2) : 0);
+
   // Full yesterday total (for display / other uses)
   const yesterdayUsage = dailyUsage[5]?.usage || 0;
-  // Fair apples-to-apples percent: today so far vs yesterday up to same hour
-  const usageChangePercent = yesterdaySameWindow > 0
-    ? round(((totalToday - yesterdaySameWindow) / yesterdaySameWindow) * 100, 1)
+
+  // % = how today is predicted to end up vs a normal day — capped at ±99%
+  const usageChangePercent = historicalFullDayAvg > 0
+    ? Math.max(-99, Math.min(99, round(((predictedTodayTotal - historicalFullDayAvg) / historicalFullDayAvg) * 100, 1)))
     : null;
+
 
   const readings = {};
   let maxErrorPenalty = 0;
@@ -666,6 +758,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       periodNight: round(periodNight, 2),
       periodMorningEvening: round(periodMorningEvening, 2),
       usageTrendPercent,
+      usageTrendDelta,
       normalDrawKw,
       loadStatus,
       paceStatus,
