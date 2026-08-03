@@ -158,6 +158,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   toastText: {
+    flex: 1,
     color: "#FFFFFF",
     fontFamily: "Outfit",
     fontSize: 13,
