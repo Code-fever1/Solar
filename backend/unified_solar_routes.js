@@ -430,6 +430,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   ]);
   const windowStart = Math.max(cycleStart, now - 7 * 86_400_000, firstAllocation?.timestamp || now);
   const observedDays = Math.max(0, (now - windowStart) / 86_400_000);
+  const totalObservedDays = Math.max(0, (now - (firstAllocation?.timestamp || now)) / 86_400_000);
   const observedUsage = Object.values(recentUsage).reduce((sum, value) => sum + value, 0);
   // A few minutes of data should not be annualised into a wild monthly forecast.
   // Before 12 hours of TOMZN history exist, forecasts use the bootstrap rate below.
@@ -437,6 +438,12 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   const historicalLogs = logs.filter((log) => log.source === "HISTORICAL_IMPORT" && log.timestamp >= cycleStart);
   const firstHistoricalAt = historicalLogs.length ? Math.min(...historicalLogs.map((log) => log.timestamp)) : 0;
   const lastHistoricalAt = historicalLogs.length ? Math.max(...historicalLogs.map((log) => log.timestamp)) : 0;
+  
+  const allHistoricalLogs = logs.filter((log) => log.source === "HISTORICAL_IMPORT");
+  const firstAllHistoricalAt = allHistoricalLogs.length ? Math.min(...allHistoricalLogs.map((log) => log.timestamp)) : 0;
+  const lastAllHistoricalAt = allHistoricalLogs.length ? Math.max(...allHistoricalLogs.map((log) => log.timestamp)) : 0;
+  const totalHistoricalDays = firstAllHistoricalAt && lastAllHistoricalAt > firstAllHistoricalAt ? (lastAllHistoricalAt - firstAllHistoricalAt) / 86_400_000 : 0;
+  
   const historicalUnits = Array.from(METER_IDS).reduce((sum, meterId) => {
     const series = historicalLogs.filter((log) => log.meterId === meterId).sort((a, b) => a.timestamp - b.timestamp);
     return sum + (series.length > 1 ? Math.max(0, series[series.length - 1].reading - series[0].reading) : 0);
@@ -515,35 +522,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     else periodMorningEvening += allocation.delta;
   }
   const dailyUsage = Array.from(dailyMap.values()).map((item) => ({ ...item, usage: round(item.usage, 2) }));
-  // Trend: split the 7 completed days into two halves and compare averages.
-  // This smooths out single-day spikes — one bad yesterday won't blow the number up.
-  // Need at least 4 days to form two meaningful groups.
-  const completedUsageDays = dailyUsage.slice(0, -1).filter((day) => day.usage > 0);
   let usageTrendPercent = null;
-  if (completedUsageDays.length >= 4) {
-    // Recent half: last 3 completed days. Earlier half: everything before that.
-    const recent  = completedUsageDays.slice(-3);
-    const earlier = completedUsageDays.slice(0, -3);
-    const recentAvg  = recent.reduce((s, d) => s + d.usage, 0) / recent.length;
-    const earlierAvg = earlier.reduce((s, d) => s + d.usage, 0) / earlier.length;
-    if (earlierAvg > 0) {
-      // Cap at ±50% — genuine weekly swings rarely exceed that
-      usageTrendPercent = Math.max(-50, Math.min(50,
-        round(((recentAvg - earlierAvg) / earlierAvg) * 100, 1)
-      ));
-    }
-  } else if (completedUsageDays.length >= 2) {
-    // Fallback with fewer days: compare last day vs avg of all prior days, still capped
-    const lastDay = completedUsageDays[completedUsageDays.length - 1];
-    const prior   = completedUsageDays.slice(0, -1);
-    const priorAvg = prior.reduce((s, d) => s + d.usage, 0) / prior.length;
-    if (priorAvg > 0) {
-      usageTrendPercent = Math.max(-50, Math.min(50,
-        round(((lastDay.usage - priorAvg) / priorAvg) * 100, 1)
-      ));
-    }
-  }
-  // Absolute delta kept for raw API consumers but not shown in UI
   const usageTrendDelta = null;
 
   const currentHourStart = Math.floor(now / 3_600_000) * 3_600_000;
@@ -633,6 +612,30 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   // Projected full-day = units already consumed + predicted remaining
   const predictedTodayTotal = round(totalToday + predictedRemainingUnits, 2);
 
+  // Trend: compare today's prediction + past 2 completed days (3 days total)
+  // against the remaining earlier completed days in the 7-day window.
+  const effectiveUsageDays = dailyUsage.map((day, i) => 
+    i === dailyUsage.length - 1 ? { ...day, usage: predictedTodayTotal } : day
+  ).filter((day) => day.usage > 0);
+
+  if (effectiveUsageDays.length >= 4) {
+    // Recent half: last 3 days (today + last 2). Earlier half: everything before that.
+    const recent  = effectiveUsageDays.slice(-3);
+    const earlier = effectiveUsageDays.slice(0, -3);
+    const recentAvg  = recent.reduce((s, d) => s + d.usage, 0) / recent.length;
+    const earlierAvg = earlier.reduce((s, d) => s + d.usage, 0) / earlier.length;
+    if (earlierAvg > 0) {
+      usageTrendPercent = Math.max(-50, Math.min(50, round(((recentAvg - earlierAvg) / earlierAvg) * 100, 1)));
+    }
+  } else if (effectiveUsageDays.length >= 2) {
+    const recent = effectiveUsageDays.slice(-1);
+    const earlier = effectiveUsageDays.slice(0, -1);
+    const priorAvg = earlier.reduce((s, d) => s + d.usage, 0) / earlier.length;
+    if (priorAvg > 0) {
+      usageTrendPercent = Math.max(-50, Math.min(50, round(((recent[0].usage - priorAvg) / priorAvg) * 100, 1)));
+    }
+  }
+
   // Historical full-day baseline: avg of past 7 complete days (from safeAverageDaily)
   // If no rolling avg yet, sum the full profile as a fallback
   const historicalFullDayAvg = safeAverageDaily > 0
@@ -661,7 +664,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     const calibrationEvidence = clamp(finiteNumber(config.calibrationTomznUnits, 0), 0, 100);
     
     // Penalize confidence if the last manual reading was far off the prediction
-    const baseConfidence = averageDaily > 0 ? Math.round(55 + Math.min(35, Math.max(observedDays, historicalDays) * 8)) : 20;
+    const baseConfidence = averageDaily > 0 ? Math.round(55 + Math.min(35, Math.max(totalObservedDays, totalHistoricalDays) * 8)) : 20;
     const errorPenalty = Math.min(40, Math.round((Math.abs(finiteNumber(config.lastManualCorrection, 0)) / Math.max(1, safeAverageDaily)) * 30));
     const finalConfidence = Math.max(10, Math.min(95, baseConfidence - errorPenalty));
     if (errorPenalty > maxErrorPenalty) maxErrorPenalty = errorPenalty;
@@ -744,7 +747,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       averageDaily: safeAverageDaily,
       expectedDrawNow: currentDrawKw,
       projectedMonthly: projected.projectedHome,
-      confidencePercent: averageDaily > 0 ? Math.max(10, Math.min(95, Math.round(55 + Math.min(35, Math.max(observedDays, historicalDays) * 8)) - maxErrorPenalty)) : 20,
+      confidencePercent: averageDaily > 0 ? Math.max(10, Math.min(95, Math.round(55 + Math.min(35, Math.max(totalObservedDays, totalHistoricalDays) * 8)) - maxErrorPenalty)) : 20,
       trend: usageChangePercent == null ? "stable" : usageChangePercent > 5 ? "increasing" : usageChangePercent < -5 ? "decreasing" : "stable",
       primaryPattern: currentDrawKw > 0 ? "grid-only" : "transition",
       explanation: averageDaily > 0
