@@ -1,9 +1,11 @@
-import React, { useState } from "react";
-import { StyleSheet, Text, View, TextInput, Pressable, ScrollView, Alert } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ComingSoonScreen } from "@/components/ComingSoonScreen";
 import { Colors } from "@/constants/Colors";
-import { useEnergy, MeterId } from "@/context/EnergyContext";
-import { Activity, Clock } from "lucide-react-native";
+import { MeterId, useEnergy } from "@/context/EnergyContext";
+import { useUiMode } from "@/context/UiModeContext";
+import { Clock } from "lucide-react-native";
+import { useState } from "react";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function LogsScreen() {
   const insets = useSafeAreaInsets();
@@ -13,6 +15,8 @@ export default function LogsScreen() {
   const [meterId, setMeterId] = useState<MeterId>("meter1");
   const [reading, setReading] = useState("");
   const [notes, setNotes] = useState("");
+  const { mode } = useUiMode();
+  if (mode === "new") return <ComingSoonScreen title="Logs" />;
 
   const handleSave = async () => {
     const numericReading = Number.parseFloat(reading);

@@ -8,10 +8,15 @@
  */
 
 const http = require("http");
+const https = require("https");
 
 const PRIMARY_STATE_ID = "primary";
 const METER_IDS = new Set(["meter1", "meter2"]);
 const PAKISTAN_OFFSET = "+05:00";
+const INVERTERZONE_HOST = "inverterzone.com";
+const INVERTER_POLL_MAX_AGE_MS = 25_000;
+const WEATHER_POLL_MAX_AGE_MS = 30 * 60_000;
+const BHAKKAR_COORDINATES = { latitude: 31.6269, longitude: 71.0657 };
 
 const DEFAULT_METERS = {
   meter1: { label: "Meter 1 (Analog)", type: "ANALOG", cycleBaselineReading: 59546, tomznToMeterRatio: 1, calibrationTomznUnits: 0, calibrationMeterUnits: 0, ratioObservationCount: 0 },
@@ -21,6 +26,97 @@ const DEFAULT_METERS = {
 function finiteNumber(value, fallback = null) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function requestJson(options, body) {
+  return new Promise((resolve, reject) => {
+    const request = https.request(options, (response) => {
+      let raw = "";
+      response.on("data", (chunk) => { raw += chunk; });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          return reject(new Error(`Remote request failed with ${response.statusCode}`));
+        }
+        try { resolve(JSON.parse(raw)); } catch (error) { reject(error); }
+      });
+    });
+    request.setTimeout(12_000, () => request.destroy(new Error("Remote request timed out")));
+    request.on("error", reject);
+    if (body) request.write(body);
+    request.end();
+  });
+}
+
+async function requestInverterZone() {
+  const deviceId = process.env.INVERTERZONE_DEVICE_ID;
+  if (!deviceId) return null;
+  const body = new URLSearchParams({ deviceId }).toString();
+  const response = await requestJson({
+    hostname: INVERTERZONE_HOST,
+    path: "/api/getRealtimeData",
+    method: "POST",
+    headers: {
+      Accept: "application/json, text/plain, */*",
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "Content-Length": Buffer.byteLength(body),
+      Origin: `https://${INVERTERZONE_HOST}`,
+      Referer: `https://${INVERTERZONE_HOST}/device/${encodeURIComponent(deviceId)}`,
+    },
+  }, body);
+  const data = response?.dataDTO;
+  if (!data || data.deviceId !== deviceId) throw new Error("InverterZone returned an invalid device payload");
+  const timestamp = Date.now();
+  return {
+    timestamp,
+    solarW: Math.max(0, finiteNumber(data.solarW, 0)),
+    solarV: Math.max(0, finiteNumber(data.solarV, 0)),
+    solarA: Math.max(0, finiteNumber(data.solarA, 0)),
+    gridW: Math.max(0, finiteNumber(data.gridW, 0)),
+    gridV: Math.max(0, finiteNumber(data.gridV, 0)),
+    gridHz: Math.max(0, finiteNumber(data.gridHz, 0)),
+    gridConnected: Boolean(data.grid),
+    gridDirection: finiteNumber(data.gridFeed, 0) > 0 ? "export" : "import",
+    loadW: Math.max(0, finiteNumber(data.acOutW, 0)),
+    loadVa: Math.max(0, finiteNumber(data.acOutVa, 0)),
+    loadPercent: Math.max(0, finiteNumber(data.acOutPercent, 0)),
+    inverterMode: typeof data.iv_mode === "string" ? data.iv_mode : "unknown",
+    inverterFault: typeof data.fault === "string" ? data.fault : "UNKNOWN",
+    temperatureC: finiteNumber(data.heatSinkDegC, 0),
+    ratedOutputW: Math.max(0, finiteNumber(data.acOutRatingW, 0)),
+    signal: finiteNumber(data.signal),
+    sourceTime: typeof data.realTime === "string" ? data.realTime : null,
+  };
+}
+
+async function requestWeather() {
+  const query = new URLSearchParams({
+    latitude: String(BHAKKAR_COORDINATES.latitude),
+    longitude: String(BHAKKAR_COORDINATES.longitude),
+    current: "weather_code,is_day,cloud_cover,precipitation,temperature_2m",
+    timezone: "Asia/Karachi",
+  }).toString();
+  const response = await requestJson({ hostname: "api.open-meteo.com", path: `/v1/forecast?${query}`, method: "GET" });
+  const current = response?.current;
+  if (!current) throw new Error("Weather provider returned no current conditions");
+  return {
+    timestamp: Date.now(),
+    code: finiteNumber(current.weather_code, 0),
+    isDay: Boolean(current.is_day),
+    cloudCover: Math.max(0, finiteNumber(current.cloud_cover, 0)),
+    precipitation: Math.max(0, finiteNumber(current.precipitation, 0)),
+    temperatureC: finiteNumber(current.temperature_2m, 0),
+  };
+}
+
+function integrateWatts(samples, property) {
+  let wattHours = 0;
+  for (let index = 1; index < samples.length; index += 1) {
+    const previous = samples[index - 1];
+    const current = samples[index];
+    const elapsedHours = Math.min(5 * 60_000, Math.max(0, current.timestamp - previous.timestamp)) / 3_600_000;
+    wattHours += ((finiteNumber(previous[property], 0) + finiteNumber(current[property], 0)) / 2) * elapsedHours;
+  }
+  return round(wattHours / 1000, 2);
 }
 
 function round(value, decimals = 3) {
@@ -413,13 +509,13 @@ async function applyHistoricalChangeover(allocations, fromMeter, toMeter, effect
   }
 }
 
-async function buildDashboard({ stateCollection, allocations, snapshots, manualLogs }) {
+async function buildDashboard({ stateCollection, allocations, snapshots, manualLogs, inverterSnapshots, weatherSnapshots }) {
   const now = Date.now();
   let state = await ensureState(stateCollection);
   state = await rolloverBillingCycle({ stateCollection, allocations }, state, now);
   const cycleStart = billingCycleStart(now, state.billingDay);
   const todayStart = startOfPakistanDay(now);
-  const [cycleUsage, todayUsage, recentUsage, logs, firstAllocation, recentAllocations, recentSnapshots] = await Promise.all([
+  const [cycleUsage, todayUsage, recentUsage, logs, firstAllocation, recentAllocations, recentSnapshots, inverterHistory, latestWeather] = await Promise.all([
     usageByMeter(allocations, cycleStart, now),
     usageByMeter(allocations, todayStart, now),
     usageByMeter(allocations, Math.max(cycleStart, now - 7 * 86_400_000), now),
@@ -427,7 +523,52 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     allocations.find({}).sort({ timestamp: 1 }).limit(1).next(),
     allocations.find({ timestamp: { $gte: todayStart - 7 * 86_400_000, $lte: now } }).sort({ timestamp: 1 }).toArray(),
     snapshots.find({ timestamp: { $gte: now - 30 * 86_400_000 } }).sort({ timestamp: -1 }).limit(5_000).toArray(),
+    inverterSnapshots.find({ timestamp: { $gte: todayStart - 23 * 3_600_000, $lte: now } }).sort({ timestamp: 1 }).limit(5_000).toArray(),
+    weatherSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next(),
   ]);
+  const latestInverter = inverterHistory[inverterHistory.length - 1] || null;
+  const inverterLive = Boolean(latestInverter && now - latestInverter.timestamp < 2 * 60_000);
+  const inverter = latestInverter ? {
+    solarW: latestInverter.solarW,
+    solarV: latestInverter.solarV,
+    solarA: latestInverter.solarA,
+    gridW: latestInverter.gridW,
+    gridV: latestInverter.gridV,
+    gridHz: latestInverter.gridHz,
+    gridConnected: latestInverter.gridConnected,
+    gridDirection: latestInverter.gridDirection,
+    loadW: latestInverter.loadW,
+    loadVa: latestInverter.loadVa,
+    loadPercent: latestInverter.loadPercent,
+    inverterMode: latestInverter.inverterMode,
+    inverterFault: latestInverter.inverterFault,
+    temperatureC: latestInverter.temperatureC,
+    ratedOutputW: latestInverter.ratedOutputW,
+    signal: latestInverter.signal,
+    fetchedAt: new Date(latestInverter.timestamp).toISOString(),
+    isLive: inverterLive,
+  } : { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, fetchedAt: "", isLive: false };
+  const weather = latestWeather ? {
+    code: latestWeather.code,
+    isDay: latestWeather.isDay,
+    cloudCover: latestWeather.cloudCover,
+    precipitation: latestWeather.precipitation,
+    temperatureC: latestWeather.temperatureC,
+    fetchedAt: new Date(latestWeather.timestamp).toISOString(),
+    isLive: now - latestWeather.timestamp < WEATHER_POLL_MAX_AGE_MS * 2,
+  } : { code: 0, isDay: pakistanHour(now) >= 6 && pakistanHour(now) < 19, cloudCover: 0, precipitation: 0, temperatureC: 0, fetchedAt: "", isLive: false };
+  const todayInverterSamples = inverterHistory.filter((sample) => sample.timestamp >= todayStart - 5 * 60_000);
+  const energyToday = {
+    solarKwh: integrateWatts(todayInverterSamples, "solarW"),
+    homeKwh: integrateWatts(todayInverterSamples, "loadW"),
+    gridKwh: integrateWatts(todayInverterSamples, "gridW"),
+  };
+  const flowHistory = inverterHistory.map((sample) => ({
+    timestamp: sample.timestamp,
+    solarKw: round(sample.solarW / 1000, 3),
+    gridKw: round(sample.gridW / 1000, 3),
+    loadKw: round(sample.loadW / 1000, 3),
+  }));
   const windowStart = Math.max(cycleStart, now - 7 * 86_400_000, firstAllocation?.timestamp || now);
   const observedDays = Math.max(0, (now - windowStart) / 86_400_000);
   const totalObservedDays = Math.max(0, (now - (firstAllocation?.timestamp || now)) / 86_400_000);
@@ -455,7 +596,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     ? round(tomznAverageDaily * 0.7 + historicalAverageDaily * 0.3, 2)
     : tomznAverageDaily || historicalAverageDaily;
   const safeAverageDaily = averageDaily || 0;
-  const currentDrawKw = state.lastTomzn?.powerW ? round(state.lastTomzn.powerW / 1000, 2) : 0;
+  const currentDrawKw = inverterLive ? round(inverter.loadW / 1000, 2) : (state.lastTomzn?.powerW ? round(state.lastTomzn.powerW / 1000, 2) : 0);
   const targetHourOfDay = pakistanHour(now);
   const sameHourSnapshots = recentSnapshots.filter((snapshot) => pakistanHour(snapshot.timestamp) === targetHourOfDay && snapshot.powerW > 0);
   // If fewer than 3 readings exist for this exact hour (new hour just started),
@@ -741,7 +882,19 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     activeMeter: state.activeMeter,
     changeover: { activeMeter: state.activeMeter, lastSwitchedAt: state.lastChangeoverAt },
     tomznLive: publicTomzn(state.lastTomzn),
-    live: { gridKw: currentDrawKw, currentAmp: state.lastTomzn?.currentA || 0, voltage: state.lastTomzn?.voltageV || 0, frequency: state.lastTomzn?.frequencyHz || 50, powerFactor: 0.98 },
+    inverter,
+    weather,
+    energyToday,
+    flowHistory,
+    live: {
+      gridKw: inverterLive ? round(inverter.gridW / 1000, 3) : currentDrawKw,
+      solarKw: inverterLive ? round(inverter.solarW / 1000, 3) : 0,
+      homeKw: inverterLive ? round(inverter.loadW / 1000, 3) : currentDrawKw,
+      currentAmp: inverterLive ? inverter.solarA : (state.lastTomzn?.currentA || 0),
+      voltage: inverterLive ? inverter.gridV : (state.lastTomzn?.voltageV || 0),
+      frequency: inverterLive ? inverter.gridHz : (state.lastTomzn?.frequencyHz || 50),
+      powerFactor: 0.98,
+    },
     home: {
       todayUsage: totalToday,
       averageDaily: safeAverageDaily,
@@ -781,13 +934,40 @@ function registerUnifiedSolarRoutes(app, db) {
   const snapshots = db.collection("solar_tomzn_snapshots");
   const allocations = db.collection("solar_usage_allocations");
   const manualLogs = db.collection("solar_manual_logs");
+  const inverterSnapshots = db.collection("solar_inverter_snapshots");
+  const weatherSnapshots = db.collection("solar_weather_snapshots");
   let pollInFlight = null;
+  let inverterPollInFlight = null;
+  let weatherPollInFlight = null;
 
-  const context = { stateCollection, snapshots, allocations, manualLogs };
+  const context = { stateCollection, snapshots, allocations, manualLogs, inverterSnapshots, weatherSnapshots };
   const pollTomzn = async () => {
     if (pollInFlight) return pollInFlight;
     pollInFlight = (async () => recordTomzn({ ...context, snapshot: await requestTomzn() }))();
     try { return await pollInFlight; } finally { pollInFlight = null; }
+  };
+  const pollInverter = async () => {
+    const latest = await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
+    if (!process.env.INVERTERZONE_DEVICE_ID || (latest && Date.now() - latest.timestamp < INVERTER_POLL_MAX_AGE_MS)) return latest;
+    if (inverterPollInFlight) return inverterPollInFlight;
+    inverterPollInFlight = requestInverterZone()
+      .then(async (snapshot) => {
+        if (snapshot) await inverterSnapshots.insertOne(snapshot);
+        return snapshot;
+      })
+      .catch(() => latest)
+      .finally(() => { inverterPollInFlight = null; });
+    return inverterPollInFlight;
+  };
+  const pollWeather = async () => {
+    const latest = await weatherSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
+    if (latest && Date.now() - latest.timestamp < WEATHER_POLL_MAX_AGE_MS) return latest;
+    if (weatherPollInFlight) return weatherPollInFlight;
+    weatherPollInFlight = requestWeather()
+      .then(async (snapshot) => { await weatherSnapshots.insertOne(snapshot); return snapshot; })
+      .catch(() => latest)
+      .finally(() => { weatherPollInFlight = null; });
+    return weatherPollInFlight;
   };
 
   stateCollection.createIndex({ updatedAt: -1 }).catch(() => {});
@@ -795,17 +975,19 @@ function registerUnifiedSolarRoutes(app, db) {
   allocations.createIndex({ meterId: 1, timestamp: -1 }).catch(() => {});
   allocations.createIndex({ timestamp: -1 }).catch(() => {});
   manualLogs.createIndex({ timestamp: -1 }).catch(() => {});
+  inverterSnapshots.createIndex({ timestamp: -1 }).catch(() => {});
+  weatherSnapshots.createIndex({ timestamp: -1 }).catch(() => {});
 
   app.get("/api/solar/dashboard", async (req, res) => {
     try {
-      if (req.query.refresh !== "false") await pollTomzn();
+      if (req.query.refresh !== "false") await Promise.all([pollTomzn(), pollInverter(), pollWeather()]);
       res.json(await buildDashboard(context));
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
   app.post("/api/solar/refresh", async (_req, res) => {
     try {
-      const recorded = await pollTomzn();
+      const [recorded] = await Promise.all([pollTomzn(), pollInverter(), pollWeather()]);
       res.json({ allocatedDelta: recorded.allocatedDelta, dashboard: await buildDashboard(context) });
     } catch (error) { res.status(502).json({ error: error.message }); }
   });

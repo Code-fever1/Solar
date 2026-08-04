@@ -1,4 +1,4 @@
-import type { HomeState, LiveTelemetry, ManualLog, MeterId, MeterState } from "@/context/energy-types";
+import type { EnergyFlowPoint, EnergyToday, HomeState, InverterTelemetry, LiveTelemetry, ManualLog, MeterId, MeterState, WeatherState } from "@/context/energy-types";
 
 export type CachedTomznLive = {
   energyKwh: number;
@@ -19,6 +19,10 @@ export type CachedDashboardSnapshot = {
   activeMeter: MeterId;
   changeover: { activeMeter: MeterId; lastSwitchedAt: number };
   tomznLive: CachedTomznLive;
+  inverter?: InverterTelemetry;
+  weather?: WeatherState;
+  energyToday?: EnergyToday;
+  flowHistory?: EnergyFlowPoint[];
   live: LiveTelemetry;
   home: HomeState;
   meters: Record<MeterId, MeterState>;
@@ -142,7 +146,9 @@ export function estimateOfflineDashboard(
       isOnline: false,
       isLive: false,
     },
-    live: { ...source.live, gridKw: 0, currentAmp: 0 },
+    inverter: source.inverter ? { ...source.inverter, isLive: false } : undefined,
+    weather: source.weather ? { ...source.weather, isLive: false } : undefined,
+    live: { ...source.live, gridKw: 0, solarKw: 0, homeKw: 0, currentAmp: 0 },
     home: {
       ...source.home,
       todayUsage: round(todayUsage),

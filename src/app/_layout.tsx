@@ -1,3 +1,4 @@
+import { useColorScheme } from "@/hooks/use-color-scheme";
 import {
     Outfit_400Regular,
     Outfit_500Medium,
@@ -8,10 +9,10 @@ import { useFonts } from "expo-font";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
-import { useColorScheme } from "@/hooks/use-color-scheme";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { EnergyProvider } from "@/context/EnergyContext";
+import { UiModeProvider } from "@/context/UiModeContext";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -42,12 +43,14 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-        <EnergyProvider>
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="+not-found" />
-          </Stack>
-        </EnergyProvider>
+        <UiModeProvider>
+          <EnergyProvider>
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="(tabs)" />
+              <Stack.Screen name="+not-found" />
+            </Stack>
+          </EnergyProvider>
+        </UiModeProvider>
       </ThemeProvider>
     </SafeAreaProvider>
   );

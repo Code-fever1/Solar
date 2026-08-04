@@ -1,7 +1,6 @@
-import React from "react";
-import { View, Text, StyleSheet } from "react-native";
-import { Activity, Zap, BarChart2, Calendar } from "lucide-react-native";
 import { useEnergy } from "@/context/EnergyContext";
+import { Activity, BarChart2, Calendar, Zap } from "lucide-react-native";
+import { StyleSheet, Text, View } from "react-native";
 import Animated, { FadeIn } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
 
@@ -81,7 +80,7 @@ export function DashboardGrid() {
     const s = (t - 0.45) / 0.55;
     return `rgb(${lerp(120, 16, s)},${lerp(235, 185, s)},${lerp(180, 129, s)})`;
   };
-  const usageChangeColor = getChangeColor(change);
+  const usageChangeColor = getChangeColor(change ?? null);
 
   // Load status: continuous colour blend — white = on pace, red = more above, green = more below
   // Uses the same lerpRgb system as the bar chart for visual consistency.

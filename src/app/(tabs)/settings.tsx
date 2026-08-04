@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from "react";
-import { StyleSheet, Text, View, Pressable, ScrollView, Alert, TextInput } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ComingSoonScreen } from "@/components/ComingSoonScreen";
 import { Colors } from "@/constants/Colors";
 import { useEnergy } from "@/context/EnergyContext";
+import { useUiMode } from "@/context/UiModeContext";
 import { RefreshCw, Save } from "lucide-react-native";
+import { useEffect, useState } from "react";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -12,11 +14,14 @@ export default function SettingsScreen() {
   const [meter1Baseline, setMeter1Baseline] = useState("");
   const [meter2Baseline, setMeter2Baseline] = useState("");
   const [savingBaselines, setSavingBaselines] = useState(false);
+  const { mode } = useUiMode();
 
   useEffect(() => {
     if (!meter1Baseline) setMeter1Baseline(String((meters.meter1.reading - (meters.meter1.cycleUsage || 0)).toFixed(2)));
     if (!meter2Baseline) setMeter2Baseline(String((meters.meter2.reading - (meters.meter2.cycleUsage || 0)).toFixed(2)));
   }, [meters.meter1.reading, meters.meter1.cycleUsage, meters.meter2.reading, meters.meter2.cycleUsage]);
+
+  if (mode === "new") return <ComingSoonScreen title="Settings" />;
 
   const handleSwap = () => {
     swapChangeover();

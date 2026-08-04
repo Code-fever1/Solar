@@ -2,10 +2,56 @@ export type MeterId = "meter1" | "meter2";
 
 export type LiveTelemetry = {
   gridKw: number;
+  solarKw?: number;
+  homeKw?: number;
   currentAmp: number;
   voltage: number;
   frequency: number;
   powerFactor: number;
+};
+
+export type InverterTelemetry = {
+  solarW: number;
+  solarV: number;
+  solarA: number;
+  gridW: number;
+  gridV: number;
+  gridHz: number;
+  gridConnected: boolean;
+  gridDirection: "import" | "export";
+  loadW: number;
+  loadVa: number;
+  loadPercent: number;
+  inverterMode: string;
+  inverterFault: string;
+  temperatureC: number;
+  ratedOutputW: number;
+  signal: number | null;
+  fetchedAt: string;
+  isLive: boolean;
+};
+
+export type WeatherState = {
+  code: number;
+  isDay: boolean;
+  cloudCover: number;
+  precipitation: number;
+  temperatureC: number;
+  fetchedAt: string;
+  isLive: boolean;
+};
+
+export type EnergyToday = {
+  solarKwh: number;
+  homeKwh: number;
+  gridKwh: number;
+};
+
+export type EnergyFlowPoint = {
+  timestamp: number;
+  solarKw: number;
+  gridKw: number;
+  loadKw: number;
 };
 
 export type HomeState = {

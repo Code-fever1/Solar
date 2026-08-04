@@ -1,17 +1,20 @@
-import React from "react";
+import { ComingSoonScreen } from "@/components/ComingSoonScreen";
+import { MechanicalMeter } from "@/components/MechanicalMeter";
+import { SmartMeter } from "@/components/SmartMeter";
+import { TomznCard } from "@/components/TomznCard";
+import { Colors } from "@/constants/Colors";
+import { useEnergy } from "@/context/EnergyContext";
+import { useUiMode } from "@/context/UiModeContext";
+import { Info } from "lucide-react-native";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Colors } from "@/constants/Colors";
-import { TomznCard } from "@/components/TomznCard";
-import { Info } from "lucide-react-native";
-import { SmartMeter } from "@/components/SmartMeter";
-import { MechanicalMeter } from "@/components/MechanicalMeter";
-import { useEnergy } from "@/context/EnergyContext";
 
 export default function MetersScreen() {
   const insets = useSafeAreaInsets();
   const theme = Colors.dark;
   const { activeMeter, meters, home, learningProfiles } = useEnergy();
+  const { mode } = useUiMode();
+  if (mode === "new") return <ComingSoonScreen title="Meters" />;
 
   return (
     <View style={styles.screen}>

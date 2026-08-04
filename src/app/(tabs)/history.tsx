@@ -14,11 +14,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AnalyticsChart } from "@/components/AnalyticsChart";
 import { BackgroundEngine } from "@/components/BackgroundEngine";
+import { ComingSoonScreen } from "@/components/ComingSoonScreen";
 import { GlassPanel } from "@/components/GlassPanel";
 import { LogReadingModal } from "@/components/LogReadingModal";
 import { Colors } from "@/constants/Colors";
 import type { ManualLog } from "@/context/EnergyContext";
 import { useEnergy } from "@/context/EnergyContext";
+import { useUiMode } from "@/context/UiModeContext";
 
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import React from "react";
@@ -45,10 +47,13 @@ export default function HistoryScreen() {
     meter1: false,
     meter2: false,
   });
+  const { mode } = useUiMode();
 
   const sortedLogs = useMemo(() => {
     return [...manualLogs].sort((a, b) => b.timestamp - a.timestamp);
   }, [manualLogs]);
+
+  if (mode === "new") return <ComingSoonScreen title="History" />;
 
   const handleEditPress = (log: ManualLog) => {
     setEditLogItem(log);

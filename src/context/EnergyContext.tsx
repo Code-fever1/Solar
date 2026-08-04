@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   createContext,
   useContext,
@@ -7,7 +8,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { interpolateUsageHistory, summarizeHistory } from "@/utils/calculations";
 import {
@@ -20,24 +20,32 @@ import {
 } from "@/utils/offline-dashboard";
 import type {
   AlertItem,
+  EnergyFlowPoint,
+  EnergyToday,
   HistoryPoint,
   HomeState,
+  InverterTelemetry,
   LiveTelemetry,
   ManualLog,
   MeterId,
   MeterState,
   Recommendation,
+  WeatherState,
 } from "./energy-types";
 
 export type {
   AlertItem,
+  EnergyFlowPoint,
+  EnergyToday,
   HistoryPoint,
   HomeState,
+  InverterTelemetry,
   LiveTelemetry,
   ManualLog,
   MeterId,
   MeterState,
   Recommendation,
+  WeatherState
 } from "./energy-types";
 
 export interface ManualBaseline {
@@ -64,6 +72,10 @@ type StoredDashboard = { snapshot: DashboardSnapshot; savedAt: number };
 type EnergyContextValue = {
   live: LiveTelemetry;
   tomznLive: TomznLive;
+  inverter: InverterTelemetry;
+  weather: WeatherState;
+  energyToday: EnergyToday;
+  flowHistory: EnergyFlowPoint[];
   home: HomeState;
   meters: Record<MeterId, MeterState>;
   activeMeter: MeterId;
@@ -125,7 +137,10 @@ function emptyMeter(id: MeterId): MeterState {
 }
 
 const EMPTY_METERS: Record<MeterId, MeterState> = { meter1: emptyMeter("meter1"), meter2: emptyMeter("meter2") };
-const EMPTY_LIVE: LiveTelemetry = { gridKw: 0, currentAmp: 0, voltage: 0, frequency: 50, powerFactor: 0 };
+const EMPTY_LIVE: LiveTelemetry = { gridKw: 0, solarKw: 0, homeKw: 0, currentAmp: 0, voltage: 0, frequency: 50, powerFactor: 0 };
+const EMPTY_INVERTER: InverterTelemetry = { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, fetchedAt: "", isLive: false };
+const EMPTY_WEATHER: WeatherState = { code: 0, isDay: true, cloudCover: 0, precipitation: 0, temperatureC: 0, fetchedAt: "", isLive: false };
+const EMPTY_ENERGY_TODAY: EnergyToday = { solarKwh: 0, homeKwh: 0, gridKwh: 0 };
 
 const EnergyContext = createContext<EnergyContextValue | null>(null);
 
@@ -287,6 +302,10 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const home = snapshot?.home || (error ? { ...EMPTY_HOME, explanation: error } : EMPTY_HOME);
   const live = snapshot?.live || EMPTY_LIVE;
   const tomznLive = snapshot?.tomznLive || EMPTY_TOMZN;
+  const inverter = snapshot?.inverter || EMPTY_INVERTER;
+  const weather = snapshot?.weather || EMPTY_WEATHER;
+  const energyToday = snapshot?.energyToday || EMPTY_ENERGY_TODAY;
+  const flowHistory = snapshot?.flowHistory || [];
   const manualLogs = snapshot?.manualLogs || [];
   const changeover: ChangeoverState = {
     activeMeter,
@@ -365,7 +384,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   };
 
   const value: EnergyContextValue = {
-    live, tomznLive, home, meters, activeMeter, changeover, recommendations, alerts,
+    live, tomznLive, inverter, weather, energyToday, flowHistory, home, meters, activeMeter, changeover, recommendations, alerts,
     history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     calibrateMeter: (meterId, reading) => { void addManualLog(meterId, reading, Date.now(), "Manual calibration"); },
