@@ -1,5 +1,5 @@
-import { Bell, Bolt, House, SunMedium, TowerControl, Waves, Zap } from "lucide-react-native";
-import { useMemo, useState } from "react";
+import { Bell, Bolt, SunMedium, TowerControl, Waves } from "lucide-react-native";
+import { useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Line, Path } from "react-native-svg";
@@ -28,9 +28,31 @@ function FlowChart({ points, width }: { points: FlowPoint[]; width: number }) {
       const y = 96 - point[key] / max * 76;
       return `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
     }).join(" ");
-    return { solar: make("solarKw"), home: make("loadKw"), grid: make("gridKw") };
+    // Find peak load point
+    const peakIdx = values.reduce((maxIdx, p, i, arr) => p.loadKw > arr[maxIdx].loadKw ? i : maxIdx, 0);
+    const peakX = 12 + peakIdx / Math.max(1, values.length - 1) * graphWidth;
+    const peakY = 96 - values[peakIdx].loadKw / max * 76;
+    // Current time marker — based on actual time of day
+    const now = new Date();
+    const currentHour = now.getHours() + now.getMinutes() / 60;
+    const currentX = 12 + (currentHour / 24) * graphWidth;
+    return { solar: make("solarKw"), home: make("loadKw"), grid: make("gridKw"), peakX, peakY, currentX };
   }, [graphWidth, points]);
-  return <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}><Line x1="12" y1="20" x2={width - 12} y2="20" stroke="rgba(142,167,196,0.13)" /><Line x1="12" y1="58" x2={width - 12} y2="58" stroke="rgba(142,167,196,0.13)" /><Line x1="12" y1="96" x2={width - 12} y2="96" stroke="rgba(142,167,196,0.13)" /><Path d={paths.solar} stroke="#F9C641" strokeWidth={1.4} fill="none" /><Path d={paths.home} stroke="#2DDB6C" strokeWidth={1.3} fill="none" /><Path d={paths.grid} stroke="#4A85FF" strokeWidth={1.3} fill="none" /><Circle cx={width * 0.6} cy="37" r="3" fill="#FDF7CF" /></Svg>;
+  return <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+    <Line x1="12" y1="20" x2={width - 12} y2="20" stroke="rgba(142,167,196,0.08)" />
+    <Line x1="12" y1="58" x2={width - 12} y2="58" stroke="rgba(142,167,196,0.08)" />
+    <Line x1="12" y1="96" x2={width - 12} y2="96" stroke="rgba(142,167,196,0.08)" />
+    {/* Current time marker — vertical dashed line */}
+    <Line x1={paths.currentX} y1="16" x2={paths.currentX} y2="96" stroke="rgba(255,255,255,0.15)" strokeWidth="1" strokeDasharray="2 3" />
+    <Circle cx={paths.currentX} cy="14" r="2.5" fill="#F4F8FC" />
+    {/* Energy flow lines */}
+    <Path d={paths.solar} stroke="#F9C641" strokeWidth={1.4} fill="none" />
+    <Path d={paths.home} stroke="#2DDB6C" strokeWidth={1.3} fill="none" />
+    <Path d={paths.grid} stroke="#4A85FF" strokeWidth={1.3} fill="none" />
+    {/* Peak marker */}
+    <Circle cx={paths.peakX} cy={paths.peakY} r="3" fill="#2DDB6C" />
+    <Circle cx={paths.peakX} cy={paths.peakY} r="5" fill="#2DDB6C" opacity="0.2" />
+  </Svg>;
 }
 
 export function NewDashboard() {
@@ -38,14 +60,13 @@ export function NewDashboard() {
   const { width } = useWindowDimensions();
   const { toggleMode } = useUiMode();
   const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive } = useEnergy();
-  const [budgetMeterId, setBudgetMeterId] = useState<"meter1" | "meter2">(activeMeter);
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : hour < 21 ? "Good Evening" : "Good Night";
   const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const meterOne = meters.meter1;
   const meterTwo = meters.meter2;
   const chartWidth = Math.min(width - 32, 520);
-  const budgetMeter = budgetMeterId === "meter1" ? meterOne : meterTwo;
+  const budgetMeter = activeMeter === "meter1" ? meterOne : meterTwo;
   const solarLive = inverter.isLive && inverter.solarW > 25;
   // Inverter is considered OFF when everything reads zero (gridV 0, solar 0, grid 0, load 0)
   // or when InverterZone reports standby mode ("S").
@@ -57,41 +78,43 @@ export function NewDashboard() {
   const wapdaCutOff = tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode === 2048;
   // Relay off without fault code = standby state
   const wapdaStandby = tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode !== 2048;
-  const meterWidth = `${Math.max(0, Math.min(100, meterOne.remainingUnits / Math.max(1, meterOne.targetUnits) * 100))}%` as `${number}%`;
-  const meterTwoWidth = `${Math.max(0, Math.min(100, meterTwo.remainingUnits / Math.max(1, meterTwo.targetUnits) * 100))}%` as `${number}%`;
 
   return <View style={styles.screen}><ScrollView contentContainerStyle={[styles.content, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 105 }]} showsVerticalScrollIndicator={false}>
     <View style={styles.header}><View><Text style={styles.greeting}>{greeting}, Alijah</Text><Text style={styles.location}>⌾ Bhakkar · {time}</Text></View><View style={styles.headerRight}><Pressable accessibilityRole="button" onPress={toggleMode} style={styles.switch}><Text style={styles.switchText}>Old UI</Text></Pressable><View style={styles.bell}><Bell size={19} color="#E9F0F8" /><View style={styles.notification} /></View></View></View>
     <View style={styles.statusCard}><View style={styles.statusItem}><SunMedium size={19} color="#F5C42E" /><View><Text style={styles.statusLabel}>Solar</Text><Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : solarLive ? "#32E56B" : "#F8C653" }]}>{inverterOff ? "Off" : solarLive ? "Online" : "Standby"}</Text></View></View><View style={styles.statusDivider} /><View style={styles.statusItem}><Bolt size={18} color="#D9E3EE" /><View><Text style={styles.statusLabel}>Inverter</Text><Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{inverterOff ? "Offline" : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text></View></View><View style={styles.statusDivider} /><View style={styles.statusItem}><TowerControl size={18} color="#D9E3EE" /><View><Text style={styles.statusLabel}>Grid</Text><Text style={[styles.statusValue, { color: wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : tomznLive.isOnline ? "#548EFF" : "#8497AB" }]}>{wapdaCutOff ? "Cutoff" : wapdaStandby ? "Standby" : tomznLive.isOnline ? "Stable" : "Offline"}</Text></View></View><View style={styles.statusDivider} /><View style={styles.statusItem}><Waves size={18} color="#D9E3EE" /><View><Text style={styles.statusLabel}>Active Meter</Text><Text style={styles.statusValue}>{activeMeter === "meter1" ? "Meter 1 (Analog)" : "Meter 2 (Digital)"}</Text></View></View></View>
     <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} />
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8, width: '100%' }}>
-      <EnergyReceivedCard 
-        totalEnergy={energyToday.solarKwh + energyToday.gridKwh} 
-        solarEnergy={energyToday.solarKwh} 
-        gridEnergy={energyToday.gridKwh} 
-        isWapda={tomznLive.isOnline && !wapdaCutOff} 
+      <EnergyReceivedCard
+        totalEnergy={energyToday.solarKwh + home.todayUsage}
+        solarEnergy={energyToday.solarKwh}
+        gridEnergy={home.todayUsage}
+        isWapda={tomznLive.isOnline && !wapdaCutOff}
       />
-      <EnergyUsedCard 
-        totalHomeUsage={home.todayUsage} 
-        liveLoadW={inverterOff ? tomznLive.powerW : inverter.loadW} 
-        peakLoadW={Math.max(...flowHistory.slice(-288).map(p => p.loadKw * 1000), inverter.loadW)} 
-        vsYesterdayPercent={home.usageChangePercent || -18} 
+      <EnergyUsedCard
+        totalHomeUsage={home.todayUsage}
+        liveLoadW={inverterOff ? tomznLive.powerW : inverter.loadW}
+        peakLoadW={Math.max(...flowHistory.slice(-288).map(p => p.loadKw * 1000), inverter.loadW)}
+        vsYesterdayPercent={home.usageChangePercent ?? null}
+        voltage={tomznLive.voltageV || inverter.gridV}
+        currentA={tomznLive.currentA}
+        loadStatus={home.loadStatus || "Normal"}
+        normalDrawKw={home.normalDrawKw || 0}
       />
     </View>
-    <ForecastBudgetCard 
-      expectedUnits={home.projectedMonthly} 
-      vsLastMonth={-12}
-      confidence={home.confidencePercent} 
-      points={flowHistory.slice(-100).map(p => p.loadKw * 50)} 
-      budgetLeft={budgetMeter.remainingUnits} 
-      budgetTarget={budgetMeter.targetUnits} 
-      daysLeft={budgetMeter.projectedDaysLeft} 
-      meter1Left={meterOne.remainingUnits} 
-      meter1Target={meterOne.targetUnits} 
-      meter2Left={meterTwo.remainingUnits} 
-      meter2Target={meterTwo.targetUnits} 
+    <ForecastBudgetCard
+      expectedUnits={home.projectedMonthly}
+      vsLastMonth={home.usageChangePercent ?? null}
+      confidence={home.confidencePercent}
+      dailyUsage={home.dailyUsage || []}
+      budgetLeft={budgetMeter.remainingUnits}
+      budgetTarget={budgetMeter.targetUnits}
+      daysLeft={budgetMeter.projectedDaysLeft}
+      meter1Left={meterOne.remainingUnits}
+      meter1Target={meterOne.targetUnits}
+      meter2Left={meterTwo.remainingUnits}
+      meter2Target={meterTwo.targetUnits}
     />
-    <View style={styles.chartCard}><View style={styles.rowHeader}><View><Text style={styles.cardTitle}>Today’s Energy Flow</Text><View style={styles.legend}><Text style={[styles.legendItem, { color: "#F5C42E" }]}>● Solar Power</Text><Text style={[styles.legendItem, { color: "#35D86C" }]}>● Home Usage</Text><Text style={[styles.legendItem, { color: "#548EFF" }]}>● Grid Import</Text></View></View><View style={styles.dayPill}><Text style={styles.dayText}>Day⌄</Text></View></View><FlowChart points={flowHistory.slice(-72)} width={chartWidth} /><View style={styles.axis}><Text style={styles.axisText}>12 AM</Text><Text style={styles.axisText}>6 AM</Text><Text style={styles.axisText}>12 PM</Text><Text style={styles.axisText}>6 PM</Text><Text style={styles.axisText}>12 AM</Text></View></View>
+    <View style={styles.chartCard}><View style={styles.rowHeader}><View><Text style={styles.cardTitle}>Today’s Energy Flow</Text><View style={styles.legend}><Text style={[styles.legendItem, { color: "#F5C42E" }]}>● Solar</Text><Text style={[styles.legendItem, { color: "#35D86C" }]}>● Home</Text><Text style={[styles.legendItem, { color: "#548EFF" }]}>● Grid</Text><Text style={[styles.legendItem, { color: "#F4F8FC" }]}>│ Now</Text></View></View></View><FlowChart points={flowHistory.slice(-72)} width={chartWidth} /><View style={styles.axis}><Text style={styles.axisText}>12 AM</Text><Text style={styles.axisText}>6 AM</Text><Text style={styles.axisText}>12 PM</Text><Text style={styles.axisText}>6 PM</Text><Text style={styles.axisText}>12 AM</Text></View></View>
     <View style={styles.inverterCard}><View style={styles.inverterImage}><Bolt size={25} color={inverterOff ? "#8497AB" : "#F0F6FC"} /></View><View style={styles.inverterInfo}><View style={styles.inverterTitleRow}><Text style={styles.inverterName}>Fronius PV14000</Text><Text style={[styles.online, { color: inverterOff ? "#EF4C4C" : "#32E56B" }]}>{inverterOff ? "● Offline" : "● Online"}</Text></View><View style={styles.inverterStats}><Text style={styles.inverterStat}>{value(inverterOff ? 0 : inverter.loadW / 1000)} kW{`\n`}AC Output</Text><Text style={styles.inverterStat}>{Math.round(inverterOff ? 0 : inverter.temperatureC)}°C{`\n`}Temperature</Text><Text style={styles.inverterStat}>{inverterOff ? "--" : inverter.ratedOutputW ? `${Math.round(inverter.loadW / inverter.ratedOutputW * 100)}%` : "--"}{`\n`}Efficiency</Text></View></View><Text style={styles.chevron}>›</Text></View>
   </ScrollView></View>;
 }

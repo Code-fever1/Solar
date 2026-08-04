@@ -8,13 +8,14 @@ import { useUiMode } from "@/context/UiModeContext";
 import { Info } from "lucide-react-native";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { NewMetersScreen } from "@/components/NewMetersScreen";
 
 export default function MetersScreen() {
   const insets = useSafeAreaInsets();
   const theme = Colors.dark;
   const { activeMeter, meters, home, learningProfiles } = useEnergy();
   const { mode } = useUiMode();
-  if (mode === "new") return <ComingSoonScreen title="Meters" />;
+  if (mode === "new") return <NewMetersScreen />;
 
   return (
     <View style={styles.screen}>

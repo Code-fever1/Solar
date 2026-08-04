@@ -243,7 +243,7 @@ export function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverte
       .catch(() => {});
   }, []);
 
-  // Tick every second so "Updated Xs ago" stays live.
+  // Tick every second so time display stays live.
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
@@ -265,7 +265,7 @@ export function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverte
   const gridColor = gridImporting ? "#6E9BFF" : wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : "#8A8A8A";
   // Home Usage shows whichever watt source is higher; V/A must match that source.
   const usingTomznW = gridPowerW > invW;
-  // Real "Updated Xs ago" based on whichever source updated most recently.
+  // Real time display based on whichever source updated most recently.
   // When new data arrives, the label resets to "Just now" then counts up 1s, 2s...
   const tomznTs = tomznLive.fetchedAt ? new Date(tomznLive.fetchedAt).getTime() : 0;
   const invTs = inverter.fetchedAt ? new Date(inverter.fetchedAt).getTime() : 0;
@@ -276,10 +276,10 @@ export function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverte
     : elapsedSec === 0
       ? "Just now"
       : elapsedSec < 60
-        ? `Updated ${elapsedSec}s ago`
+        ? `${elapsedSec}s`
         : elapsedSec < 3600
-          ? `Updated ${Math.floor(elapsedSec / 60)}m ago`
-          : `Updated ${Math.floor(elapsedSec / 3600)}h ago`;
+          ? `${Math.floor(elapsedSec / 60)}m`
+          : `${Math.floor(elapsedSec / 3600)}h`;
 
   const bgImage = isDayTime
     ? require("../../assets/images/dayback.jpeg")
@@ -371,7 +371,7 @@ export function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverte
             </Text>
           </View>
           {Math.max(invW, gridPowerW) > 0 && (
-            <View style={styles.footerPill}>
+            <View style={[styles.footerPill, styles.footerPillCenter]}>
               <Text style={styles.footerText}>
                 {usingTomznW
                   ? `${wapdaCutOff || wapdaStandby ? 0 : tomznLive.voltageV.toFixed(0)} V · ${wapdaCutOff || wapdaStandby ? 0 : tomznLive.currentA.toFixed(1)} A`
@@ -432,6 +432,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 9,
     paddingVertical: 5,
+  },
+  footerPillCenter: {
+    position: "absolute",
+    left: "50%",
+    transform: [{ translateX: -50 }],
   },
   footerDot: { width: 6, height: 6, borderRadius: 3 },
   footerText: { color: "#E4EDF6", fontFamily: "Outfit", fontSize: 9 },
