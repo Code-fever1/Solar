@@ -106,7 +106,7 @@ type EnergyContextValue = {
 };
 
 const API_URL = "http://104.43.56.204:3001/api/solar";
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 5_000;
 const DASHBOARD_CACHE_KEY = "voltx.solar.dashboard.v1";
 const PENDING_OPERATIONS_KEY = "voltx.solar.pending-operations.v1";
 

@@ -14,7 +14,7 @@ const PRIMARY_STATE_ID = "primary";
 const METER_IDS = new Set(["meter1", "meter2"]);
 const PAKISTAN_OFFSET = "+05:00";
 const INVERTERZONE_HOST = "inverterzone.com";
-const INVERTER_POLL_MAX_AGE_MS = 25_000;
+const INVERTER_POLL_MAX_AGE_MS = 5_000;
 const WEATHER_POLL_MAX_AGE_MS = 30 * 60_000;
 const BHAKKAR_COORDINATES = { latitude: 31.6269, longitude: 71.0657 };
 

@@ -265,16 +265,21 @@ export function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverte
   const gridColor = gridImporting ? "#6E9BFF" : wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : "#8A8A8A";
   // Home Usage shows whichever watt source is higher; V/A must match that source.
   const usingTomznW = gridPowerW > invW;
-  // Real "Updated Xs ago" based on the active source's fetchedAt timestamp.
-  const activeFetchedAt = usingTomznW ? tomznLive.fetchedAt : inverter.fetchedAt;
-  const elapsedSec = activeFetchedAt ? Math.max(0, Math.floor((now - new Date(activeFetchedAt).getTime()) / 1000)) : null;
+  // Real "Updated Xs ago" based on whichever source updated most recently.
+  // When new data arrives, the label resets to "Just now" then counts up 1s, 2s...
+  const tomznTs = tomznLive.fetchedAt ? new Date(tomznLive.fetchedAt).getTime() : 0;
+  const invTs = inverter.fetchedAt ? new Date(inverter.fetchedAt).getTime() : 0;
+  const latestTs = Math.max(tomznTs, invTs);
+  const elapsedSec = latestTs > 0 ? Math.max(0, Math.floor((now - latestTs) / 1000)) : null;
   const updatedLabel = elapsedSec == null
     ? "Waiting for data"
-    : elapsedSec < 60
-      ? `Updated ${elapsedSec}s ago`
-      : elapsedSec < 3600
-        ? `Updated ${Math.floor(elapsedSec / 60)}m ago`
-        : `Updated ${Math.floor(elapsedSec / 3600)}h ago`;
+    : elapsedSec === 0
+      ? "Just now"
+      : elapsedSec < 60
+        ? `Updated ${elapsedSec}s ago`
+        : elapsedSec < 3600
+          ? `Updated ${Math.floor(elapsedSec / 60)}m ago`
+          : `Updated ${Math.floor(elapsedSec / 3600)}h ago`;
 
   const bgImage = isDayTime
     ? require("../../assets/images/dayback.jpeg")
@@ -353,6 +358,9 @@ export function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverte
             <Text style={styles.nodeCaption}>
               {wapdaStandby ? "Wapda Standby" : gridImporting ? "From Wapda" : tomznLive.isOnline ? "Wapda Idle" : "Wapda Offline"}
             </Text>
+            {wapdaStandby && (
+              <Text style={styles.nodeVA}>{tomznLive.voltageV.toFixed(0)}V · {tomznLive.currentA.toFixed(1)}A</Text>
+            )}
           </View>
         )}
         <View style={styles.footer}>
@@ -407,6 +415,7 @@ const styles = StyleSheet.create({
   gridNode: { right: "1.5%" },
   nodeValue: { fontFamily: "Outfit", fontSize: 17, fontWeight: "700" },
   nodeCaption: { color: "#DCE6F0", fontFamily: "Outfit", fontSize: 9, marginTop: 1 },
+  nodeVA: { color: "#8BA8C8", fontFamily: "Outfit", fontSize: 8, marginTop: 2 },
   footer: {
     position: "absolute",
     left: "2.6%",
