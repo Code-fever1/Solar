@@ -8,6 +8,8 @@ export type CachedTomznLive = {
   powerDisplay: string;
   frequencyHz: number;
   isOnline: boolean;
+  switchOn: boolean;
+  faultCode: number;
   fetchedAt: string;
   isLive: boolean;
   timestamp?: number;

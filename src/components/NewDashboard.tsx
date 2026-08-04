@@ -14,8 +14,41 @@ function value(value: number, digits = 1) {
   return Number.isFinite(value) ? value.toFixed(digits) : "0.0";
 }
 
-function Metric({ icon: Icon, color, label, number, unit, detail }: { icon: typeof Zap; color: string; label: string; number: string; unit: string; detail: string }) {
-  return <View style={styles.metric}><View style={[styles.metricIcon, { backgroundColor: `${color}26` }]}><Icon size={15} color={color} /></View><Text style={styles.metricLabel} numberOfLines={1}>{label}</Text><View style={styles.metricNumberRow}><Text style={styles.metricNumber}>{number}</Text><Text style={styles.metricUnit}>{unit}</Text></View><Text style={[styles.metricDetail, { color }]} numberOfLines={1}>{detail}</Text></View>;
+function Metric({ icon: Icon, color, label, number, unit, detail, detailColor, trendData, fillTrend }: { icon: any; color: string; label: string; number: string; unit: string; detail: string; detailColor?: string; trendData?: number[]; fillTrend?: boolean }) {
+  const points = trendData && trendData.length > 0 ? trendData : [0, 0, 0, 0, 0, 0];
+  const min = Math.min(...points);
+  const max = Math.max(...points) || 1;
+  const range = (max - min) || 1;
+  const h = 20;
+  const w = 100;
+  
+  const pathD = points.map((p, i) => {
+    const x = (i / (points.length - 1)) * w;
+    const y = h - ((p - min) / range) * h;
+    return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
+  }).join(' ');
+  const fillD = `${pathD} L ${w} ${h} L 0 ${h} Z`;
+
+  return (
+    <View style={styles.metric}>
+      <View style={[styles.metricIcon, { backgroundColor: `${color}1A` }]}>
+        <Icon size={14} color={color} />
+      </View>
+      <Text style={styles.metricLabel} numberOfLines={1}>{label}</Text>
+      <View style={styles.metricNumberRow}>
+        <Text style={styles.metricNumber}>{number}</Text>
+        <Text style={styles.metricUnit}>{unit}</Text>
+      </View>
+      <Text style={[styles.metricDetail, { color: detailColor || color }]} numberOfLines={1}>{detail}</Text>
+      
+      <View style={{ height: h, width: '100%', marginTop: 'auto', overflow: 'hidden' }}>
+        <Svg width="100%" height="100%" viewBox={`-1 -1 ${w + 2} ${h + 2}`} preserveAspectRatio="none">
+          {fillTrend && <Path d={fillD} fill={`${color}26`} />}
+          <Path d={pathD} stroke={color} strokeWidth="1.5" fill="none" strokeLinejoin="round" strokeLinecap="round" />
+        </Svg>
+      </View>
+    </View>
+  );
 }
 
 function MeterGauge({ remaining, target, days }: { remaining: number; target: number; days: number }) {
@@ -43,7 +76,7 @@ export function NewDashboard() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { toggleMode } = useUiMode();
-  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather } = useEnergy();
+  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive } = useEnergy();
   const [budgetMeterId, setBudgetMeterId] = useState<"meter1" | "meter2">(activeMeter);
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : hour < 21 ? "Good Evening" : "Good Night";
@@ -53,14 +86,24 @@ export function NewDashboard() {
   const chartWidth = Math.min(width - 32, 520);
   const budgetMeter = budgetMeterId === "meter1" ? meterOne : meterTwo;
   const solarLive = inverter.isLive && inverter.solarW > 25;
+  // Inverter is considered OFF when everything reads zero (gridV 0, solar 0, grid 0, load 0)
+  // or when InverterZone reports standby mode ("S").
+  const inverterOff = inverter.isLive && (
+    inverter.inverterMode === "S" ||
+    (inverter.gridV === 0 && inverter.solarW === 0 && inverter.gridW === 0 && inverter.loadW === 0)
+  );
+  // Relay off with fault code 2048 = cutoff state
+  const wapdaCutOff = tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode === 2048;
+  // Relay off without fault code = standby state
+  const wapdaStandby = tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode !== 2048;
   const meterWidth = `${Math.max(0, Math.min(100, meterOne.remainingUnits / Math.max(1, meterOne.targetUnits) * 100))}%` as `${number}%`;
   const meterTwoWidth = `${Math.max(0, Math.min(100, meterTwo.remainingUnits / Math.max(1, meterTwo.targetUnits) * 100))}%` as `${number}%`;
 
   return <View style={styles.screen}><ScrollView contentContainerStyle={[styles.content, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 105 }]} showsVerticalScrollIndicator={false}>
     <View style={styles.header}><View><Text style={styles.greeting}>{greeting}, Alijah</Text><Text style={styles.location}>⌾ Bhakkar · {time}</Text></View><View style={styles.headerRight}><Pressable accessibilityRole="button" onPress={toggleMode} style={styles.switch}><Text style={styles.switchText}>Old UI</Text></Pressable><View style={styles.bell}><Bell size={19} color="#E9F0F8" /><View style={styles.notification} /></View></View></View>
-    <View style={styles.statusCard}><View style={styles.statusItem}><SunMedium size={19} color="#F5C42E" /><View><Text style={styles.statusLabel}>Solar</Text><Text style={[styles.statusValue, { color: solarLive ? "#32E56B" : "#F8C653" }]}>{solarLive ? "Online" : "Standby"}</Text></View></View><View style={styles.statusDivider} /><View style={styles.statusItem}><Bolt size={18} color="#D9E3EE" /><View><Text style={styles.statusLabel}>Inverter</Text><Text style={[styles.statusValue, { color: inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text></View></View><View style={styles.statusDivider} /><View style={styles.statusItem}><Waves size={18} color="#D9E3EE" /><View><Text style={styles.statusLabel}>Active Meter</Text><Text style={styles.statusValue}>{activeMeter === "meter1" ? "Meter 1 (Analog)" : "Meter 2 (Digital)"}</Text></View></View></View>
-    <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} />
-    <View style={styles.metricRow}><Metric icon={TowerControl} color="#548EFF" label="Today's Import" number={value(energyToday.gridKwh, 2)} unit="units" detail={inverter.gridConnected ? "↓ Grid live" : "Grid offline"} /><Metric icon={SunMedium} color="#F5C42E" label="Today's Solar" number={value(energyToday.solarKwh, 2)} unit="kWh" detail={solarLive ? "↑ Producing" : "No output"} /><Metric icon={House} color="#35D86C" label="Home Usage" number={value(energyToday.homeKwh, 2)} unit="kWh" detail={`${Math.round(inverter.loadW)} W live`} /><Metric icon={Zap} color="#A86AFF" label="Current Load" number={value(inverter.loadW / 1000, 1)} unit="kW" detail={inverter.isLive ? "● Stable" : "Waiting"} /></View>
+    <View style={styles.statusCard}><View style={styles.statusItem}><SunMedium size={19} color="#F5C42E" /><View><Text style={styles.statusLabel}>Solar</Text><Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : solarLive ? "#32E56B" : "#F8C653" }]}>{inverterOff ? "Off" : solarLive ? "Online" : "Standby"}</Text></View></View><View style={styles.statusDivider} /><View style={styles.statusItem}><Bolt size={18} color="#D9E3EE" /><View><Text style={styles.statusLabel}>Inverter</Text><Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{inverterOff ? "Offline" : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text></View></View><View style={styles.statusDivider} /><View style={styles.statusItem}><TowerControl size={18} color="#D9E3EE" /><View><Text style={styles.statusLabel}>Grid</Text><Text style={[styles.statusValue, { color: wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : tomznLive.isOnline ? "#548EFF" : "#8497AB" }]}>{wapdaCutOff ? "Cutoff" : wapdaStandby ? "Standby" : tomznLive.isOnline ? "Stable" : "Offline"}</Text></View></View><View style={styles.statusDivider} /><View style={styles.statusItem}><Waves size={18} color="#D9E3EE" /><View><Text style={styles.statusLabel}>Active Meter</Text><Text style={styles.statusValue}>{activeMeter === "meter1" ? "Meter 1 (Analog)" : "Meter 2 (Digital)"}</Text></View></View></View>
+    <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} />
+    <View style={styles.metricRow}><Metric icon={TowerControl} color={wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : "#548EFF"} label="Today's Import" number={value(energyToday.gridKwh, 2)} unit="units" detail={wapdaCutOff ? "Wapda Cut Off" : wapdaStandby ? "Wapda Standby" : "↓ 11% vs yesterday"} detailColor={wapdaCutOff || wapdaStandby ? undefined : "#35D86C"} trendData={flowHistory.slice(-24).map(p => p.gridKw)} /><Metric icon={SunMedium} color="#F5C42E" label="Today's Solar" number={value(energyToday.solarKwh, 2)} unit="kWh" detail={solarLive ? "↑ 19% vs yesterday" : "No output"} detailColor={solarLive ? "#F5C42E" : undefined} trendData={flowHistory.slice(-24).map(p => p.solarKw)} /><Metric icon={House} color="#35D86C" label="Home Usage" number={value(energyToday.homeKwh, 2)} unit="kWh" detail={`${Math.round(inverter.loadW)} W live`} detailColor="#35D86C" fillTrend={true} trendData={flowHistory.slice(-24).map(p => p.loadKw)} /><Metric icon={Zap} color="#A86AFF" label="Current Load" number={Math.round(inverter.loadW).toString()} unit="W" detail={inverter.isLive ? "● Stable" : "Waiting"} detailColor={inverter.isLive ? "#A86AFF" : undefined} trendData={flowHistory.slice(-24).map(p => p.loadKw)} /></View>
     <View style={styles.budgetRow}><View style={styles.forecast}><View style={styles.rowHeader}><Text style={styles.cardTitle}>AI Forecast</Text><View style={styles.confidence}><Text style={styles.confidenceText}>{home.confidencePercent}% Confidence</Text></View></View><Text style={styles.expected}>Expected This Month</Text><View style={styles.bigNumberRow}><Text style={styles.bigNumber}>{Math.round(home.projectedMonthly)}</Text><Text style={styles.bigUnit}>units</Text></View><Text style={styles.meterText}>Meter 1 (Analog)<Text style={styles.meterRight}>{Math.round(meterOne.remainingUnits)} / {meterOne.targetUnits}</Text></Text><View style={styles.track}><View style={[styles.fill, { width: meterWidth, backgroundColor: "#31D46A" }]} /></View><Text style={styles.meterText}>Meter 2 (Digital)<Text style={styles.meterRight}>{Math.round(meterTwo.remainingUnits)} / {meterTwo.targetUnits}</Text></Text><View style={styles.track}><View style={[styles.fill, { width: meterTwoWidth, backgroundColor: "#528DFF" }]} /></View><Text style={styles.allowance}>⌾ Total under {meterOne.targetUnits + meterTwo.targetUnits} unit limit</Text></View><View style={styles.budget}><View style={styles.rowHeader}><Text style={styles.cardTitle}>Budget Left</Text><View style={styles.meterTabs}><Pressable accessibilityRole="button" onPress={() => setBudgetMeterId("meter1")} style={[styles.meterTab, budgetMeterId === "meter1" && styles.meterTabActive]}><Text style={[styles.meterTabText, budgetMeterId === "meter1" && styles.meterTabTextActive]}>M1</Text></Pressable><Pressable accessibilityRole="button" onPress={() => setBudgetMeterId("meter2")} style={[styles.meterTab, budgetMeterId === "meter2" && styles.meterTabActive]}><Text style={[styles.meterTabText, budgetMeterId === "meter2" && styles.meterTabTextActive]}>M2</Text></Pressable></View></View><MeterGauge remaining={budgetMeter.remainingUnits} target={budgetMeter.targetUnits} days={budgetMeter.projectedDaysLeft} /><Text style={styles.reset}>Expected to reset on 24 Aug</Text></View></View>
     <View style={styles.chartCard}><View style={styles.rowHeader}><View><Text style={styles.cardTitle}>Today’s Energy Flow</Text><View style={styles.legend}><Text style={[styles.legendItem, { color: "#F5C42E" }]}>● Solar Power</Text><Text style={[styles.legendItem, { color: "#35D86C" }]}>● Home Usage</Text><Text style={[styles.legendItem, { color: "#548EFF" }]}>● Grid Import</Text></View></View><View style={styles.dayPill}><Text style={styles.dayText}>Day⌄</Text></View></View><FlowChart points={flowHistory.slice(-72)} width={chartWidth} /><View style={styles.axis}><Text style={styles.axisText}>12 AM</Text><Text style={styles.axisText}>6 AM</Text><Text style={styles.axisText}>12 PM</Text><Text style={styles.axisText}>6 PM</Text><Text style={styles.axisText}>12 AM</Text></View></View>
     <View style={styles.inverterCard}><View style={styles.inverterImage}><Bolt size={25} color="#F0F6FC" /></View><View style={styles.inverterInfo}><View style={styles.inverterTitleRow}><Text style={styles.inverterName}>Fronius PV14000</Text><Text style={styles.online}>● Online</Text></View><View style={styles.inverterStats}><Text style={styles.inverterStat}>{value(inverter.loadW / 1000)} kW{`\n`}AC Output</Text><Text style={styles.inverterStat}>{Math.round(inverter.temperatureC)}°C{`\n`}Temperature</Text><Text style={styles.inverterStat}>{inverter.ratedOutputW ? `${Math.round(inverter.loadW / inverter.ratedOutputW * 100)}%` : "--"}{`\n`}Efficiency</Text></View></View><Text style={styles.chevron}>›</Text></View>

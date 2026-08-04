@@ -280,6 +280,8 @@ function requestTomzn() {
             powerW: finiteNumber(find("power")?.value, 0),
             frequencyHz: finiteNumber(find("supply_frequency")?.displayValue, 50),
             isOnline: find("online_state")?.displayValue === "online",
+            switchOn: find("switch")?.value === true,
+            faultCode: finiteNumber(find("fault")?.value, 0),
             fetchedAt: data.fetchedAt || new Date().toISOString(),
           });
         } catch (error) { reject(error); }
@@ -292,7 +294,7 @@ function requestTomzn() {
 
 function publicTomzn(snapshot) {
   if (!snapshot) {
-    return { energyKwh: 0, voltageV: 0, currentA: 0, powerW: 0, powerDisplay: "-- W", frequencyHz: 50, isOnline: false, fetchedAt: "", isLive: false };
+    return { energyKwh: 0, voltageV: 0, currentA: 0, powerW: 0, powerDisplay: "-- W", frequencyHz: 50, isOnline: false, switchOn: false, faultCode: 0, fetchedAt: "", isLive: false };
   }
   const { _id, ...live } = snapshot;
   return {

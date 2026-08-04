@@ -112,7 +112,7 @@ const PENDING_OPERATIONS_KEY = "voltx.solar.pending-operations.v1";
 
 const EMPTY_TOMZN: TomznLive = {
   energyKwh: 0, voltageV: 0, currentA: 0, powerW: 0, powerDisplay: "-- W",
-  frequencyHz: 50, isOnline: false, fetchedAt: "", isLive: false,
+  frequencyHz: 50, isOnline: false, switchOn: false, faultCode: 0, fetchedAt: "", isLive: false,
 };
 
 const EMPTY_HOME: HomeState = {
