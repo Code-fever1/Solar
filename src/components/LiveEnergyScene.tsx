@@ -128,6 +128,56 @@ function Particle({
   );
 }
 
+// ── Layer 4b — Bubble Energy Particles (Home stream only) ────────────────
+// Particles stay fixed at the stream's start point and expand like a bubble:
+// grow from original size to 4x while fading out, then restart.
+function BubbleParticle({
+  ctrl,
+  color,
+  offset,
+  duration,
+  size,
+  activeOpacity,
+}: {
+  ctrl: CtrlArray;
+  color: string;
+  offset: number;
+  duration: number;
+  size: number;
+  activeOpacity: SharedValue<number>;
+}) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    progress.value = 0;
+    progress.value = withRepeat(withTiming(1, { duration, easing: Easing.linear }), -1, false);
+  }, [duration, progress]);
+
+  const startX = ctrl[0].x;
+  const startY = ctrl[0].y;
+
+  const glowProps = useAnimatedProps(() => {
+    const t = (progress.value + offset) % 1;
+    const scale = 1 + t * 3;
+    const opacity = activeOpacity.value * (1 - t);
+    return { cx: startX, cy: startY, r: size * 2.8 * scale, opacity };
+  });
+
+  const coreProps = useAnimatedProps(() => {
+    const t = (progress.value + offset) % 1;
+    const scale = 1 + t * 3;
+    const opacity = activeOpacity.value * (1 - t);
+    return { cx: startX, cy: startY, r: size * 0.7 * scale, opacity };
+  });
+
+  return (
+    <>
+      <AnimatedCircle animatedProps={glowProps} fill={color} filter="url(#particleGlow)" />
+      <AnimatedCircle animatedProps={coreProps} fill={color} />
+    </>
+  );
+}
+
 // ── Layers 2 + 3 + 4 — Full Stream ──────────────────────────────────────
 function StreamLayer({
   ctrl,
@@ -138,6 +188,7 @@ function StreamLayer({
   power,
   particleColor,
   strokeWidth = 2.5,
+  bubble = false,
 }: {
   ctrl: CtrlArray;
   pathD: string;
@@ -147,6 +198,7 @@ function StreamLayer({
   power: number;
   particleColor: string;
   strokeWidth?: number;
+  bubble?: boolean;
 }) {
   const activeOpacity = useSharedValue(active ? 1 : 0);
   const pulse = useSharedValue(0.85);
@@ -197,17 +249,29 @@ function StreamLayer({
         strokeLinecap="round"
         animatedProps={streamProps}
       />
-      {/* Layer 4 — Moving Energy Particles */}
+      {/* Layer 4 — Energy Particles (moving or bubble) */}
       {Array.from({ length: particleCount }).map((_, i) => (
-        <Particle
-          key={`p-${particleCount}-${i}`}
-          ctrl={ctrl}
-          color={particleColor}
-          offset={i / particleCount}
-          duration={duration}
-          size={particleSize}
-          activeOpacity={activeOpacity}
-        />
+        bubble ? (
+          <BubbleParticle
+            key={`b-${particleCount}-${i}`}
+            ctrl={ctrl}
+            color={particleColor}
+            offset={i / particleCount}
+            duration={duration}
+            size={particleSize}
+            activeOpacity={activeOpacity}
+          />
+        ) : (
+          <Particle
+            key={`p-${particleCount}-${i}`}
+            ctrl={ctrl}
+            color={particleColor}
+            offset={i / particleCount}
+            duration={duration}
+            size={particleSize}
+            activeOpacity={activeOpacity}
+          />
+        )
       ))}
     </>
   );
@@ -285,7 +349,35 @@ function SkiaParticle({ ctrl, color, offset, progress, size, activeOpacity }: { 
   );
 }
 
-function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gradientColors, active, power, particleColor, strokeWidth = 2.5, isVisible }: { ctrl: CtrlArray; path: string; glowColor: string; gradientStart: CtrlPoint; gradientEnd: CtrlPoint; gradientColors: string[]; active: boolean; power: number; particleColor: string; strokeWidth?: number; isVisible: boolean }) {
+// Bubble variant for Home stream — expands at start point instead of traveling
+function SkiaBubbleParticle({ ctrl, color, offset, progress, size, activeOpacity }: { ctrl: CtrlArray; color: string; offset: number; progress: SharedValue<number>; size: number; activeOpacity: SharedValue<number> }) {
+  const startX = ctrl[0].x;
+  const startY = ctrl[0].y;
+
+  const glowRadius = useDerivedValue(() => {
+    const t = (progress.value + offset) % 1;
+    return size * 2.8 * (1 + t * 3);
+  });
+  const coreRadius = useDerivedValue(() => {
+    const t = (progress.value + offset) % 1;
+    return size * 0.7 * (1 + t * 3);
+  });
+  const opacity = useDerivedValue(() => {
+    const t = (progress.value + offset) % 1;
+    return activeOpacity.value * (1 - t);
+  });
+
+  return (
+    <>
+      <SkiaCircle cx={startX} cy={startY} r={glowRadius} color={color} opacity={opacity}>
+        <BlurMask blur={2} />
+      </SkiaCircle>
+      <SkiaCircle cx={startX} cy={startY} r={coreRadius} color={color} opacity={opacity} />
+    </>
+  );
+}
+
+function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gradientColors, active, power, particleColor, strokeWidth = 2.5, isVisible, bubble = false }: { ctrl: CtrlArray; path: string; glowColor: string; gradientStart: CtrlPoint; gradientEnd: CtrlPoint; gradientColors: string[]; active: boolean; power: number; particleColor: string; strokeWidth?: number; isVisible: boolean; bubble?: boolean }) {
   const activeOpacity = useSharedValue(active ? 1 : 0);
   const pulse = useSharedValue(0.85);
   const progress = useSharedValue(0);
@@ -328,7 +420,9 @@ function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gr
         <SkiaLinearGradient start={vec(gradientStart.x, gradientStart.y)} end={vec(gradientEnd.x, gradientEnd.y)} colors={gradientColors} />
       </SkiaPath>
       {Array.from({ length: particleCount }).map((_, index) => (
-        <SkiaParticle key={`skia-p-${particleCount}-${index}`} ctrl={ctrl} color={particleColor} offset={index / particleCount} progress={progress} size={particleSize} activeOpacity={activeOpacity} />
+        bubble
+          ? <SkiaBubbleParticle key={`skia-b-${particleCount}-${index}`} ctrl={ctrl} color={particleColor} offset={index / particleCount} progress={progress} size={particleSize} activeOpacity={activeOpacity} />
+          : <SkiaParticle key={`skia-p-${particleCount}-${index}`} ctrl={ctrl} color={particleColor} offset={index / particleCount} progress={progress} size={particleSize} activeOpacity={activeOpacity} />
       ))}
     </>
   );
@@ -373,7 +467,7 @@ function EnergyCanvas({ solarOnline, gridImporting, homeActive, solarPower, grid
       <Group transform={[{ scale }, { translateX: offsetX }, { translateY: offsetY }]}>
         <SkiaStreamLayer ctrl={SOLAR_CTRL} path={SOLAR_PATH_D} glowColor="#FFD54F" gradientStart={SOLAR_CTRL[0]} gradientEnd={SOLAR_CTRL[3]} gradientColors={["#FFE066", "#FFB300"]} active={solarOnline} power={solarPower} particleColor="#FFE066" strokeWidth={3} isVisible={isVisible} />
         <SkiaStreamLayer ctrl={GRID_CTRL} path={GRID_PATH_D} glowColor={gridArcColor} gradientStart={GRID_CTRL[0]} gradientEnd={GRID_CTRL[3]} gradientColors={[gridArcColor, gridArcColor]} active={gridImporting} power={gridPower} particleColor={gridArcColor} strokeWidth={3} isVisible={isVisible} />
-        <SkiaStreamLayer ctrl={HOME_CTRL} path={HOME_PATH_D} glowColor="#45E376" gradientStart={HOME_CTRL[0]} gradientEnd={HOME_CTRL[3]} gradientColors={["#45E376", "#2DD66B"]} active={homeActive} power={homePower} particleColor="#5EE87E" strokeWidth={3.5} isVisible={isVisible} />
+        <SkiaStreamLayer ctrl={HOME_CTRL} path={HOME_PATH_D} glowColor="#45E376" gradientStart={HOME_CTRL[0]} gradientEnd={HOME_CTRL[3]} gradientColors={["#45E376", "#2DD66B"]} active={homeActive} power={homePower} particleColor="#5EE87E" strokeWidth={3.5} isVisible={isVisible} bubble />
         <SkiaInverterHub solarActive={solarOnline} gridActive={gridImporting} homeActive={homeActive} isVisible={isVisible} />
       </Group>
     </Canvas>
@@ -417,6 +511,9 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
     : weather.isDay;
 
   const solarOnline = !inverterOff && inverter.isLive && !offline && inverter.solarW > 25;
+  // Inverter is considered unavailable when it's off (standby) OR not responding at all.
+  // In this state, solar and home W/V/A are meaningless — only grid (TOMZN) values are shown.
+  const inverterUnavailable = inverterOff || !inverter.isLive || offline;
   // When inverter is offline or system is offline (no internet), override W/V/A with 0.
   const invW = (inverterOff || offline) ? 0 : (inverter.loadW || 0);
   // Use inverter AC output V and VA when grid is on standby or not connected.
@@ -620,7 +717,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
               particleColor={gridArcColor}
               strokeWidth={3}
             />
-            {/* Inverter → Home (center, going up) */}
+            {/* Inverter → Home (center, going up) — bubble particles */}
             <StreamLayer
               ctrl={HOME_CTRL}
               pathD={HOME_PATH_D}
@@ -630,6 +727,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
               power={homeW}
               particleColor="#5EE87E"
               strokeWidth={3.5}
+              bubble
             />
             {/* Inverter junction hub */}
             <InverterHub solarActive={solarOnline} gridActive={gridImporting} homeActive={homeActive} />
@@ -658,10 +756,10 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
         </View>
 
         {/* ── 3-column labels: Solar | Home | Grid ── */}
-        {/* Solar column (left) — hidden when inverter is offline */}
+        {/* Solar column (left) — hidden when inverter is unavailable */}
         <View style={styles.colSolar}>
           <SunMedium size={18} color={solarOnline ? "#F9C641" : "#8A8A8A"} />
-          {!inverterOff && (
+          {!inverterUnavailable && (
             <>
               <View style={styles.powerRow}>
                 <Text style={[styles.powerValue, { color: solarOnline ? "#FFD54F" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.value}</Text>
@@ -672,9 +770,9 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
           )}
         </View>
 
-        {/* Home column (center) — hidden when inverter is offline */}
+        {/* Home column (center) — hidden when inverter is unavailable */}
         <View style={styles.colHome}>
-          {!inverterOff && (
+          {!inverterUnavailable && (
             <>
               <View style={styles.powerRow}>
                 <Text style={[styles.powerValue, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.value}</Text>

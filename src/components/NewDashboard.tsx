@@ -191,12 +191,13 @@ export const NewDashboard = memo(function NewDashboard() {
     return Array.from(buckets.values()).sort((a, b) => a.timestamp - b.timestamp);
   }, [flowHistory, startOfToday]);
   const solarLive = inverter.isLive && inverter.solarW > 25;
-  // Inverter is considered OFF when everything reads zero (gridV 0, solar 0, grid 0, load 0)
-  // or when InverterZone reports standby mode ("S").
-  const inverterOff = inverter.isLive && (
+  // Inverter is considered OFF when:
+  //  - it's not responding at all (isLive = false), OR
+  //  - it reports standby mode ("S"), OR
+  //  - all its readings are zero (gridV 0, solar 0, grid 0, load 0)
+  const inverterOff = !inverter.isLive ||
     inverter.inverterMode === "S" ||
-    (inverter.gridV === 0 && inverter.solarW === 0 && inverter.gridW === 0 && inverter.loadW === 0)
-  );
+    (inverter.gridV === 0 && inverter.solarW === 0 && inverter.gridW === 0 && inverter.loadW === 0);
   // TOMZN fault codes:
   // 2048 = wapda cut off while load was on → show "Offline"
   // 8192 = wapda gone and relay also off → show "Unavailable"

@@ -34,6 +34,36 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 type Tab = "usage" | "fronus" | "tomzn";
 
+// TOMZN fault code bitfield lookup
+const TOMZN_FAULTS: Record<number, { type: string; reason: string; severity: "critical" | "warning" | "info" }> = {
+  1: { type: "Short Circuit", reason: "Direct short circuit detected; breaker tripped instantly.", severity: "critical" },
+  4: { type: "Overload", reason: "Total connected load exceeded maximum physical hardware capacity.", severity: "critical" },
+  8: { type: "Earth Leakage", reason: "Current escaping to the ground wire; safety hazard protection.", severity: "critical" },
+  16: { type: "Over-temperature", reason: "Internal terminal connections or breaker housing got too hot.", severity: "warning" },
+  64: { type: "Over-power", reason: "Connected wattage exceeded your set safety wattage cap.", severity: "warning" },
+  256: { type: "Over-current", reason: "Amperage went past your custom Io cap limit.", severity: "warning" },
+  512: { type: "Unbalance", reason: "Amperage difference between phases is unsafely high (3-Phase models).", severity: "warning" },
+  1024: { type: "Over-Voltage", reason: "Main grid spiked higher than your upper Uo protection limit.", severity: "critical" },
+  2048: { type: "Under-Voltage", reason: "Grid voltage dropped too low for safe operation.", severity: "critical" },
+  4096: { type: "Phase Loss / Fault", reason: "One of the incoming lines died completely (3-Phase models).", severity: "critical" },
+  8192: { type: "Power Outage", reason: "Main incoming supply grid lost total utility power.", severity: "critical" },
+  16384: { type: "Magnetism", reason: "External magnetic field tamper attempt or sensor glitch detected.", severity: "warning" },
+  131072: { type: "Phase Sequence Error", reason: "L1, L2, or L3 wires are connected in the wrong order.", severity: "warning" },
+  262144: { type: "Voltage Unbalance", reason: "Voltage gap between lines is wider than safe limits.", severity: "warning" },
+};
+
+// Decode a bitfield fault code into all active fault flags
+type DecodedFault = { bit: number; type: string; reason: string; severity: "critical" | "warning" | "info" };
+function decodeFaultCode(code: number): DecodedFault[] {
+  if (!code || code <= 0) return [];
+  return Object.keys(TOMZN_FAULTS)
+    .map(Number)
+    .filter((bit) => (code & bit) !== 0)
+    .map((bit) => ({ bit, ...TOMZN_FAULTS[bit] }));
+}
+
+const SEVERITY_COLOR = { critical: "#EF4C4C", warning: "#F8C653", info: "#548EFF" };
+
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
   const { isLight, ...theme } = useTheme();
@@ -309,6 +339,35 @@ function TomznTab({
           <DataTile label="Online" value={isOnline ? "Online" : "Offline"} icon={<Radio size={10} color={isOnline ? "#32E56B" : "#EF4C4C"} />} />
           <DataTile label="Fault Code" value={tomznLive?.faultCode ? String(tomznLive.faultCode) : "0"} icon={<AlertCircle size={10} color={tomznLive?.faultCode ? "#EF4C4C" : "#32E56B"} />} />
         </View>
+
+        {/* Fault Code Explanation */}
+        {(() => {
+          const code = tomznLive?.faultCode || 0;
+          const faults = decodeFaultCode(code);
+          if (faults.length === 0) {
+            return (
+              <View style={[styles.faultBox, { backgroundColor: "rgba(50,229,107,0.06)", borderColor: "rgba(50,229,107,0.15)" }]}>
+                <View style={styles.faultHeader}>
+                  <AlertCircle size={11} color="#32E56B" />
+                  <Text style={[styles.faultTitle, { color: "#32E56B" }]}>No Faults</Text>
+                </View>
+                <Text style={styles.faultReason}>System is operating normally. No fault flags are active.</Text>
+              </View>
+            );
+          }
+          return faults.map((f) => (
+            <View key={f.bit} style={[styles.faultBox, { backgroundColor: `${SEVERITY_COLOR[f.severity]}0F`, borderColor: `${SEVERITY_COLOR[f.severity]}33` }]}>
+              <View style={styles.faultHeader}>
+                <AlertCircle size={11} color={SEVERITY_COLOR[f.severity]} />
+                <Text style={[styles.faultTitle, { color: SEVERITY_COLOR[f.severity] }]}>{f.type}</Text>
+                <View style={[styles.faultBadge, { backgroundColor: `${SEVERITY_COLOR[f.severity]}22` }]}>
+                  <Text style={[styles.faultBadgeText, { color: SEVERITY_COLOR[f.severity] }]}>Code {f.bit}</Text>
+                </View>
+              </View>
+              <Text style={styles.faultReason}>{f.reason}</Text>
+            </View>
+          ));
+        })()}
 
         {/* Data Status Section */}
         <SectionHeader icon={<Activity size={12} color="#8862ED" />} title="Data Status" color="#8862ED" />
@@ -635,6 +694,42 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Outfit",
     fontWeight: "700",
+  },
+
+  // Fault explanation
+  faultBox: {
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    marginBottom: 8,
+  },
+  faultHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  faultTitle: {
+    fontSize: 11,
+    fontFamily: "Outfit",
+    fontWeight: "700",
+    flex: 1,
+  },
+  faultBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  faultBadgeText: {
+    fontSize: 8,
+    fontFamily: "Outfit",
+    fontWeight: "700",
+  },
+  faultReason: {
+    fontSize: 10,
+    fontFamily: "Outfit",
+    color: "rgba(255,255,255,0.6)",
+    lineHeight: 14,
   },
 
   // Hourly chart
