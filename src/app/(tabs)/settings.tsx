@@ -1,4 +1,4 @@
-import { Colors } from "@/constants/Colors";
+import { useTheme } from "@/hooks/use-theme";
 import { useEnergy } from "@/context/EnergyContext";
 import { Activity, ArrowLeft, BarChart2, CalendarDays, Edit3, History, RefreshCw, Save, Sparkles } from "lucide-react-native";
 import { useEffect, useState } from "react";
@@ -8,7 +8,7 @@ import Svg, { Circle, Path } from "react-native-svg";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const theme = Colors.dark;
+  const { isLight, ...theme } = useTheme();
   const { swapChangeover, activeMeter, meters, home, setManualBaseline, setLastMonthTotal, addManualLog } = useEnergy();
   
   const [meter1Baseline, setMeter1Baseline] = useState("");
@@ -93,7 +93,7 @@ export default function SettingsScreen() {
   };
 
   return (
-    <View style={s.screen}>
+    <View style={[s.screen, { backgroundColor: theme.screenBg }]}>
       <ScrollView contentContainerStyle={[s.container, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 100 }]} showsVerticalScrollIndicator={false}>
         
         {/* Header */}
@@ -103,7 +103,7 @@ export default function SettingsScreen() {
               <ArrowLeft size={20} color="#F4F8FC" />
             </View>
             <View>
-              <Text style={s.title}>Settings</Text>
+              <Text style={[s.title, { color: theme.text }]}>Settings</Text>
               <Text style={s.subtitle}>Manage changeover & billing-cycle baselines</Text>
             </View>
           </View>
@@ -122,32 +122,32 @@ export default function SettingsScreen() {
         <View style={s.section}>
           <View style={s.sectionHeader}>
             <RefreshCw size={14} color="#32E56B" />
-            <Text style={[s.sectionTitle, { color: '#AAB7C7' }]}>CHANGEOVER CONTROL</Text>
+            <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>CHANGEOVER CONTROL</Text>
           </View>
-          <View style={[s.card, { borderColor: 'rgba(50,229,107,0.15)', backgroundColor: 'rgba(50,229,107,0.03)' }]}>
+          <View style={[s.card, { borderColor: theme.cardBorder, backgroundColor: theme.card }]}>
             <View style={s.changeoverRow}>
               <View style={s.changeoverLeft}>
                 <View style={s.changeoverIcon}>
                   <RefreshCw size={20} color="#32E56B" />
                 </View>
                 <View>
-                  <Text style={s.cardLabelText}>Active Source</Text>
-                  <Text style={s.changeoverActiveText}>
+                  <Text style={[s.cardLabelText, { color: theme.textSecondary }]}>Active Source</Text>
+                  <Text style={[s.changeoverActiveText, { color: theme.text }]}>
                     {activeMeter === 'meter1' ? 'Meter 1 (Analog)' : 'Meter 2 (Digital)'}
                   </Text>
                   <View style={s.activeBadge}>
                     <View style={s.activeDot} />
-                    <Text style={s.activeBadgeText}>Currently Active</Text>
+                    <Text style={[s.activeBadgeText, { color: theme.textSecondary }]}>Currently Active</Text>
                   </View>
                 </View>
               </View>
               <View style={s.changeoverSep} />
               <View style={s.changeoverRight}>
-                <Text style={s.aboutTitle}>About Changeover</Text>
-                <Text style={s.aboutDesc}>Switch between meters to control which meter records the consumption.</Text>
+                <Text style={[s.aboutTitle, { color: theme.text }]}>About Changeover</Text>
+                <Text style={[s.aboutDesc, { color: theme.textSecondary }]}>Switch between meters to control which meter records the consumption.</Text>
                 <Pressable style={s.swapBtn} onPress={handleSwap}>
                   <RefreshCw size={14} color="#32E56B" />
-                  <Text style={s.swapBtnText}>Swap Source</Text>
+                  <Text style={[s.swapBtnText, { color: theme.text }]}>Swap Source</Text>
                 </Pressable>
               </View>
             </View>
@@ -158,12 +158,12 @@ export default function SettingsScreen() {
         <View style={s.section}>
           <View style={s.sectionHeader}>
             <CalendarDays size={14} color="#6791E4" />
-            <Text style={[s.sectionTitle, { color: '#AAB7C7' }]}>BILLING CYCLE BASELINES</Text>
+            <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>BILLING CYCLE BASELINES</Text>
           </View>
           
           <View style={s.baselineCardWrapper}>
             <View style={s.cardHighlight} />
-            <View style={[s.card, s.blueCard]}>
+            <View style={[s.card, s.blueCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
               <View style={s.baselineContentRow}>
                 
                 <View style={s.baselineLeft}>
@@ -181,16 +181,16 @@ export default function SettingsScreen() {
 
                   <View style={s.inputRow}>
                     <View style={s.inputWrapper}>
-                      <Text style={s.inputLabel}>Meter 1 (Analog)</Text>
+                      <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 1 (Analog)</Text>
                       <View style={s.inputContainer}>
-                        <TextInput value={meter1Baseline} onChangeText={setMeter1Baseline} keyboardType="decimal-pad" style={s.inputField} placeholder="0.00" placeholderTextColor="rgba(255,255,255,0.2)" />
+                        <TextInput value={meter1Baseline} onChangeText={setMeter1Baseline} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder="0.00" placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                         <Edit3 size={14} color="#4A85FF" />
                       </View>
                     </View>
                     <View style={s.inputWrapper}>
-                      <Text style={s.inputLabel}>Meter 2 (Digital)</Text>
+                      <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 2 (Digital)</Text>
                       <View style={s.inputContainer}>
-                        <TextInput value={meter2Baseline} onChangeText={setMeter2Baseline} keyboardType="decimal-pad" style={s.inputField} placeholder="0.00" placeholderTextColor="rgba(255,255,255,0.2)" />
+                        <TextInput value={meter2Baseline} onChangeText={setMeter2Baseline} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder="0.00" placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                         <Edit3 size={14} color="#4A85FF" />
                       </View>
                     </View>
@@ -198,7 +198,7 @@ export default function SettingsScreen() {
 
                   <Pressable style={[s.primaryBtn, { backgroundColor: '#1A5CE5' }, savingBaselines && s.btnDisabled]} onPress={handleSaveBaselines} disabled={savingBaselines}>
                     <Save size={16} color="#FFF" />
-                    <Text style={s.primaryBtnText}>{savingBaselines ? "Saving…" : "Save 28th baselines"}</Text>
+                    <Text style={[s.primaryBtnText, { color: "#FFF" }]}>{savingBaselines ? "Saving…" : "Save 28th baselines"}</Text>
                   </Pressable>
                 </View>
 
@@ -229,12 +229,12 @@ export default function SettingsScreen() {
         <View style={s.section}>
           <View style={s.sectionHeader}>
             <Activity size={14} color="#A78BFA" />
-            <Text style={[s.sectionTitle, { color: '#AAB7C7' }]}>MANUAL METER READINGS</Text>
+            <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>MANUAL METER READINGS</Text>
           </View>
 
           <View style={s.readingsRow}>
             {/* Main Log Card */}
-            <View style={[s.card, s.purpleCard, { flex: 2 }]}>
+            <View style={[s.card, s.purpleCard, { flex: 2, backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
               <View style={s.logHeaderRow}>
                 <View style={s.purpleIconBox}>
                   <Activity size={18} color="#B69AFF" />
@@ -251,16 +251,16 @@ export default function SettingsScreen() {
 
               <View style={s.inputRow}>
                 <View style={s.inputWrapper}>
-                  <Text style={s.inputLabel}>Meter 1 (Analog)</Text>
+                  <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 1 (Analog)</Text>
                   <View style={s.inputContainer}>
-                    <TextInput value={meter1Reading} onChangeText={setMeter1Reading} keyboardType="decimal-pad" style={s.inputField} placeholder={meters.meter1.reading.toFixed(1)} placeholderTextColor="rgba(255,255,255,0.2)" />
+                    <TextInput value={meter1Reading} onChangeText={setMeter1Reading} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder={meters.meter1.reading.toFixed(1)} placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                     <Edit3 size={14} color="#B69AFF" />
                   </View>
                 </View>
                 <View style={s.inputWrapper}>
-                  <Text style={s.inputLabel}>Meter 2 (Digital)</Text>
+                  <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 2 (Digital)</Text>
                   <View style={s.inputContainer}>
-                    <TextInput value={meter2Reading} onChangeText={setMeter2Reading} keyboardType="decimal-pad" style={s.inputField} placeholder={meters.meter2.reading.toFixed(1)} placeholderTextColor="rgba(255,255,255,0.2)" />
+                    <TextInput value={meter2Reading} onChangeText={setMeter2Reading} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder={meters.meter2.reading.toFixed(1)} placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                     <Edit3 size={14} color="#B69AFF" />
                   </View>
                 </View>
@@ -268,12 +268,12 @@ export default function SettingsScreen() {
 
               <Pressable style={[s.primaryBtn, { backgroundColor: '#4C2882' }, savingReadings && s.btnDisabled]} onPress={handleSaveReadings} disabled={savingReadings}>
                 <Save size={16} color="#FFF" />
-                <Text style={s.primaryBtnText}>{savingReadings ? "Saving…" : "Log readings"}</Text>
+                <Text style={[s.primaryBtnText, { color: "#FFF" }]}>{savingReadings ? "Saving…" : "Log readings"}</Text>
               </Pressable>
             </View>
 
             {/* Last Logged Card */}
-            <View style={[s.card, { flex: 1, backgroundColor: '#13111C', borderColor: 'rgba(182,154,255,0.1)', justifyContent: 'center' }]}>
+            <View style={[s.card, { flex: 1, backgroundColor: theme.card, borderColor: theme.cardBorder, justifyContent: 'center' }]}>
               <View style={s.lastLoggedHeader}>
                 <History size={12} color="#7E91A6" />
                 <Text style={s.lastLoggedLabel}>Last Logged</Text>
@@ -294,10 +294,10 @@ export default function SettingsScreen() {
         <View style={s.section}>
           <View style={s.sectionHeader}>
             <BarChart2 size={14} color="#32E56B" />
-            <Text style={[s.sectionTitle, { color: '#AAB7C7' }]}>LAST MONTH TOTAL</Text>
+            <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>LAST MONTH TOTAL</Text>
           </View>
 
-          <View style={[s.card, s.greenCard]}>
+          <View style={[s.card, s.greenCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
             <View style={s.lastMonthRow}>
               
               <View style={s.lastMonthLeft}>
@@ -312,9 +312,9 @@ export default function SettingsScreen() {
                 </View>
 
                 <View style={s.inputWrapper}>
-                  <Text style={s.inputLabel}>Total units</Text>
+                  <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Total units</Text>
                   <View style={s.inputContainer}>
-                    <TextInput value={lastMonthInput} onChangeText={setLastMonthInput} keyboardType="decimal-pad" style={s.inputField} placeholder={home?.lastMonthTotal != null ? String(Math.round(home.lastMonthTotal)) : "0"} placeholderTextColor="rgba(255,255,255,0.2)" />
+                    <TextInput value={lastMonthInput} onChangeText={setLastMonthInput} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder={home?.lastMonthTotal != null ? String(Math.round(home.lastMonthTotal)) : "0"} placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                   </View>
                 </View>
 
@@ -362,7 +362,7 @@ export default function SettingsScreen() {
 const s = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#080C11', // Very dark background like image
+    backgroundColor: 'transparent', // Very dark background like image
   },
   container: {
     paddingHorizontal: 14,
@@ -391,13 +391,13 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   title: {
-    color: '#F4F8FC',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 20,
     fontWeight: "700",
   },
   subtitle: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 11,
     marginTop: 1,
@@ -423,7 +423,7 @@ const s = StyleSheet.create({
     backgroundColor: '#32E56B',
   },
   updateText: {
-    color: '#AAB7C7',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 9,
   },
@@ -453,10 +453,8 @@ const s = StyleSheet.create({
     letterSpacing: 0.5,
   },
   card: {
-    backgroundColor: '#0F151E',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
     padding: 14,
   },
 
@@ -482,7 +480,7 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   cardLabelText: {
-    color: '#F4F8FC',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 11,
     fontWeight: "500",
@@ -507,7 +505,7 @@ const s = StyleSheet.create({
     backgroundColor: '#32E56B',
   },
   activeBadgeText: {
-    color: '#AAB7C7',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 9,
   },
@@ -522,14 +520,14 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   aboutTitle: {
-    color: '#F4F8FC',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 13,
     fontWeight: "600",
     marginBottom: 4,
   },
   aboutDesc: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 10,
     lineHeight: 14,
@@ -565,7 +563,7 @@ const s = StyleSheet.create({
     zIndex: 10,
   },
   blueCard: {
-    backgroundColor: '#0A1224',
+    backgroundColor: 'transparent',
     borderColor: 'rgba(74,133,255,0.15)',
   },
   baselineContentRow: {
@@ -600,14 +598,14 @@ const s = StyleSheet.create({
     bottom: 8,
   },
   whiteCardTitle: {
-    color: '#F4F8FC',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 13,
     fontWeight: "600",
     marginBottom: 3,
   },
   grayCardDesc: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 10,
     lineHeight: 13,
@@ -680,7 +678,7 @@ const s = StyleSheet.create({
     gap: 5,
   },
   inputLabel: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 10,
     fontWeight: "500",
@@ -697,7 +695,7 @@ const s = StyleSheet.create({
   },
   inputField: {
     flex: 1,
-    color: '#F4F8FC',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 13,
   },
@@ -767,18 +765,18 @@ const s = StyleSheet.create({
     marginBottom: 5,
   },
   lastLoggedLabel: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 9,
   },
   lastLoggedDate: {
-    color: '#F4F8FC',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 12,
     fontWeight: "600",
   },
   lastLoggedTime: {
-    color: '#AAB7C7',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 10,
     marginTop: 1,
@@ -790,7 +788,7 @@ const s = StyleSheet.create({
     marginVertical: 10,
   },
   diffLabel: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 8,
     fontWeight: "500",
@@ -805,7 +803,7 @@ const s = StyleSheet.create({
     marginTop: 3,
   },
   diffUnit: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 9,
   },
@@ -861,19 +859,19 @@ const s = StyleSheet.create({
     alignItems: 'flex-start',
   },
   aiImpactValue: {
-    color: '#F4F8FC',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 16,
     fontWeight: "700",
   },
   aiImpactUnit: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 9,
     marginTop: -2,
   },
   aiImpactDesc: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 8,
     marginTop: 6,
@@ -889,7 +887,7 @@ const s = StyleSheet.create({
     marginTop: 3,
   },
   gaugeSub: {
-    color: '#7E91A6',
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 8,
   }

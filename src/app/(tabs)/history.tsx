@@ -1,5 +1,6 @@
 import { UsageSummaryCard } from "@/components/UsageSummaryCard";
 import { useEnergy } from "@/context/EnergyContext";
+import { useTheme } from "@/hooks/use-theme";
 import {
     Activity,
     AlertCircle,
@@ -35,6 +36,7 @@ type Tab = "usage" | "fronus" | "tomzn";
 
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
+  const { isLight, ...theme } = useTheme();
   const { home, inverter, tomznLive, refreshTomzn, tomznHistory } = useEnergy();
   const [tab, setTab] = useState<Tab>("usage");
   const [refreshing, setRefreshing] = useState(false);
@@ -65,7 +67,7 @@ export default function HistoryScreen() {
   ];
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { backgroundColor: theme.screenBg }]}>
       <ScrollView
         contentContainerStyle={[
           styles.container,
@@ -75,7 +77,7 @@ export default function HistoryScreen() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Summary</Text>
+          <Text style={[styles.title, { color: theme.text }]}>Summary</Text>
           <Text style={styles.subtitle}>Complete device telemetry & usage analytics</Text>
         </View>
 
@@ -91,7 +93,7 @@ export default function HistoryScreen() {
                 style={[styles.tab, isActive && styles.tabActive]}
               >
                 <Icon size={14} color={isActive ? "#35E378" : "#7E91A6"} />
-                <Text style={[styles.tabText, isActive && styles.tabTextActive]}>{t.label}</Text>
+                <Text style={[styles.tabText, isActive && styles.tabTextActive, { color: isActive ? undefined : theme.textSecondary }]}>{t.label}</Text>
               </Pressable>
             );
           })}
@@ -128,6 +130,7 @@ function UsageTab() {
 /* ─────────────────── Fronus (Inverter) Tab ─────────────────── */
 
 function FronusTab({ inverter }: { inverter: any }) {
+  const { ...theme } = useTheme();
   const isLive = inverter?.isLive;
   const statusColor = isLive ? "#32E56B" : "#EF4C4C";
   const statusText = isLive ? "LIVE" : "OFFLINE";
@@ -138,7 +141,7 @@ function FronusTab({ inverter }: { inverter: any }) {
   return (
     <View style={styles.tabContent}>
       {/* Fronus Header Card */}
-      <View style={styles.card}>
+      <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
         <View style={styles.cardHighlight} />
         <View style={styles.deviceHeader}>
           <View style={styles.deviceHeaderLeft}>
@@ -147,8 +150,8 @@ function FronusTab({ inverter }: { inverter: any }) {
               <Sun size={24} color="#F8C653" />
             </View>
             <View>
-              <Text style={styles.deviceName}>Fronus Inverter</Text>
-              <Text style={styles.deviceSubtitle}>Solar inverter telemetry</Text>
+              <Text style={[styles.deviceName, { color: theme.text }]}>Fronus Inverter</Text>
+              <Text style={[styles.deviceSubtitle, { color: theme.textSecondary }]}>Solar inverter telemetry</Text>
             </View>
           </View>
           <View style={[styles.statusBadge, { backgroundColor: `${statusColor}20`, borderColor: `${statusColor}40` }]}>
@@ -237,6 +240,7 @@ function TomznTab({
   refreshing: boolean;
   spinStyle: any;
 }) {
+  const { ...theme } = useTheme();
   const isLive = tomznLive?.isLive;
   const isOnline = tomznLive?.isOnline;
   const statusColor = isLive ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
@@ -251,7 +255,7 @@ function TomznTab({
   return (
     <View style={styles.tabContent}>
       {/* Tomzn Header Card */}
-      <View style={styles.card}>
+      <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
         <View style={styles.cardHighlight} />
         <View style={styles.deviceHeader}>
           <View style={styles.deviceHeaderLeft}>
@@ -260,8 +264,8 @@ function TomznTab({
               <Cpu size={24} color="#548EFF" />
             </View>
             <View>
-              <Text style={styles.deviceName}>Tomzn Meter</Text>
-              <Text style={styles.deviceSubtitle}>Smart meter telemetry</Text>
+              <Text style={[styles.deviceName, { color: theme.text }]}>Tomzn Meter</Text>
+              <Text style={[styles.deviceSubtitle, { color: theme.textSecondary }]}>Smart meter telemetry</Text>
             </View>
           </View>
           <View style={[styles.statusBadge, { backgroundColor: `${statusColor}20`, borderColor: `${statusColor}40` }]}>
@@ -316,12 +320,12 @@ function TomznTab({
       </View>
 
       {/* 24-Hour Usage Chart */}
-      <View style={styles.card}>
+      <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
         <View style={styles.cardHighlight} />
         <View style={styles.cardHeader}>
           <View style={styles.headerLeft}>
             <TrendingUp size={12} color="#548EFF" />
-            <Text style={styles.cardTitle}>24-Hour Usage</Text>
+            <Text style={[styles.cardTitle, { color: theme.text }]}>24-Hour Usage</Text>
           </View>
           <Text style={styles.cardSubtitle}>Hourly consumption</Text>
         </View>
@@ -341,17 +345,17 @@ function TomznTab({
             })}
           </View>
         ) : (
-          <Text style={styles.emptyText}>No hourly data available</Text>
+          <Text style={[styles.emptyText, { color: theme.textMuted }]}>No hourly data available</Text>
         )}
       </View>
 
       {/* Tomzn History (recent 10) */}
-      <View style={styles.card}>
+      <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
         <View style={styles.cardHighlight} />
         <View style={styles.cardHeader}>
           <View style={styles.headerLeft}>
             <Clock size={12} color="#548EFF" />
-            <Text style={styles.cardTitle}>History (Recent 10)</Text>
+            <Text style={[styles.cardTitle, { color: theme.text }]}>History (Recent 10)</Text>
           </View>
           <Text style={styles.cardSubtitle}>{tomznHistory.length} total records</Text>
         </View>
@@ -371,7 +375,7 @@ function TomznTab({
             </View>
           ))
         ) : (
-          <Text style={styles.emptyText}>No history records available</Text>
+          <Text style={[styles.emptyText, { color: theme.textMuted }]}>No history records available</Text>
         )}
       </View>
     </View>
@@ -407,7 +411,7 @@ function DataTile({ label, value, icon }: { label: string; value: string; icon: 
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: "#0B111B",
+    backgroundColor: 'transparent',
   },
   container: {
     paddingHorizontal: 16,
@@ -417,13 +421,13 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   title: {
-    color: "#F4F8FC",
+    color: undefined,
     fontFamily: "Outfit",
     fontSize: 26,
     fontWeight: "700",
   },
   subtitle: {
-    color: "#7E91A6",
+    color: undefined,
     fontSize: 12,
     fontFamily: "Outfit",
     marginTop: 3,
@@ -432,7 +436,7 @@ const styles = StyleSheet.create({
   // Tab bar
   tabBar: {
     flexDirection: "row",
-    backgroundColor: "#0E1521",
+    backgroundColor: 'transparent',
     borderRadius: 12,
     padding: 4,
     borderWidth: 1,
@@ -452,7 +456,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(53,227,120,0.08)",
   },
   tabText: {
-    color: "#7E91A6",
+    color: undefined,
     fontSize: 11,
     fontFamily: "Outfit",
     fontWeight: "600",
@@ -469,7 +473,7 @@ const styles = StyleSheet.create({
 
   // Card
   card: {
-    backgroundColor: "#0E1521",
+    backgroundColor: 'transparent',
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
@@ -497,13 +501,13 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   cardTitle: {
-    color: "#E4ECF4",
+    color: undefined,
     fontSize: 12,
     fontFamily: "Outfit",
     fontWeight: "700",
   },
   cardSubtitle: {
-    color: "#5C6C7E",
+    color: undefined,
     fontSize: 9,
     fontFamily: "Outfit",
   },
@@ -530,13 +534,13 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.06)",
   },
   deviceName: {
-    color: "#F4F8FC",
+    color: undefined,
     fontSize: 16,
     fontFamily: "Outfit",
     fontWeight: "700",
   },
   deviceSubtitle: {
-    color: "#7E91A6",
+    color: undefined,
     fontSize: 10,
     fontFamily: "Outfit",
     marginTop: 2,
@@ -573,7 +577,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   fetchedText: {
-    color: "#5C6C7E",
+    color: undefined,
     fontSize: 9,
     fontFamily: "Outfit",
     flex: 1,
@@ -621,13 +625,13 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   dataTileLabel: {
-    color: "#5C6C7E",
+    color: undefined,
     fontSize: 8,
     fontFamily: "Outfit",
     fontWeight: "600",
   },
   dataTileValue: {
-    color: "#E4ECF4",
+    color: undefined,
     fontSize: 13,
     fontFamily: "Outfit",
     fontWeight: "700",
@@ -667,7 +671,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   historyTime: {
-    color: "#7E91A6",
+    color: undefined,
     fontSize: 9,
     fontFamily: "Outfit",
   },
@@ -677,20 +681,20 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   historyPower: {
-    color: "#E4ECF4",
+    color: undefined,
     fontSize: 10,
     fontFamily: "Outfit",
     fontWeight: "600",
   },
   historyEnergy: {
-    color: "#5C6C7E",
+    color: undefined,
     fontSize: 9,
     fontFamily: "Outfit",
   },
 
   // Empty
   emptyText: {
-    color: "#5C6C7E",
+    color: undefined,
     fontSize: 11,
     fontFamily: "Outfit",
     textAlign: "center",

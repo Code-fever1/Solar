@@ -1,5 +1,4 @@
 import { Colors } from "@/constants/Colors";
-import { useUiMode } from "@/context/UiModeContext";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { Tabs } from "expo-router";
 import { Activity, CalendarDays, House, Settings as SettingsIcon, Zap } from "lucide-react-native";
@@ -23,9 +22,7 @@ function TabBar({ state, descriptors, navigation }: any) {
   const scheme = useColorScheme();
   const isLight = scheme === "light";
   const theme = isLight ? Colors.light : Colors.dark;
-  const { mode } = useUiMode();
-  const isNew = mode === "new";
-  const titles: Record<string, string> = isNew ? { index: "Home", meters: "Energy", logs: "Logs", history: "Summary", settings: "Settings" } : { index: "Voltix", meters: "Meters", logs: "Logs", history: "Summary", settings: "Settings" };
+  const titles: Record<string, string> = { index: "Home", meters: "Energy", logs: "Logs", history: "Summary", settings: "Settings" };
 
   return (
     <View
@@ -47,10 +44,10 @@ function TabBar({ state, descriptors, navigation }: any) {
         {state.routes.map((route: any, index: number) => {
           const isFocused = state.index === index;
           const label = titles[route.name] ?? route.name;
-          const isPulse = isNew && route.name === "index";
+          const isPulse = route.name === "index";
           const Icon = route.name === "index" ? House : route.name === "meters" ? Zap : route.name === "logs" ? Activity : route.name === "settings" ? SettingsIcon : CalendarDays;
-          const activeColor = isNew ? "#35E378" : "#3B82F6";
-          const inactiveColor = "#A5B4C5";
+          const activeColor = "#35E378";
+          const inactiveColor = isLight ? "#6B7280" : "#A5B4C5";
 
           const onPress = () => {
             const event = navigation.emit({
@@ -67,9 +64,9 @@ function TabBar({ state, descriptors, navigation }: any) {
             <Pressable
               key={route.key}
               onPress={onPress}
-              style={[styles.tab, isNew && isFocused && !isPulse && styles.newFocused, isPulse && styles.pulseTab]}
+              style={[styles.tab, isFocused && !isPulse && styles.newFocused, isPulse && styles.pulseTab]}
             >
-              <View style={isPulse ? styles.pulse : undefined}><Icon color={isPulse ? "#52F493" : isFocused ? activeColor : inactiveColor} size={isPulse ? 23 : 18} /></View>
+              <View style={isPulse ? [styles.pulse, { backgroundColor: isLight ? "#DCFCE7" : "#0E2C22" }] : undefined}><Icon color={isPulse ? "#52F493" : isFocused ? activeColor : inactiveColor} size={isPulse ? 23 : 18} /></View>
               {!!label && <Text style={[styles.label, { color: isFocused ? activeColor : inactiveColor }, isFocused && styles.labelActive]} numberOfLines={1}>{label}</Text>}
             </Pressable>
           );

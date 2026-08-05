@@ -427,28 +427,33 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
   const usingAcOut = !inverterOff && !offline && gridV <= 0 && acOutV > 0;
   const invV = (inverterOff || offline) ? 0 : (gridV > 0 ? gridV : acOutV);
   const invA = (inverterOff || offline) ? 0 : (usingAcOut ? loadVa / acOutV : (inverter.loadW || 0) / Math.max(1, gridV));
-  // Relay off with fault code 2048 = cutoff state
-  const wapdaCutOff = !offline && tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode === 2048;
-  // Relay off without fault code = standby state
-  const wapdaStandby = !offline && tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode !== 2048;
+  // TOMZN fault codes:
+  // 2048 = wapda cut off while load was on (relay was on, power was drawing, wapda went away)
+  // 8192 = wapda gone and relay also off (grid disconnected, relay already open)
+  // Both are "Wapda Cut Off" states — the grid is no longer available.
+  const fault = tomznLive.faultCode || 0;
+  const wapdaCutOff = !offline && tomznLive.isOnline && (fault === 2048 || fault === 8192);
+  // Relay off with no fault = standby (user/manual disconnect, not a fault)
+  const wapdaStandby = !offline && tomznLive.isOnline && !tomznLive.switchOn && fault !== 2048 && fault !== 8192;
   // Grid arc always uses Tomzn (Wapda) meter data — independent of inverter state.
   const gridImporting = !offline && tomznLive.isOnline && tomznLive.powerW > 0 && !wapdaCutOff && !wapdaStandby;
   const gridPowerW = gridImporting ? Math.max(0, tomznLive.powerW) : 0;
   const gridColor = gridImporting ? "#6E9BFF" : wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : "#8A8A8A";
 
-  // Pace algorithm — same as old UI DashboardGrid speed section
-  // loadRatio: how current draw compares to the historical avg for this hour
-  // ratio > 1 = above normal, ratio < 1 = below normal, ratio = 1 = on pace
+  // Pace algorithm — uses TOMZN powerW (total home draw) for BOTH label and color.
+  // TOMZN sees all power flowing to the home whether from solar or grid, so the
+  // ratio is consistent and not affected by whether solar is active or not.
   const lerpSpeed = (a: number, b: number, x: number) => Math.round(a + (b - a) * Math.max(0, Math.min(1, x)));
   const getPowerColor = (): string => {
-    const gridKw = gridPowerW / 1000;
-    if (gridKw <= 0) return "#6B7280";
+    const currentKw = (tomznLive.powerW || 0) / 1000;
     const normalKw = normalDrawKw ?? 0;
-    const loadRatio = normalKw > 0 && gridKw > 0 ? gridKw / normalKw : 1;
+    if (normalKw <= 0 || currentKw <= 0) return "#6B7280";
+    const loadRatio = currentKw / normalKw;
     const delta = loadRatio - 1;
-    if (Math.abs(delta) < 0.08) return "#F8FAFC"; // within 8% → white
+    // Wider dead zone (±15%) so minor fluctuations don't trigger color changes
+    if (Math.abs(delta) < 0.15) return "#F8FAFC";
     if (delta > 0) {
-      // white → yellow → orange → red
+      // white → yellow → orange → red (above normal)
       const t = Math.min(1, delta / 1.0);
       if (t < 0.4) {
         const s = t / 0.4;
@@ -460,7 +465,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
       const s = (t - 0.7) / 0.3;
       return `rgb(${lerpSpeed(255, 239, s)},${lerpSpeed(130, 68, s)},${lerpSpeed(15, 68, s)})`;
     }
-    // white → mint → green
+    // white → mint → green (below normal)
     const t = Math.min(1, Math.abs(delta) / 0.6);
     if (t < 0.45) {
       const s = t / 0.45;
@@ -470,27 +475,41 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
     return `rgb(${lerpSpeed(100, 16, s)},${lerpSpeed(230, 185, s)},${lerpSpeed(175, 129, s)})`;
   };
   const paceColor = getPowerColor();
-  const paceLabel = !gridImporting
-    ? "No draw"
-    : loadStatus === "High" ? "↑ High"
-    : loadStatus === "Low" ? "↓ Low"
-    : "On Pace";
   // Grid arc color uses pace algorithm when importing, falls back to status color otherwise
   const gridArcColor = gridImporting ? paceColor : gridColor;
 
   // ── Power mode label + color ──
-  // Solar only: solar is producing, wapda not importing
-  // Hybrid: both solar and wapda supplying power
+  // Hybrid: solar + grid both supplying power (tomzn powerW > 0)
+  // Hybrid Idle: tomzn relay is ON, no error, inverter on, but tomzn powerW = 0
+  //   (grid is connected and ready, solar is supplying, grid just not drawing yet)
+  // Solar Only: solar producing AND tomzn relay is OFF (standby/cutoff) — grid disconnected
   // Wapda Importing: solar near zero, wapda supplying
   // Bypass Mode: inverter fully off, tomzn importing
-  // Wapda Cut Off / Standby / Idle / Offline: wapda states when no solar
+  // Wapda Cut Off / Standby / Offline: wapda states when no solar
   const solarProducing = !inverterOff && inverter.isLive && !offline && inverter.solarW > 5;
   const solarLow = !inverterOff && inverter.isLive && !offline && inverter.solarW <= 5;
+  // Relay is ON and healthy (no fault) but no power flowing — grid connected but idle
+  const relayOnIdle = !offline && tomznLive.isOnline && tomznLive.switchOn && fault !== 2048 && fault !== 8192 && (tomznLive.powerW || 0) === 0;
+  // Label uses loadStatus from backend (which also uses TOMZN powerW).
+  // Show pace whenever TOMZN is online and drawing power, not just when grid imports.
+  // When hybrid idle (relay on, solar producing, but 0W from grid), show "Idle".
+  const tomznDrawing = tomznLive.isOnline && (tomznLive.powerW || 0) > 0;
+  const paceLabel = relayOnIdle && solarProducing
+    ? "Idle"
+    : !tomznDrawing
+    ? "No draw"
+    : loadStatus === "High" ? "↑ High"
+    : loadStatus === "Low" ? "↓ Low"
+    : "On Pace";
   const { modeLabel, modeColor } = (() => {
     if (offline) return { modeLabel: "System Offline", modeColor: "#EF4C4C" };
     if (wapdaCutOff) return { modeLabel: "Wapda Cut Off", modeColor: "#EF4C4C" };
     if (inverterOff && gridImporting) return { modeLabel: "Bypass Mode", modeColor: "#F8C653" };
     if (solarProducing && gridImporting) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
+    // Solar producing, relay ON but no power flowing → still "Hybrid" mode,
+    // but pace label will show "Idle" instead of High/Low/On Pace.
+    if (solarProducing && relayOnIdle) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
+    // Solar producing, relay OFF (standby/cutoff) → true Solar Only
     if (solarProducing && !gridImporting) return { modeLabel: "Solar Only", modeColor: "#F9C641" };
     if (solarLow && gridImporting) return { modeLabel: "Wapda Importing", modeColor: paceColor };
     if (gridImporting) return { modeLabel: "Wapda Importing", modeColor: paceColor };
@@ -639,23 +658,31 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
         </View>
 
         {/* ── 3-column labels: Solar | Home | Grid ── */}
-        {/* Solar column (left) */}
+        {/* Solar column (left) — hidden when inverter is offline */}
         <View style={styles.colSolar}>
           <SunMedium size={18} color={solarOnline ? "#F9C641" : "#8A8A8A"} />
-          <View style={styles.powerRow}>
-            <Text style={[styles.powerValue, { color: solarOnline ? "#FFD54F" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.value}</Text>
-            <Text style={[styles.powerUnit, { color: solarOnline ? "#FFD54F" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.unit}</Text>
-          </View>
-          <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarV.toFixed(0)}V · {solarA.toFixed(1)}A</Text>
+          {!inverterOff && (
+            <>
+              <View style={styles.powerRow}>
+                <Text style={[styles.powerValue, { color: solarOnline ? "#FFD54F" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.value}</Text>
+                <Text style={[styles.powerUnit, { color: solarOnline ? "#FFD54F" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.unit}</Text>
+              </View>
+              <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarV.toFixed(0)}V · {solarA.toFixed(1)}A</Text>
+            </>
+          )}
         </View>
 
-        {/* Home column (center) */}
+        {/* Home column (center) — hidden when inverter is offline */}
         <View style={styles.colHome}>
-          <View style={styles.powerRow}>
-            <Text style={[styles.powerValue, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.value}</Text>
-            <Text style={[styles.powerUnit, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.unit}</Text>
-          </View>
-          <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeV.toFixed(0)}V · {homeA.toFixed(1)}A</Text>
+          {!inverterOff && (
+            <>
+              <View style={styles.powerRow}>
+                <Text style={[styles.powerValue, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.value}</Text>
+                <Text style={[styles.powerUnit, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.unit}</Text>
+              </View>
+              <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeV.toFixed(0)}V · {homeA.toFixed(1)}A</Text>
+            </>
+          )}
         </View>
 
         {/* Grid column (right) */}
@@ -677,7 +704,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
           <View style={styles.footerPill}>
             <View style={[styles.footerDot, { backgroundColor: modeColor }]} />
             <Text style={[styles.footerText, { color: modeColor }]}>{modeLabel}</Text>
-            {gridImporting && (
+            {(tomznDrawing || (relayOnIdle && solarProducing)) && (
               <Text style={[styles.footerText, { color: paceColor, fontWeight: '700', marginLeft: 4 }]}>
                 · {paceLabel}
               </Text>

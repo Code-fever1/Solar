@@ -1,13 +1,14 @@
-import React from "react";
-import { View, Text, StyleSheet } from "react-native";
-import Svg, { Path, G, Circle, Text as SvgText } from "react-native-svg";
 import { Activity } from "lucide-react-native";
+import { StyleSheet, Text, View } from "react-native";
+import Svg, { Circle, G, Path } from "react-native-svg";
 
 import { useEnergy } from "@/context/EnergyContext";
+import { useTheme } from "@/hooks/use-theme";
 import { withAlpha } from "@/utils/ColorInterpolation";
 
 export function UsageSummaryCard() {
   const { home } = useEnergy();
+  const { isLight, ...theme } = useTheme();
   const dailyData = (home.dailyUsage || []).map((item, index, all) => ({
     day: item.label,
     val: item.usage,
@@ -56,19 +57,19 @@ export function UsageSummaryCard() {
     return `rgb(${Math.round(r1 + (r2 - r1) * t_)},${Math.round(g1 + (g2 - g1) * t_)},${Math.round(b1 + (b2 - b1) * t_)})`;
   };
 
-  const WHITE: [number, number, number] = [230, 234, 240]; // soft white on dark bg
+  const WHITE: [number, number, number] = isLight ? [71, 85, 105] : [230, 234, 240]; // soft white on dark / slate on light
   const RED:   [number, number, number] = [239, 68,  68];
   const GREEN: [number, number, number] = [16,  185, 129];
 
   const getBarColor = (val: number, isActive: boolean): string => {
     // Today always blue
     if (isActive) return '#3B82F6';
-    if (val === 0) return 'rgba(255,255,255,0.04)';
+    if (val === 0) return isLight ? 'rgba(15,23,42,0.06)' : 'rgba(255,255,255,0.04)';
 
     const delta = val / avgBarVal - 1;   // 0 = exactly avg
     const t = Math.min(1, Math.abs(delta) * 3); // full intensity at ~33% off avg
 
-    if (Math.abs(delta) < 0.05) return `rgba(230,234,240,0.80)`; // white
+    if (Math.abs(delta) < 0.05) return isLight ? `rgba(71,85,105,0.80)` : `rgba(230,234,240,0.80)`; // avg
     // Blend from WHITE toward RED or GREEN — the closer to avg, the whiter
     return delta > 0
       ? lerpRgb(WHITE, RED,   t)  // above avg → redder
@@ -113,14 +114,14 @@ export function UsageSummaryCard() {
   });
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.titleRow}>
           <View style={styles.titleIconBox}>
             <Activity size={14} color="#A78BFA" />
           </View>
-          <Text style={styles.title}>USAGE SUMMARY</Text>
+          <Text style={[styles.title, { color: theme.text }]}>USAGE SUMMARY</Text>
         </View>
         <View style={styles.confidenceBadge}>
           <Text style={styles.confidenceText}>{home.confidencePercent}% confidence</Text>
@@ -131,10 +132,10 @@ export function UsageSummaryCard() {
       <View style={styles.contentRow}>
         {/* Left Column: Daily Usage */}
         <View style={styles.leftCol}>
-          <Text style={styles.sectionTitle}>AVG DAILY USAGE</Text>
+          <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>AVG DAILY USAGE</Text>
           <View style={styles.avgRow}>
-            <Text style={styles.avgValue}>{home.averageDaily.toFixed(2)}</Text>
-            <Text style={styles.avgUnit}>units / day</Text>
+            <Text style={[styles.avgValue, { color: theme.text }]}>{home.averageDaily.toFixed(2)}</Text>
+            <Text style={[styles.avgUnit, { color: theme.textSecondary }]}>units / day</Text>
             <View style={styles.spacer} />
             <View style={[styles.trendBadge, { backgroundColor: withAlpha(trendColor, 0.15) }]}>
               <Text style={[styles.trendText, { color: trendColor }]}>{trendText}</Text>
@@ -148,11 +149,11 @@ export function UsageSummaryCard() {
               const barColor  = getBarColor(item.val, item.active);
               return (
                 <View key={index} style={styles.barCol}>
-                  <Text style={styles.barValText}>{item.val}</Text>
-                  <View style={styles.barTrack}>
+                  <Text style={[styles.barValText, { color: theme.textSecondary }]}>{item.val}</Text>
+                  <View style={[styles.barTrack, { backgroundColor: isLight ? "rgba(15,23,42,0.04)" : "rgba(255,255,255,0.04)" }]}>
                     <View style={[styles.barFill, { height: `${heightPercent}%`, backgroundColor: barColor }]} />
                   </View>
-                  <Text style={[styles.barDayText, item.active && styles.barDayTextActive]}>
+                  <Text style={[styles.barDayText, { color: theme.textMuted }, item.active && styles.barDayTextActive]}>
                     {item.day}
                   </Text>
                 </View>
@@ -162,11 +163,11 @@ export function UsageSummaryCard() {
         </View>
 
         {/* Vertical Divider */}
-        <View style={styles.divider} />
+        <View style={[styles.divider, { backgroundColor: theme.cardBorder }]} />
 
         {/* Right Column: Time-of-Day Breakdown */}
         <View style={styles.rightCol}>
-          <Text style={styles.sectionTitle}>USAGE WINDOWS</Text>
+          <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>USAGE WINDOWS</Text>
           <View style={styles.pieSectionRow}>
             <View style={styles.pieChartWrapper}>
               <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
@@ -176,12 +177,12 @@ export function UsageSummaryCard() {
                       key={slice.label}
                       d={slice.pathD}
                       fill={slice.color}
-                      stroke="#0F141C"
+                      stroke={theme.card}
                       strokeWidth={3.5}
                       strokeLinejoin="round"
                     />
                   ))}
-                  <Circle cx={cx} cy={cy} r={R * 0.65} fill="#0F141C" />
+                  <Circle cx={cx} cy={cy} r={R * 0.65} fill={theme.card} />
                 </G>
               </Svg>
             </View>
@@ -191,10 +192,10 @@ export function UsageSummaryCard() {
                   <View style={styles.legendTextRow}>
                     <Text style={styles.legendIcon}>{p.icon}</Text>
                     <Text style={[styles.legendName, { color: p.color }]}>{p.label}</Text>
-                    <Text style={styles.legendTime}>{p.time}</Text>
+                    <Text style={[styles.legendTime, { color: theme.textMuted }]}>{p.time}</Text>
                     <Text style={[styles.legendPct, { color: p.color }]}>{p.pct}%</Text>
                   </View>
-                  <View style={styles.legendProgressBar}>
+                  <View style={[styles.legendProgressBar, { backgroundColor: isLight ? "rgba(15,23,42,0.06)" : "rgba(255,255,255,0.05)" }]}>
                     <View style={[styles.legendProgressFill, { width: `${p.pct}%`, backgroundColor: p.color }]} />
                   </View>
                 </View>
@@ -209,11 +210,9 @@ export function UsageSummaryCard() {
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: "#0F141C",
     borderRadius: 16,
     padding: 20,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
   },
   header: {
     flexDirection: "row",
@@ -232,7 +231,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   title: {
-    color: "#FFFFFF",
     fontFamily: "Outfit",
     fontSize: 14,
     fontWeight: "700",
@@ -263,10 +261,8 @@ const styles = StyleSheet.create({
   divider: {
     height: 1,
     width: "100%",
-    backgroundColor: "rgba(255,255,255,0.06)",
   },
   sectionTitle: {
-    color: "#8A94A6",
     fontFamily: "Outfit",
     fontSize: 11,
     fontWeight: "600",
@@ -280,13 +276,11 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   avgValue: {
-    color: "#FFFFFF",
     fontFamily: "Outfit",
     fontSize: 32,
     fontWeight: "700",
   },
   avgUnit: {
-    color: "#8A94A6",
     fontFamily: "Outfit",
     fontSize: 12,
   },
@@ -317,7 +311,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   barValText: {
-    color: "#8A94A6",
     fontSize: 10,
     fontFamily: "Outfit",
   },
@@ -332,7 +325,6 @@ const styles = StyleSheet.create({
     borderRadius: 5,
   },
   barDayText: {
-    color: "#6B7280",
     fontSize: 10,
     fontFamily: "Outfit",
   },
@@ -372,7 +364,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   legendTime: {
-    color: "#6B7280",
     fontFamily: "Outfit",
     fontSize: 9,
   },
@@ -384,7 +375,6 @@ const styles = StyleSheet.create({
   },
   legendProgressBar: {
     height: 6,
-    backgroundColor: "rgba(255,255,255,0.05)",
     borderRadius: 3,
     overflow: "hidden",
   },

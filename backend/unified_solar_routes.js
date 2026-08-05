@@ -652,21 +652,31 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     : 0;
   const targetHourOfDay = pakistanHour(now);
   const sameHourSnapshots = recentSnapshots.filter((snapshot) => pakistanHour(snapshot.timestamp) === targetHourOfDay && snapshot.powerW > 0);
-  // If fewer than 3 readings exist for this exact hour (new hour just started),
-  // widen the search to include the same clock-hour from the last 7 days so the
-  // Load status doesn't reset to "Normal" every time the clock ticks over.
-  const adjacentHourSnapshots = sameHourSnapshots.length < 3
+  // If fewer than 5 readings exist for this exact hour (new hour just started),
+  // widen the search to include the same clock-hour ±1 from the last 30 days
+  // so the Load status doesn't reset to "Normal" every time the clock ticks over.
+  const adjacentHourSnapshots = sameHourSnapshots.length < 5
     ? recentSnapshots.filter((snapshot) => {
         const h = pakistanHour(snapshot.timestamp);
-        // Accept the same hour ±1 to gather enough data points for a stable baseline
         return (h === targetHourOfDay || h === (targetHourOfDay + 1) % 24 || h === (targetHourOfDay + 23) % 24) && snapshot.powerW > 0;
       })
     : sameHourSnapshots;
-  const normalDrawKw = adjacentHourSnapshots.length >= 3
-    ? round(adjacentHourSnapshots.reduce((sum, snapshot) => sum + snapshot.powerW, 0) / adjacentHourSnapshots.length / 1000, 2)
-    : round(safeAverageDaily / 24, 2);
+  // Trimmed mean: remove top & bottom 20% of readings to eliminate outliers
+  // (grid-off events, brief surges, solar-only low-draw periods). This gives
+  // a more stable "normal" baseline that doesn't get skewed by atypical days.
+  const sortedPower = adjacentHourSnapshots.map((s) => s.powerW).sort((a, b) => a - b);
+  const trimCount = Math.floor(sortedPower.length * 0.2);
+  const trimmed = sortedPower.slice(trimCount, sortedPower.length - trimCount);
+  const normalDrawKw = trimmed.length >= 3
+    ? round(trimmed.reduce((sum, pw) => sum + pw, 0) / trimmed.length / 1000, 2)
+    : adjacentHourSnapshots.length >= 3
+      ? round(adjacentHourSnapshots.reduce((sum, snapshot) => sum + snapshot.powerW, 0) / adjacentHourSnapshots.length / 1000, 2)
+      : round(safeAverageDaily / 24, 2);
+  // Wider gap: ±35% instead of ±20%. With solar in the mix, TOMZN powerW
+  // naturally varies more (solar hours vs grid-only hours). A wider dead
+  // zone prevents the status from flickering between High/Low on minor changes.
   const loadRatio = normalDrawKw > 0 ? currentDrawKw / normalDrawKw : 1;
-  const loadStatus = loadRatio >= 1.2 ? "High" : loadRatio <= 0.8 ? "Low" : "Normal";
+  const loadStatus = loadRatio >= 1.35 ? "High" : loadRatio <= 0.65 ? "Low" : "Normal";
   const totalToday = round(Array.from(METER_IDS).reduce((sum, meterId) =>
     sum + calibratedUnits(state.meters[meterId], todayUsage[meterId] || 0), 0), 2);
   // Last month total = sum of all meter usage in the previous billing cycle (28th → 28th)

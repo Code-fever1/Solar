@@ -5,6 +5,56 @@ import Svg, { Circle, Line, Path } from 'react-native-svg';
 
 const { width: screenWidth } = Dimensions.get('window');
 
+// Theme-aware color tokens — derived from isLight flag
+type CardTheme = {
+  cardBg: string;
+  cardBorder: string;
+  cardHighlight: string;
+  cardShadow: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+  trackBg: string;
+  overlayBg: string;
+  overlayBorder: string;
+  svgGridLine: string;
+  svgTrack: string;
+};
+
+const DARK_THEME: CardTheme = {
+  cardBg: '#0E1520',
+  cardBorder: 'rgba(255,255,255,0.06)',
+  cardHighlight: 'rgba(255,255,255,0.08)',
+  cardShadow: '#000',
+  textPrimary: '#F4F8FC',
+  textSecondary: '#94A5B8',
+  textMuted: '#5C6C7E',
+  trackBg: 'rgba(255,255,255,0.05)',
+  overlayBg: 'rgba(255,255,255,0.03)',
+  overlayBorder: 'rgba(255,255,255,0.06)',
+  svgGridLine: 'rgba(255,255,255,0.04)',
+  svgTrack: 'rgba(255,255,255,0.06)',
+};
+
+const LIGHT_THEME: CardTheme = {
+  cardBg: '#FFFFFF',
+  cardBorder: 'rgba(15,23,42,0.08)',
+  cardHighlight: 'rgba(15,23,42,0.03)',
+  cardShadow: 'rgba(15,23,42,0.08)',
+  textPrimary: '#0F172A',
+  textSecondary: '#475569',
+  textMuted: '#94A3B8',
+  trackBg: 'rgba(15,23,42,0.06)',
+  overlayBg: 'rgba(15,23,42,0.03)',
+  overlayBorder: 'rgba(15,23,42,0.08)',
+  svgGridLine: 'rgba(15,23,42,0.06)',
+  svgTrack: 'rgba(15,23,42,0.06)',
+};
+
+function useCardTheme(isLight: boolean): CardTheme {
+  return isLight ? LIGHT_THEME : DARK_THEME;
+}
+
 // Color helper: keeps original color above 20 units, transitions yellow→red as it drops below 20
 // At 20: yellow (#F8C653), at 0: red (#EF4C4C), interpolated in between
 function gaugeColor(remaining: number, baseColor: string): string {
@@ -26,58 +76,59 @@ const cardWidth = (screenWidth - 32) / 2;
 // ═══════════════════════════════════════════════════════════════════════
 
 // ── Energy Received Today ───────────────────────────────────────────────
-export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWapda }: {
-  totalEnergy: number; solarEnergy: number; gridEnergy: number; isWapda: boolean;
+export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWapda, isLight = false }: {
+  totalEnergy: number; solarEnergy: number; gridEnergy: number; isWapda: boolean; isLight?: boolean;
 }) {
+  const t = useCardTheme(isLight);
   const solarShare = totalEnergy > 0 ? Math.round((solarEnergy / totalEnergy) * 100) : 0;
   const gridShare = totalEnergy > 0 ? 100 - solarShare : 0;
   const dominant = solarShare >= gridShare ? 'solar' : 'grid';
 
   return (
-    <View style={s.card}>
-      <View style={s.cardHighlight} />
+    <View style={[s.card, { backgroundColor: t.cardBg, borderColor: t.cardBorder, shadowColor: t.cardShadow }]}>
+      <View style={[s.cardHighlight, { backgroundColor: t.cardHighlight }]} />
       <View style={s.cardHeader}>
         <Zap size={11} color="#F5C42E" />
-        <Text style={s.cardTitle}>Energy Received</Text>
-        <Text style={s.cardTitleRight}>Today</Text>
+        <Text style={[s.cardTitle, { color: t.textSecondary }]}>Energy Received</Text>
+        <Text style={[s.cardTitleRight, { color: t.textMuted }]}>Today</Text>
       </View>
 
       {/* Hero — total value */}
-      <Text style={s.heroValue}>{totalEnergy.toFixed(2)}<Text style={s.heroUnit}> units</Text></Text>
+      <Text style={[s.heroValue, { color: t.textPrimary }]}>{totalEnergy.toFixed(2)}<Text style={[s.heroUnit, { color: t.textMuted }]}> units</Text></Text>
 
       {/* Source bars — numbers dominate, donut is secondary */}
       <View style={s.sourceBars}>
         <View style={s.sourceBarRow}>
           <View style={s.sourceBarLeft}>
             <SunMedium size={10} color="#F5C42E" />
-            <Text style={s.sourceBarLabel}>Solar</Text>
+            <Text style={[s.sourceBarLabel, { color: t.textSecondary }]}>Solar</Text>
           </View>
-          <Text style={s.sourceBarValue}>{solarEnergy.toFixed(2)}</Text>
-          <View style={s.sourceBarTrack}>
+          <Text style={[s.sourceBarValue, { color: t.textPrimary }]}>{solarEnergy.toFixed(2)}</Text>
+          <View style={[s.sourceBarTrack, { backgroundColor: t.trackBg }]}>
             <View style={[s.sourceBarFill, { backgroundColor: '#F5C42E', width: `${solarShare}%` }]} />
           </View>
-          <Text style={s.sourceBarPct}>{solarShare}%</Text>
+          <Text style={[s.sourceBarPct, { color: t.textMuted }]}>{solarShare}%</Text>
         </View>
 
         <View style={s.sourceBarRow}>
           <View style={s.sourceBarLeft}>
             <TowerControl size={10} color="#548EFF" />
-            <Text style={s.sourceBarLabel}>Grid</Text>
+            <Text style={[s.sourceBarLabel, { color: t.textSecondary }]}>Grid</Text>
           </View>
-          <Text style={s.sourceBarValue}>{gridEnergy.toFixed(2)}</Text>
-          <View style={s.sourceBarTrack}>
+          <Text style={[s.sourceBarValue, { color: t.textPrimary }]}>{gridEnergy.toFixed(2)}</Text>
+          <View style={[s.sourceBarTrack, { backgroundColor: t.trackBg }]}>
             <View style={[s.sourceBarFill, { backgroundColor: '#548EFF', width: `${gridShare}%` }]} />
           </View>
-          <Text style={s.sourceBarPct}>{gridShare}%</Text>
+          <Text style={[s.sourceBarPct, { color: t.textMuted }]}>{gridShare}%</Text>
         </View>
       </View>
 
       {/* Mini donut — small, secondary indicator */}
       <View style={s.donutRow}>
-        <MiniDonut solarShare={solarShare} gridShare={gridShare} size={44} />
-        <View style={s.sourceChip}>
+        <MiniDonut solarShare={solarShare} gridShare={gridShare} size={44} isLight={isLight} />
+        <View style={[s.sourceChip, { backgroundColor: t.overlayBg }]}>
           <View style={[s.chipDot, { backgroundColor: isWapda ? '#548EFF' : '#F5C42E' }]} />
-          <Text style={s.chipText}>
+          <Text style={[s.chipText, { color: t.textSecondary }]}>
             {isWapda ? 'Grid Active' : 'Solar Active'} · {dominant === 'solar' ? 'Sun-fed' : 'Wapda-fed'}
           </Text>
         </View>
@@ -87,27 +138,28 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
 });
 
 // ── Energy Used Today ───────────────────────────────────────────────────
-export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liveLoadW, peakLoadW, vsYesterdayPercent, voltage, currentA, loadStatus, normalDrawKw }: {
+export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liveLoadW, peakLoadW, vsYesterdayPercent, voltage, currentA, loadStatus, normalDrawKw, isLight = false }: {
   totalHomeUsage: number; liveLoadW: number; peakLoadW: number; vsYesterdayPercent: number | null;
   voltage: number; currentA: number; loadStatus: 'Low' | 'Normal' | 'High';
-  normalDrawKw: number;
+  normalDrawKw: number; isLight?: boolean;
 }) {
+  const t = useCardTheme(isLight);
   const hasTrend = vsYesterdayPercent != null;
   const isLower = hasTrend && vsYesterdayPercent <= 0;
   const statusColor = loadStatus === 'High' ? '#EF4C4C' : loadStatus === 'Low' ? '#5C6C7E' : '#32E56B';
   const loadPct = Math.min(100, (liveLoadW / 2500) * 100);
 
   return (
-    <View style={s.card}>
-      <View style={s.cardHighlight} />
+    <View style={[s.card, { backgroundColor: t.cardBg, borderColor: t.cardBorder, shadowColor: t.cardShadow }]}>
+      <View style={[s.cardHighlight, { backgroundColor: t.cardHighlight }]} />
       <View style={s.cardHeader}>
         <Home size={11} color="#32E56B" />
-        <Text style={s.cardTitle}>Energy Used</Text>
-        <Text style={s.cardTitleRight}>Today</Text>
+        <Text style={[s.cardTitle, { color: t.textSecondary }]}>Energy Used</Text>
+        <Text style={[s.cardTitleRight, { color: t.textMuted }]}>Today</Text>
       </View>
 
       {/* Hero — total usage */}
-      <Text style={s.heroValue}>{totalHomeUsage.toFixed(2)}<Text style={s.heroUnit}> units</Text></Text>
+      <Text style={[s.heroValue, { color: t.textPrimary }]}>{totalHomeUsage.toFixed(2)}<Text style={[s.heroUnit, { color: t.textMuted }]}> units</Text></Text>
 
       {/* Live load — with V·A context and colored zone gauge */}
       <View style={s.liveBlock}>
@@ -123,33 +175,33 @@ export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liv
             <View style={s.zoneNormal} />
             <View style={s.zoneHigh} />
             <View style={[s.loadGaugeFill, { width: `${loadPct}%` }]} />
-            <View style={[s.loadGaugeMarker, { left: `${loadPct}%` }]} />
+            <View style={[s.loadGaugeMarker, { left: `${loadPct}%`, backgroundColor: t.textPrimary }]} />
           </View>
           <View style={s.loadGaugeLabels}>
-            <Text style={s.gaugeScaleText}>0</Text>
-            <Text style={s.gaugeScaleText}>1kW</Text>
-            <Text style={s.gaugeScaleText}>2.5kW</Text>
+            <Text style={[s.gaugeScaleText, { color: t.textMuted }]}>0</Text>
+            <Text style={[s.gaugeScaleText, { color: t.textMuted }]}>1kW</Text>
+            <Text style={[s.gaugeScaleText, { color: t.textMuted }]}>2.5kW</Text>
           </View>
           <Text style={[s.loadStatusText, { color: statusColor }]}>● {loadStatus} Load</Text>
         </View>
       </View>
 
       {/* Stats — peak + vs yesterday */}
-      <View style={s.statRow}>
+      <View style={[s.statRow, { backgroundColor: t.overlayBg }]}>
         <View style={s.statItem}>
-          <Text style={s.statLabel}>Peak Today</Text>
-          <Text style={s.statValue}>{Math.round(peakLoadW)}W</Text>
+          <Text style={[s.statLabel, { color: t.textMuted }]}>Peak Today</Text>
+          <Text style={[s.statValue, { color: t.textPrimary }]}>{Math.round(peakLoadW)}W</Text>
         </View>
-        <View style={s.statSep} />
+        <View style={[s.statSep, { backgroundColor: t.overlayBorder }]} />
         <View style={s.statItem}>
-          <Text style={s.statLabel}>vs Yesterday</Text>
+          <Text style={[s.statLabel, { color: t.textMuted }]}>vs Yesterday</Text>
           {hasTrend ? (
             <View style={s.vsRow}>
               {isLower ? <ArrowDown size={10} color="#32E56B" /> : <ArrowUp size={10} color="#EF4C4C" />}
               <Text style={[s.vsValue, { color: isLower ? '#32E56B' : '#EF4C4C' }]}>{Math.abs(vsYesterdayPercent as number)}%</Text>
             </View>
           ) : (
-            <Text style={[s.vsValue, { color: '#7E91A6' }]}>Building…</Text>
+            <Text style={[s.vsValue, { color: t.textMuted }]}>Building…</Text>
           )}
         </View>
       </View>
@@ -165,6 +217,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   daysLeft, combinedDaysLeft, averageDaily,
   meter1Left, meter1Target, meter1Used, meter1Today, meter1DaysLeft,
   meter2Left, meter2Target, meter2Used, meter2Today, meter2DaysLeft,
+  isLight = false,
 }: {
   expectedUnits: number; vsLastMonth: number | null; lastMonthTotal: number; confidence: number;
   dailyUsage: Array<{ timestamp: number; label: string; usage: number }>;
@@ -172,7 +225,9 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   combinedDaysLeft: number; averageDaily: number;
   meter1Left: number; meter1Target: number; meter1Used: number; meter1Today: number; meter1DaysLeft: number;
   meter2Left: number; meter2Target: number; meter2Used: number; meter2Today: number; meter2DaysLeft: number;
+  isLight?: boolean;
 }) {
+  const t = useCardTheme(isLight);
   const totalTarget = 400;
   const totalRemaining = meter1Left + meter2Left;
   const totalUsed = meter1Used + meter2Used;
@@ -270,28 +325,28 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   const q3Month = MONTHS[(endMonthIdx + 11) % 12];
 
   return (
-    <View style={s.wideCard}>
-      <View style={s.cardHighlight} />
+    <View style={[s.wideCard, { backgroundColor: t.cardBg, borderColor: t.cardBorder, shadowColor: t.cardShadow }]}>
+      <View style={[s.cardHighlight, { backgroundColor: t.cardHighlight }]} />
       {/* Header */}
       <View style={s.cardHeader}>
         <View style={s.headerLeft}>
           <Sparkles size={12} color="#8862ED" />
-          <Text style={s.cardTitle}>AI Forecast & Budget</Text>
+          <Text style={[s.cardTitle, { color: t.textSecondary }]}>AI Forecast & Budget</Text>
           <View style={s.confidenceBadge}>
             <Text style={s.confidenceText}>{confidence}% Confidence</Text>
           </View>
         </View>
         <View style={s.headerRight}>
           {vsLastMonth != null && lastMonthTotal > 0 ? (
-            <View style={s.trendChip}>
+            <View style={[s.trendChip, { backgroundColor: t.overlayBg }]}>
               {vsLastMonth <= 0 ? <ArrowDown size={11} color="#32E56B" /> : <ArrowUp size={11} color="#EF4C4C" />}
               <Text style={[s.trendText, { color: vsLastMonth <= 0 ? '#32E56B' : '#EF4C4C' }]}>
                 {Math.abs(vsLastMonth)}%
               </Text>
             </View>
           ) : (
-            <View style={s.trendChip}>
-              <Text style={[s.trendText, { color: '#5C6C7E' }]}>
+            <View style={[s.trendChip, { backgroundColor: t.overlayBg }]}>
+              <Text style={[s.trendText, { color: t.textMuted }]}>
                 Set last month total in settings
               </Text>
             </View>
@@ -301,8 +356,8 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
 
       <View style={s.contentRow}>
         <View style={s.leftCol}>
-          <Text style={s.forecastHeroValue}>{Math.round(expectedUnits)}</Text>
-          <Text style={s.forecastHeroUnit}>units predicted by {endMonthLabel} {billingDay}</Text>
+          <Text style={[s.forecastHeroValue, { color: t.textPrimary }]}>{Math.round(expectedUnits)}</Text>
+          <Text style={[s.forecastHeroUnit, { color: t.textMuted }]}>units predicted by {endMonthLabel} {billingDay}</Text>
           <Text style={[s.forecastOverUnder, { color: isOver ? '#EF4C4C' : '#32E56B' }]}>
             {isOver ? `+${overBudget} units saved` : overBudget === 0 ? 'On budget' : `${Math.abs(overBudget)} units saved`}
           </Text>
@@ -311,26 +366,26 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
           {(() => {
             const hasLastMonth = lastMonthTotal > 0;
             const unitGap = hasLastMonth ? Math.round(expectedUnits - lastMonthTotal) : 0;
-            const gapColor = unitGap > 0 ? '#EF4C4C' : unitGap < 0 ? '#32E56B' : '#F4F8FC';
+            const gapColor = unitGap > 0 ? '#EF4C4C' : unitGap < 0 ? '#32E56B' : t.textPrimary;
             return (
-              <View style={s.vsLastMonthRow}>
+              <View style={[s.vsLastMonthRow, { backgroundColor: t.overlayBg }]}>
                 <View style={s.vsLastMonthCol}>
-                  <Text style={s.vsLastMonthLabel}>This month</Text>
-                  <Text style={s.vsLastMonthValue}>{Math.round(expectedUnits)}</Text>
+                  <Text style={[s.vsLastMonthLabel, { color: t.textMuted }]}>This month</Text>
+                  <Text style={[s.vsLastMonthValue, { color: t.textPrimary }]}>{Math.round(expectedUnits)}</Text>
                 </View>
                 <View style={s.vsLastMonthArrow}>
                   {hasLastMonth ? (
-                    unitGap > 0 ? <ArrowUp size={14} color={gapColor} /> : unitGap < 0 ? <ArrowDown size={14} color={gapColor} /> : <Text style={s.vsLastMonthEqual}>—</Text>
+                    unitGap > 0 ? <ArrowUp size={14} color={gapColor} /> : unitGap < 0 ? <ArrowDown size={14} color={gapColor} /> : <Text style={[s.vsLastMonthEqual, { color: t.textPrimary }]}>—</Text>
                   ) : (
-                    <Text style={s.vsLastMonthEqual}>—</Text>
+                    <Text style={[s.vsLastMonthEqual, { color: t.textPrimary }]}>—</Text>
                   )}
-                  <Text style={[s.vsLastMonthGap, { color: hasLastMonth ? gapColor : '#5C6C7E' }]}>
+                  <Text style={[s.vsLastMonthGap, { color: hasLastMonth ? gapColor : t.textMuted }]}>
                     {hasLastMonth ? `${unitGap > 0 ? '+' : ''}${unitGap}` : 'N/A'}
                   </Text>
                 </View>
                 <View style={s.vsLastMonthCol}>
-                  <Text style={s.vsLastMonthLabel}>Last month</Text>
-                  <Text style={[s.vsLastMonthValue, !hasLastMonth && { color: '#5C6C7E', fontSize: 10 }]}>
+                  <Text style={[s.vsLastMonthLabel, { color: t.textMuted }]}>Last month</Text>
+                  <Text style={[s.vsLastMonthValue, !hasLastMonth && { color: t.textMuted, fontSize: 10 }]}>
                     {hasLastMonth ? Math.round(lastMonthTotal) : 'Set in settings'}
                   </Text>
                 </View>
@@ -338,33 +393,33 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
             );
           })()}
 
-          <View style={s.budgetHealthChip}>
+          <View style={[s.budgetHealthChip, { backgroundColor: t.overlayBg }]}>
             <View style={[s.budgetHealthDot, { backgroundColor: budgetPct > 50 ? '#32E56B' : budgetPct > 25 ? '#F8C653' : '#EF4C4C' }]} />
-            <Text style={s.budgetHealthText}>{displayDays}</Text>
+            <Text style={[s.budgetHealthText, { color: t.textPrimary }]}>{displayDays}</Text>
           </View>
         </View>
 
         <View style={s.rightCol}>
           <View style={s.chartHeader}>
-            <Text style={s.colLabel}>Cumulative Usage (units)</Text>
+            <Text style={[s.colLabel, { color: t.textMuted }]}>Cumulative Usage (units)</Text>
             <View style={s.legendRow}>
-              <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: '#32E56B' }]} /><Text style={s.legendText}>Actual</Text></View>
-              <View style={s.legendItem}><View style={[s.legendDash, { backgroundColor: '#8862ED' }]} /><Text style={s.legendText}>Forecast</Text></View>
+              <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: '#32E56B' }]} /><Text style={[s.legendText, { color: t.textMuted }]}>Actual</Text></View>
+              <View style={s.legendItem}><View style={[s.legendDash, { backgroundColor: '#8862ED' }]} /><Text style={[s.legendText, { color: t.textMuted }]}>Forecast</Text></View>
             </View>
           </View>
           
           <View style={s.chartArea}>
             <View style={s.yAxisCol}>
-              <Text style={s.axisText}>{yMax}</Text>
-              <Text style={s.axisText}>{Math.round(yMax * 0.66)}</Text>
-              <Text style={s.axisText}>{Math.round(yMax * 0.33)}</Text>
-              <Text style={s.axisText}>0</Text>
+              <Text style={[s.axisText, { color: t.textMuted }]}>{yMax}</Text>
+              <Text style={[s.axisText, { color: t.textMuted }]}>{Math.round(yMax * 0.66)}</Text>
+              <Text style={[s.axisText, { color: t.textMuted }]}>{Math.round(yMax * 0.33)}</Text>
+              <Text style={[s.axisText, { color: t.textMuted }]}>0</Text>
             </View>
-            <View style={s.chartPlot}>
+            <View style={[s.chartPlot, { borderColor: t.svgGridLine }]}>
               <Svg width="100%" height={chH} viewBox={`0 0 ${chW} ${chH}`} preserveAspectRatio="none">
-                <Line x1="0" y1={chH * 0.25} x2={chW} y2={chH * 0.25} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
-                <Line x1="0" y1={chH * 0.5} x2={chW} y2={chH * 0.5} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
-                <Line x1="0" y1={chH * 0.75} x2={chW} y2={chH * 0.75} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
+                <Line x1="0" y1={chH * 0.25} x2={chW} y2={chH * 0.25} stroke={t.svgGridLine} strokeWidth="0.5" />
+                <Line x1="0" y1={chH * 0.5} x2={chW} y2={chH * 0.5} stroke={t.svgGridLine} strokeWidth="0.5" />
+                <Line x1="0" y1={chH * 0.75} x2={chW} y2={chH * 0.75} stroke={t.svgGridLine} strokeWidth="0.5" />
                 {forecastPath && <Path d={forecastPath} stroke="#8862ED" strokeWidth="1.5" fill="none" strokeDasharray="3 3" />}
                 {actualPath && <Path d={actualPath} stroke="#32E56B" strokeWidth="2" fill="none" />}
                 <Circle cx={currentX} cy={currentY} r="3.5" fill="#32E56B" />
@@ -373,89 +428,89 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
             </View>
           </View>
           <View style={s.xAxisRow}>
-            <Text style={s.axisText}>{startMonthLabel} 28</Text>
-            <Text style={s.axisText}>{q1Month} 5</Text>
-            <Text style={s.axisText}>{midMonth} 12</Text>
-            <Text style={s.axisText}>{q3Month} 20</Text>
-            <Text style={s.axisText}>{endMonthLabel} 28</Text>
+            <Text style={[s.axisText, { color: t.textMuted }]}>{startMonthLabel} 28</Text>
+            <Text style={[s.axisText, { color: t.textMuted }]}>{q1Month} 5</Text>
+            <Text style={[s.axisText, { color: t.textMuted }]}>{midMonth} 12</Text>
+            <Text style={[s.axisText, { color: t.textMuted }]}>{q3Month} 20</Text>
+            <Text style={[s.axisText, { color: t.textMuted }]}>{endMonthLabel} 28</Text>
           </View>
         </View>
       </View>
 
       {/* ── Horizontal divider ── */}
-      <View style={s.sectionDivider} />
+      <View style={[s.sectionDivider, { backgroundColor: t.overlayBorder }]} />
 
       {/* ── Meter Gauges Row ── */}
       <View style={s.meterDetailsRow}>
 
         {/* Meter 1 */}
         <View style={s.meterDetailsCol}>
-          <Text style={s.meterDetailsTitle}>Meter 1 (Analog)</Text>
+          <Text style={[s.meterDetailsTitle, { color: t.textPrimary }]}>Meter 1 (Analog)</Text>
           <View style={s.meterGaugeWrap}>
             <Svg width={100} height={100} viewBox="0 0 100 100">
-              <Circle cx="50" cy="50" r="40" stroke="rgba(50,229,107,0.15)" strokeWidth="8" fill="none" strokeDasharray="167.5 251.3" strokeLinecap="round" transform="rotate(150 50 50)" />
+              <Circle cx="50" cy="50" r="40" stroke={isLight ? "rgba(50,229,107,0.12)" : "rgba(50,229,107,0.15)"} strokeWidth="8" fill="none" strokeDasharray="167.5 251.3" strokeLinecap="round" transform="rotate(150 50 50)" />
               <Circle cx="50" cy="50" r="40" stroke={gaugeColor(meter1Left, '#32E56B')} strokeWidth="8" fill="none" strokeDasharray={`${m1Stroke} 251.3`} strokeLinecap="round" transform="rotate(150 50 50)" />
             </Svg>
             <View style={s.meterGaugeInner}>
-              <Text style={s.meterGaugeValue}>{Math.round(meter1Left)}</Text>
-              <Text style={s.meterGaugeUnit}>units left</Text>
+              <Text style={[s.meterGaugeValue, { color: t.textPrimary }]}>{Math.round(meter1Left)}</Text>
+              <Text style={[s.meterGaugeUnit, { color: t.textMuted }]}>units left</Text>
             </View>
           </View>
           <View style={s.meterStatsCol}>
-            <Text style={s.meterStatTotalLabel}>Total Used</Text>
-            <Text style={s.meterStatTotalValue}>{meter1Used.toFixed(2)} <Text style={s.meterStatUnit}>units</Text></Text>
-            <View style={s.meterStatSep} />
-            <View style={s.meterTodayPill}>
-              <Text style={s.meterTodayLabel}>Today</Text>
-              <Text style={s.meterTodayValue}>{meter1Today.toFixed(2)} units</Text>
+            <Text style={[s.meterStatTotalLabel, { color: t.textMuted }]}>Total Used</Text>
+            <Text style={[s.meterStatTotalValue, { color: t.textPrimary }]}>{meter1Used.toFixed(2)} <Text style={[s.meterStatUnit, { color: t.textMuted }]}>units</Text></Text>
+            <View style={[s.meterStatSep, { backgroundColor: t.overlayBorder }]} />
+            <View style={[s.meterTodayPill, { backgroundColor: t.overlayBg }]}>
+              <Text style={[s.meterTodayLabel, { color: t.textMuted }]}>Today</Text>
+              <Text style={[s.meterTodayValue, { color: t.textPrimary }]}>{meter1Today.toFixed(2)} units</Text>
             </View>
           </View>
         </View>
 
-        <View style={s.meterDetailsDivider} />
+        <View style={[s.meterDetailsDivider, { backgroundColor: t.overlayBorder }]} />
 
         {/* Middle — Total Remaining ring */}
         <View style={s.meterDetailsMiddle}>
-          <Text style={s.middleTitle}>TOTAL REMAINING</Text>
+          <Text style={[s.middleTitle, { color: t.textMuted }]}>TOTAL REMAINING</Text>
           <View style={s.middleRingWrap}>
             <Svg width={110} height={110} viewBox="0 0 140 140">
-              <Circle cx="70" cy="70" r="60" stroke="rgba(136,98,237,0.15)" strokeWidth="12" fill="none" strokeDasharray="282.7 377" strokeLinecap="round" transform="rotate(135 70 70)" />
+              <Circle cx="70" cy="70" r="60" stroke={isLight ? "rgba(136,98,237,0.12)" : "rgba(136,98,237,0.15)"} strokeWidth="12" fill="none" strokeDasharray="282.7 377" strokeLinecap="round" transform="rotate(135 70 70)" />
               <Circle cx="70" cy="70" r="60" stroke={gaugeColor(totalRemaining, '#8862ED')} strokeWidth="12" fill="none" strokeDasharray={`${(budgetPct / 100) * 282.7} 377`} strokeLinecap="round" transform="rotate(135 70 70)" />
             </Svg>
             <View style={s.middleRingInner}>
-              <Text style={s.middleRingValue}>{Math.round(totalRemaining)}</Text>
-              <Text style={s.middleRingUnit}>units left</Text>
+              <Text style={[s.middleRingValue, { color: t.textPrimary }]}>{Math.round(totalRemaining)}</Text>
+              <Text style={[s.middleRingUnit, { color: t.textMuted }]}>units left</Text>
             </View>
           </View>
-          <Text style={s.middleRemainingDays}>≈ {estDaysLeft} days remaining</Text>
+          <Text style={[s.middleRemainingDays, { color: t.textMuted }]}>≈ {estDaysLeft} days remaining</Text>
           <View style={s.meterStatsCol}>
-            <Text style={s.meterStatTotalLabel}>Total Used</Text>
-            <Text style={s.meterStatTotalValue}>{totalUsed.toFixed(2)} <Text style={s.meterStatUnit}>units</Text></Text>
+            <Text style={[s.meterStatTotalLabel, { color: t.textMuted }]}>Total Used</Text>
+            <Text style={[s.meterStatTotalValue, { color: t.textPrimary }]}>{totalUsed.toFixed(2)} <Text style={[s.meterStatUnit, { color: t.textMuted }]}>units</Text></Text>
           </View>
         </View>
 
-        <View style={s.meterDetailsDivider} />
+        <View style={[s.meterDetailsDivider, { backgroundColor: t.overlayBorder }]} />
 
         {/* Meter 2 */}
         <View style={s.meterDetailsCol}>
-          <Text style={s.meterDetailsTitle}>Meter 2 (Digital)</Text>
+          <Text style={[s.meterDetailsTitle, { color: t.textPrimary }]}>Meter 2 (Digital)</Text>
           <View style={s.meterGaugeWrap}>
             <Svg width={100} height={100} viewBox="0 0 100 100">
-              <Circle cx="50" cy="50" r="40" stroke="rgba(84,142,255,0.15)" strokeWidth="8" fill="none" strokeDasharray="167.5 251.3" strokeLinecap="round" transform="rotate(150 50 50)" />
+              <Circle cx="50" cy="50" r="40" stroke={isLight ? "rgba(84,142,255,0.12)" : "rgba(84,142,255,0.15)"} strokeWidth="8" fill="none" strokeDasharray="167.5 251.3" strokeLinecap="round" transform="rotate(150 50 50)" />
               <Circle cx="50" cy="50" r="40" stroke={gaugeColor(meter2Left, '#548EFF')} strokeWidth="8" fill="none" strokeDasharray={`${m2Stroke} 251.3`} strokeLinecap="round" transform="rotate(150 50 50)" />
             </Svg>
             <View style={s.meterGaugeInner}>
-              <Text style={s.meterGaugeValue}>{Math.round(meter2Left)}</Text>
-              <Text style={s.meterGaugeUnit}>units left</Text>
+              <Text style={[s.meterGaugeValue, { color: t.textPrimary }]}>{Math.round(meter2Left)}</Text>
+              <Text style={[s.meterGaugeUnit, { color: t.textMuted }]}>units left</Text>
             </View>
           </View>
           <View style={s.meterStatsCol}>
-            <Text style={s.meterStatTotalLabel}>Total Used</Text>
-            <Text style={s.meterStatTotalValue}>{meter2Used.toFixed(2)} <Text style={s.meterStatUnit}>units</Text></Text>
-            <View style={s.meterStatSep} />
-            <View style={s.meterTodayPill}>
-              <Text style={s.meterTodayLabel}>Today</Text>
-              <Text style={s.meterTodayValue}>{meter2Today.toFixed(2)} units</Text>
+            <Text style={[s.meterStatTotalLabel, { color: t.textMuted }]}>Total Used</Text>
+            <Text style={[s.meterStatTotalValue, { color: t.textPrimary }]}>{meter2Used.toFixed(2)} <Text style={[s.meterStatUnit, { color: t.textMuted }]}>units</Text></Text>
+            <View style={[s.meterStatSep, { backgroundColor: t.overlayBorder }]} />
+            <View style={[s.meterTodayPill, { backgroundColor: t.overlayBg }]}>
+              <Text style={[s.meterTodayLabel, { color: t.textMuted }]}>Today</Text>
+              <Text style={[s.meterTodayValue, { color: t.textPrimary }]}>{meter2Today.toFixed(2)} units</Text>
             </View>
           </View>
         </View>
@@ -466,7 +521,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
 });
 
 // ── Mini Donut helper ───────────────────────────────────────────────────
-function MiniDonut({ solarShare, gridShare, size }: { solarShare: number; gridShare: number; size: number }) {
+function MiniDonut({ solarShare, gridShare, size, isLight = false }: { solarShare: number; gridShare: number; size: number; isLight?: boolean }) {
   const r = (size - 8) / 2;
   const cx = size / 2;
   const circ = 2 * Math.PI * r;
@@ -475,7 +530,7 @@ function MiniDonut({ solarShare, gridShare, size }: { solarShare: number; gridSh
 
   return (
     <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <Circle cx={cx} cy={cx} r={r} stroke="rgba(255,255,255,0.06)" strokeWidth="4" fill="none" />
+      <Circle cx={cx} cy={cx} r={r} stroke={isLight ? "rgba(15,23,42,0.06)" : "rgba(255,255,255,0.06)"} strokeWidth="4" fill="none" />
       {solarShare > 0 && (
         <Circle cx={cx} cy={cx} r={r} stroke="#F5C42E" strokeWidth="4"
           strokeDasharray={`${solarStroke} ${circ}`} fill="none"
@@ -495,12 +550,9 @@ const s = StyleSheet.create({
   // Card shells — layered depth (border + top highlight + shadow)
   card: {
     width: cardWidth,
-    backgroundColor: '#0E1520',
     borderRadius: 14,
     padding: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    shadowColor: '#000',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
@@ -509,12 +561,9 @@ const s = StyleSheet.create({
   },
   wideCard: {
     width: '100%',
-    backgroundColor: '#0E1521',
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    shadowColor: '#000',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
@@ -528,7 +577,6 @@ const s = StyleSheet.create({
     left: 0,
     right: 0,
     height: 1,
-    backgroundColor: 'rgba(255,255,255,0.08)',
   },
 
   // Headers
@@ -540,7 +588,6 @@ const s = StyleSheet.create({
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   cardTitle: {
-    color: '#94A5B8',
     fontSize: 10,
     fontFamily: 'Outfit',
     fontWeight: '600',
@@ -548,21 +595,18 @@ const s = StyleSheet.create({
     flex: 1,
   },
   cardTitleRight: {
-    color: '#5C6C7E',
     fontSize: 9,
     fontFamily: 'Outfit',
   },
 
   // Hero values — primary focus
   heroValue: {
-    color: '#F4F8FC',
     fontSize: 24,
     fontFamily: 'Outfit',
     fontWeight: '700',
     marginBottom: 10,
   },
   heroUnit: {
-    color: '#7E91A6',
     fontSize: 11,
     fontWeight: '500',
   },
@@ -584,12 +628,12 @@ const s = StyleSheet.create({
     width: 48,
   },
   sourceBarLabel: {
-    color: '#AAB7C7',
+
     fontSize: 9,
     fontFamily: 'Outfit',
   },
   sourceBarValue: {
-    color: '#E4ECF4',
+
     fontSize: 11,
     fontFamily: 'Outfit',
     fontWeight: '700',
@@ -598,7 +642,7 @@ const s = StyleSheet.create({
   sourceBarTrack: {
     flex: 1,
     height: 4,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+
     borderRadius: 2,
   },
   sourceBarFill: {
@@ -606,7 +650,7 @@ const s = StyleSheet.create({
     borderRadius: 2,
   },
   sourceBarPct: {
-    color: '#7E91A6',
+
     fontSize: 9,
     fontFamily: 'Outfit',
     width: 28,
@@ -626,7 +670,7 @@ const s = StyleSheet.create({
     gap: 5,
     paddingVertical: 5,
     paddingHorizontal: 8,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+
     borderRadius: 8,
   },
   chipDot: {
@@ -635,7 +679,7 @@ const s = StyleSheet.create({
     borderRadius: 3,
   },
   chipText: {
-    color: '#AAB7C7',
+
     fontSize: 9,
     fontFamily: 'Outfit',
   },
@@ -668,7 +712,7 @@ const s = StyleSheet.create({
     color: '#32E56B',
   },
   liveContext: {
-    color: '#7E91A6',
+
     fontSize: 9,
     fontFamily: 'Outfit',
     marginTop: 2,
@@ -713,7 +757,7 @@ const s = StyleSheet.create({
     top: -2,
     width: 2,
     height: 10,
-    backgroundColor: '#F4F8FC',
+
     borderRadius: 1,
   },
   loadGaugeLabels: {
@@ -723,7 +767,7 @@ const s = StyleSheet.create({
     marginTop: 2,
   },
   gaugeScaleText: {
-    color: '#5C6C7E',
+
     fontSize: 7,
     fontFamily: 'Outfit',
   },
@@ -737,24 +781,24 @@ const s = StyleSheet.create({
   // Stats row
   statRow: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+
     borderRadius: 8,
     padding: 8,
   },
   statItem: { flex: 1 },
   statSep: {
     width: 1,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+
     marginHorizontal: 8,
   },
   statLabel: {
-    color: '#7E91A6',
+
     fontSize: 8,
     fontFamily: 'Outfit',
     marginBottom: 3,
   },
   statValue: {
-    color: '#E4ECF4',
+
     fontSize: 13,
     fontFamily: 'Outfit',
     fontWeight: '700',
@@ -798,20 +842,20 @@ const s = StyleSheet.create({
     borderColor: 'rgba(136,98,237,0.2)',
   },
   confidenceText: {
-    color: '#B69AFF',
+
     fontSize: 9,
     fontFamily: 'Outfit',
     fontWeight: '600',
   },
   forecastHeroValue: {
-    color: '#F4F8FC',
+
     fontSize: 42,
     fontFamily: 'Outfit',
     fontWeight: '700',
     alignSelf: 'flex-start',
   },
   forecastHeroUnit: {
-    color: '#7E91A6',
+
     fontSize: 10,
     fontFamily: 'Outfit',
     marginTop: -2,
@@ -828,7 +872,7 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -840,13 +884,13 @@ const s = StyleSheet.create({
     flex: 1,
   },
   vsLastMonthLabel: {
-    color: '#5C6C7E',
+
     fontSize: 8,
     fontFamily: 'Outfit',
     fontWeight: '600',
   },
   vsLastMonthValue: {
-    color: '#E4ECF4',
+
     fontSize: 16,
     fontFamily: 'Outfit',
     fontWeight: '700',
@@ -863,7 +907,7 @@ const s = StyleSheet.create({
     marginTop: 2,
   },
   vsLastMonthEqual: {
-    color: '#F4F8FC',
+
     fontSize: 14,
     fontFamily: 'Outfit',
     fontWeight: '700',
@@ -872,7 +916,7 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+
     paddingHorizontal: 8,
     paddingVertical: 5,
     borderRadius: 8,
@@ -894,7 +938,7 @@ const s = StyleSheet.create({
     marginBottom: 10,
   },
   colLabel: {
-    color: '#7E91A6',
+
     fontSize: 9,
     fontFamily: 'Outfit',
     fontWeight: '600',
@@ -919,7 +963,7 @@ const s = StyleSheet.create({
     borderRadius: 1,
   },
   legendText: {
-    color: '#7E91A6',
+
     fontSize: 8,
     fontFamily: 'Outfit',
   },
@@ -932,7 +976,7 @@ const s = StyleSheet.create({
     paddingRight: 6,
   },
   axisText: {
-    color: '#5C6C7E',
+
     fontSize: 8,
     fontFamily: 'Outfit',
   },
@@ -940,7 +984,7 @@ const s = StyleSheet.create({
     flex: 1,
     borderBottomWidth: 1,
     borderLeftWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
+
   },
   xAxisRow: {
     flexDirection: 'row',
@@ -954,7 +998,7 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 10,
@@ -966,7 +1010,7 @@ const s = StyleSheet.create({
     borderRadius: 3,
   },
   budgetHealthText: {
-    color: '#E4ECF4',
+
     fontSize: 10,
     fontFamily: 'Outfit',
     fontWeight: '600',
@@ -975,7 +1019,7 @@ const s = StyleSheet.create({
   // Meter Details Card
   sectionDivider: {
     height: 1,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+
     marginVertical: 14,
   },
   meterDetailsRow: {
@@ -991,7 +1035,7 @@ const s = StyleSheet.create({
   },
   meterDetailsDivider: {
     width: 1,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+
     marginHorizontal: 8,
   },
   meterDetailsMiddle: {
@@ -1000,7 +1044,7 @@ const s = StyleSheet.create({
     paddingVertical: 4,
   },
   meterDetailsTitle: {
-    color: '#F4F8FC',
+
     fontSize: 12,
     fontFamily: 'Outfit',
     fontWeight: '600',
@@ -1019,19 +1063,19 @@ const s = StyleSheet.create({
     top: 30, // Push down slightly into the arc
   },
   meterGaugeValue: {
-    color: '#F4F8FC',
+
     fontSize: 24,
     fontFamily: 'Outfit',
     fontWeight: '700',
   },
   meterGaugeUnit: {
-    color: '#7E91A6',
+
     fontSize: 9,
     fontFamily: 'Outfit',
     marginTop: -2,
   },
   middleTitle: {
-    color: '#7E91A6',
+
     fontSize: 9,
     fontFamily: 'Outfit',
     fontWeight: '600',
@@ -1051,18 +1095,18 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   middleRingValue: {
-    color: '#F4F8FC',
+
     fontSize: 22,
     fontFamily: 'Outfit',
     fontWeight: '700',
   },
   middleRingUnit: {
-    color: '#7E91A6',
+
     fontSize: 8,
     fontFamily: 'Outfit',
   },
   middleRemainingDays: {
-    color: '#AAB7C7',
+
     fontSize: 9,
     fontFamily: 'Outfit',
     marginTop: 2,
@@ -1072,21 +1116,21 @@ const s = StyleSheet.create({
     marginTop: 2,
   },
   meterStatTotalLabel: {
-    color: '#5C6C7E',
+
     fontSize: 8,
     fontFamily: 'Outfit',
     fontWeight: '600',
     letterSpacing: 0.3,
   },
   meterStatTotalValue: {
-    color: '#E4ECF4',
+
     fontSize: 15,
     fontFamily: 'Outfit',
     fontWeight: '700',
     marginTop: 2,
   },
   meterStatUnit: {
-    color: '#7E91A6',
+
     fontSize: 8,
     fontFamily: 'Outfit',
     fontWeight: '400',
@@ -1094,26 +1138,26 @@ const s = StyleSheet.create({
   meterStatSep: {
     width: 24,
     height: 1,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+
     marginVertical: 8,
   },
   meterTodayPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 10,
   },
   meterTodayLabel: {
-    color: '#7E91A6',
+
     fontSize: 8,
     fontFamily: 'Outfit',
     fontWeight: '600',
   },
   meterTodayValue: {
-    color: '#AAB7C7',
+
     fontSize: 9,
     fontFamily: 'Outfit',
     fontWeight: '700',

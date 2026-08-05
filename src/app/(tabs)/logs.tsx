@@ -1,3 +1,4 @@
+import { useTheme } from "@/hooks/use-theme";
 import { useEnergy } from "@/context/EnergyContext";
 import { Activity, ArrowUpRight, Clock, Trash2 } from "lucide-react-native";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -21,6 +22,7 @@ function formatReading(reading: number): string {
 
 export default function LogsScreen() {
   const insets = useSafeAreaInsets();
+  const { isLight, ...theme } = useTheme();
   const { manualLogs, deleteManualLog, meters } = useEnergy();
 
   const recentLogs = [...manualLogs].sort((a, b) => b.timestamp - a.timestamp).slice(0, 10);
@@ -47,7 +49,7 @@ export default function LogsScreen() {
   };
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { backgroundColor: theme.screenBg }]}>
       <ScrollView
         contentContainerStyle={[
           styles.container,
@@ -57,8 +59,8 @@ export default function LogsScreen() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Readings Log</Text>
-          <Text style={styles.subtitle}>Manual meter readings history & calibration logs</Text>
+          <Text style={[styles.title, { color: theme.text }]}>Readings Log</Text>
+          <Text style={[styles.subtitle, { color: theme.textSecondary }]}>Manual meter readings history & calibration logs</Text>
         </View>
 
         {/* Summary stats */}
@@ -92,7 +94,7 @@ export default function LogsScreen() {
         </View>
 
         {recentLogs.length > 0 ? (
-          <View style={styles.logCard}>
+          <View style={[styles.logCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
             <View style={styles.cardHighlight} />
             {recentLogs.map((log, idx) => {
               const prevLog = recentLogs[idx + 1];
@@ -108,15 +110,15 @@ export default function LogsScreen() {
                       <Text style={[styles.meterBadgeText, { color: meterColor }]}>{isMeter1 ? 'M1' : 'M2'}</Text>
                     </View>
                     <View style={styles.logInfo}>
-                      <Text style={styles.logMeter}>{meterLabel}</Text>
-                      <Text style={styles.logTime}>{formatDateTime(log.timestamp)}</Text>
+                      <Text style={[styles.logMeter, { color: theme.textSecondary }]}>{meterLabel}</Text>
+                      <Text style={[styles.logTime, { color: theme.textMuted }]}>{formatDateTime(log.timestamp)}</Text>
                     </View>
                   </View>
 
                   {/* Middle: reading + delta */}
                   <View style={styles.logMiddle}>
-                    <Text style={styles.logReading}>{formatReading(log.reading)}</Text>
-                    <Text style={styles.logUnit}>units</Text>
+                    <Text style={[styles.logReading, { color: theme.text }]}>{formatReading(log.reading)}</Text>
+                    <Text style={[styles.logUnit, { color: theme.textMuted }]}>units</Text>
                     {delta > 0 && (
                       <View style={styles.deltaChip}>
                         <ArrowUpRight size={8} color={meterColor} />
@@ -145,7 +147,7 @@ export default function LogsScreen() {
             <View style={styles.cardHighlight} />
             <View style={styles.emptyState}>
               <Clock size={28} color="#3A4658" />
-              <Text style={styles.emptyTitle}>No readings yet</Text>
+              <Text style={[styles.emptyTitle, { color: theme.text }]}>No readings yet</Text>
               <Text style={styles.emptySub}>Manual readings logged from Settings will appear here.</Text>
             </View>
           </View>
@@ -158,7 +160,7 @@ export default function LogsScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#0B111B',
+    backgroundColor: 'transparent',
   },
   container: {
     paddingHorizontal: 16,
@@ -168,13 +170,13 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   title: {
-    color: '#F4F8FC',
+    color: undefined,
     fontFamily: 'Outfit',
     fontSize: 26,
     fontWeight: '700',
   },
   subtitle: {
-    color: '#7E91A6',
+    color: undefined,
     fontSize: 12,
     fontFamily: 'Outfit',
     marginTop: 3,
@@ -187,7 +189,7 @@ const styles = StyleSheet.create({
   },
   statCard: {
     flex: 1,
-    backgroundColor: '#0E1521',
+    backgroundColor: 'transparent',
     borderRadius: 12,
     padding: 10,
     borderWidth: 1,
@@ -204,21 +206,21 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.08)',
   },
   statLabel: {
-    color: '#5C6C7E',
+    color: undefined,
     fontSize: 8,
     fontFamily: 'Outfit',
     fontWeight: '600',
     letterSpacing: 0.3,
   },
   statValue: {
-    color: '#E4ECF4',
+    color: undefined,
     fontSize: 16,
     fontFamily: 'Outfit',
     fontWeight: '700',
     marginTop: 3,
   },
   statUnit: {
-    color: '#7E91A6',
+    color: undefined,
     fontSize: 8,
     fontFamily: 'Outfit',
   },
@@ -238,21 +240,21 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   sectionTitle: {
-    color: '#AAB7C7',
+    color: undefined,
     fontSize: 11,
     fontFamily: 'Outfit',
     fontWeight: '700',
     letterSpacing: 0.5,
   },
   sectionCount: {
-    color: '#5C6C7E',
+    color: undefined,
     fontSize: 9,
     fontFamily: 'Outfit',
   },
 
   // Log card
   logCard: {
-    backgroundColor: '#0E1521',
+    backgroundColor: 'transparent',
     borderRadius: 14,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
@@ -301,13 +303,13 @@ const styles = StyleSheet.create({
     gap: 1,
   },
   logMeter: {
-    color: '#E4ECF4',
+    color: undefined,
     fontSize: 12,
     fontFamily: 'Outfit',
     fontWeight: '600',
   },
   logTime: {
-    color: '#5C6C7E',
+    color: undefined,
     fontSize: 9,
     fontFamily: 'Outfit',
   },
@@ -318,13 +320,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   logReading: {
-    color: '#F4F8FC',
+    color: undefined,
     fontSize: 15,
     fontFamily: 'Outfit',
     fontWeight: '700',
   },
   logUnit: {
-    color: '#7E91A6',
+    color: undefined,
     fontSize: 8,
     fontFamily: 'Outfit',
   },
@@ -349,7 +351,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   logNote: {
-    color: '#7E91A6',
+    color: undefined,
     fontSize: 9,
     fontFamily: 'Outfit',
     maxWidth: 60,
@@ -367,7 +369,7 @@ const styles = StyleSheet.create({
 
   // Empty state
   emptyCard: {
-    backgroundColor: '#0E1521',
+    backgroundColor: 'transparent',
     borderRadius: 14,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
@@ -380,14 +382,14 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyTitle: {
-    color: '#7E91A6',
+    color: undefined,
     fontSize: 14,
     fontFamily: 'Outfit',
     fontWeight: '600',
     marginTop: 4,
   },
   emptySub: {
-    color: '#5C6C7E',
+    color: undefined,
     fontSize: 11,
     fontFamily: 'Outfit',
     textAlign: 'center',

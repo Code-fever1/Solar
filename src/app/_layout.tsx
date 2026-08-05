@@ -12,7 +12,6 @@ import { useEffect } from "react";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { EnergyProvider } from "@/context/EnergyContext";
-import { UiModeProvider } from "@/context/UiModeContext";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -43,14 +42,12 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-        <UiModeProvider>
           <EnergyProvider>
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="+not-found" />
             </Stack>
           </EnergyProvider>
-        </UiModeProvider>
       </ThemeProvider>
     </SafeAreaProvider>
   );
