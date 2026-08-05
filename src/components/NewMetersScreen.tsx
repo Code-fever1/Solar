@@ -4,7 +4,6 @@ import {
     ArrowDown,
     ArrowLeft,
     ArrowUp,
-    Calendar,
     CheckCircle2,
     ChevronDown,
     Clock,
@@ -57,7 +56,7 @@ function formatDateTime(timestamp: number): string {
 export function NewMetersScreen() {
   const insets = useSafeAreaInsets();
   const {
-    activeMeter, meters, home, manualLogs, changeover, tomznLive, inverter,
+    activeMeter, meters, home, changeover, tomznLive, inverter,
     swapChangeover, refreshTomzn, lastSyncedAt,
   } = useEnergy();
 
@@ -75,12 +74,6 @@ export function NewMetersScreen() {
     tomznLive.fetchedAt ? new Date(tomznLive.fetchedAt).getTime() : 0,
     inverter.fetchedAt ? new Date(inverter.fetchedAt).getTime() : 0,
     lastSyncedAt || 0,
-  );
-
-  // Recent manual logs (last 5)
-  const recentLogs = useMemo(() =>
-    [...manualLogs].sort((a, b) => b.timestamp - a.timestamp).slice(0, 5),
-    [manualLogs]
   );
 
   // Usage comparison data — from meter cycleUsage and dailyUsage
@@ -319,8 +312,8 @@ export function NewMetersScreen() {
                 <View style={[s.mostUsedIcon, { backgroundColor: moreEfficient === 'meter1' ? 'rgba(50,229,107,0.12)' : 'rgba(84,142,255,0.12)' }]}>
                   <Trophy size={16} color={moreEfficient === 'meter1' ? '#32E56B' : '#548EFF'} />
                 </View>
-                <View>
-                  <Text style={s.mostUsedTitle}>
+                <View style={s.mostUsedTextContainer}>
+                  <Text style={s.mostUsedTitle} numberOfLines={1} ellipsizeMode="tail">
                     {moreEfficient === 'meter1' ? 'Meter 1 (Analog)' : 'Meter 2 (Digital)'}
                   </Text>
                   <Text style={s.mostUsedDesc}>
@@ -333,60 +326,8 @@ export function NewMetersScreen() {
           </View>
         </View>
 
-        {/* ── Bottom Section: Readings + Tips ── */}
+        {/* ── Bottom Section: Smart Tips ── */}
         <View style={s.bottomRow}>
-          {/* Recent Readings */}
-          <View style={s.readingsCard}>
-            <View style={s.readingsHeader}>
-              <View style={s.wideCardTitleRow}>
-                <Clock size={16} color="#8497AB" />
-                <Text style={s.wideCardTitle}>Recent Readings</Text>
-              </View>
-              <Text style={s.viewAll}>{recentLogs.length} logs</Text>
-            </View>
-
-            {recentLogs.length > 0 ? (
-              recentLogs.map((log, idx) => {
-                const meter = log.meterId === 'meter1' ? meter1 : meter2;
-                const prevLog = recentLogs[idx + 1];
-                const delta = prevLog ? log.reading - prevLog.reading : 0;
-                const isMeter1 = log.meterId === 'meter1';
-                const meterColor = isMeter1 ? '#32E56B' : '#548EFF';
-                return (
-                  <View key={log.id} style={[s.tableRow, idx === recentLogs.length - 1 && { borderBottomWidth: 0 }]}>
-                    <View style={[s.td, { flex: 1.5, flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
-                      <View style={s.dateIcon}><Calendar size={12} color={meterColor} /></View>
-                      <Text style={s.tdText}>{formatDateTime(log.timestamp)}</Text>
-                    </View>
-                    <View style={[s.td, { flex: 1.5 }]}>
-                      <Text style={s.tdValue}>{formatReading(log.reading)} <Text style={s.tdUnit}>kWh</Text></Text>
-                      {delta > 0 && (
-                        <Text style={{ color: meterColor, fontSize: 8, fontFamily: 'Outfit', fontWeight: '600' }}>
-                          +{delta.toFixed(1)} units
-                        </Text>
-                      )}
-                    </View>
-                    <View style={[s.td, { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }]}>
-                      <View style={[s.activePillSmall, { backgroundColor: isMeter1 ? 'rgba(50,229,107,0.15)' : 'rgba(84,142,255,0.15)' }]}>
-                        <Text style={[s.activePillText, { color: meterColor }]}>
-                          {isMeter1 ? 'M1' : 'M2'}
-                        </Text>
-                      </View>
-                    </View>
-                    <View style={[s.td, { flex: 1 }]}>
-                      <Text style={s.tdNotes}>{log.notes || '—'}</Text>
-                    </View>
-                  </View>
-                );
-              })
-            ) : (
-              <View style={s.emptyState}>
-                <Text style={s.emptyText}>No manual readings yet.</Text>
-                <Text style={s.emptySub}>Readings will appear here after calibration.</Text>
-              </View>
-            )}
-          </View>
-
           {/* Smart Tips */}
           <View style={s.tipsCard}>
             <View style={s.wideCardTitleRow}>
@@ -682,35 +623,12 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 8, marginTop: 4,
   },
   mostUsedIcon: { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  mostUsedTextContainer: { flex: 1 },
   mostUsedTitle: { color: '#E4ECF4', fontFamily: 'Outfit', fontSize: 10, fontWeight: '700' },
   mostUsedDesc: { color: '#7E91A6', fontFamily: 'Outfit', fontSize: 8, marginTop: 2, lineHeight: 12 },
 
   // Bottom row
   bottomRow: { gap: 10 },
-  readingsCard: {
-    backgroundColor: '#0E1521', borderRadius: 14, padding: 14,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 4,
-  },
-  readingsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  viewAll: { color: '#548EFF', fontFamily: 'Outfit', fontSize: 9 },
-
-  tableRow: {
-    flexDirection: 'row', paddingVertical: 8,
-    borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.04)',
-    alignItems: 'center',
-  },
-  td: { paddingHorizontal: 2 },
-  tdText: { color: '#AAB7C7', fontFamily: 'Outfit', fontSize: 9 },
-  tdValue: { color: '#E4ECF4', fontFamily: 'Outfit', fontSize: 10, fontWeight: '700' },
-  tdUnit: { color: '#7E91A6', fontSize: 7 },
-  tdNotes: { color: '#7E91A6', fontFamily: 'Outfit', fontSize: 8 },
-  dateIcon: { width: 20, height: 20, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.04)', alignItems: 'center', justifyContent: 'center' },
-  activePillSmall: { paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
-
-  emptyState: { paddingVertical: 20, alignItems: 'center' },
-  emptyText: { color: '#7E91A6', fontFamily: 'Outfit', fontSize: 11, fontWeight: '600' },
-  emptySub: { color: '#5C6C7E', fontFamily: 'Outfit', fontSize: 9, marginTop: 4 },
 
   // Tips
   tipsCard: {

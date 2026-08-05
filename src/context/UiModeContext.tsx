@@ -10,11 +10,11 @@ type UiModeContextValue = {
   hydrated: boolean;
 };
 
-const UI_MODE_KEY = "voltix.ui-mode.v1";
+const UI_MODE_KEY = "voltix.ui-mode.v2";
 const UiModeContext = createContext<UiModeContextValue | null>(null);
 
 export function UiModeProvider({ children }: { children: ReactNode }) {
-  const [mode, setModeState] = useState<UiMode>("legacy");
+  const [mode, setModeState] = useState<UiMode>("new");
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {

@@ -1,51 +1,52 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
+    createContext,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
 } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 
 import { interpolateUsageHistory, summarizeHistory } from "@/utils/calculations";
 import {
-  applyOfflineBaseline,
-  applyOfflineChangeover,
-  applyOfflineManualReading,
-  estimateOfflineDashboard,
-  type CachedDashboardSnapshot,
-  type CachedTomznLive,
+    applyOfflineBaseline,
+    applyOfflineChangeover,
+    applyOfflineManualReading,
+    estimateOfflineDashboard,
+    type CachedDashboardSnapshot,
+    type CachedTomznLive,
 } from "@/utils/offline-dashboard";
 import type {
-  AlertItem,
-  EnergyFlowPoint,
-  EnergyToday,
-  HistoryPoint,
-  HomeState,
-  InverterTelemetry,
-  LiveTelemetry,
-  ManualLog,
-  MeterId,
-  MeterState,
-  Recommendation,
-  WeatherState,
+    AlertItem,
+    EnergyFlowPoint,
+    EnergyToday,
+    HistoryPoint,
+    HomeState,
+    InverterTelemetry,
+    LiveTelemetry,
+    ManualLog,
+    MeterId,
+    MeterState,
+    Recommendation,
+    WeatherState,
 } from "./energy-types";
 
 export type {
-  AlertItem,
-  EnergyFlowPoint,
-  EnergyToday,
-  HistoryPoint,
-  HomeState,
-  InverterTelemetry,
-  LiveTelemetry,
-  ManualLog,
-  MeterId,
-  MeterState,
-  Recommendation,
-  WeatherState
+    AlertItem,
+    EnergyFlowPoint,
+    EnergyToday,
+    HistoryPoint,
+    HomeState,
+    InverterTelemetry,
+    LiveTelemetry,
+    ManualLog,
+    MeterId,
+    MeterState,
+    Recommendation,
+    WeatherState
 } from "./energy-types";
 
 export interface ManualBaseline {
@@ -61,7 +62,7 @@ type DashboardSnapshot = CachedDashboardSnapshot;
 
 type PendingOperation = {
   id: string;
-  path: "/changeover" | "/manual-readings" | "/baselines";
+  path: "/changeover" | "/manual-readings" | "/baselines" | "/last-month-total";
   method: "POST";
   body: Record<string, unknown>;
   createdAt: number;
@@ -97,6 +98,7 @@ type EnergyContextValue = {
   swapChangeover: (target?: MeterId) => void;
   calibrateMeter: (meterId: MeterId, manualReading: number) => void;
   setManualBaseline: (meterId: MeterId, reading: number, cycleStartTs: number) => Promise<void>;
+  setLastMonthTotal: (total: number) => Promise<void>;
   addManualLog: (meterId: MeterId, reading: number, timestamp: number, notes?: string) => Promise<void>;
   editManualLog: (id: string, reading: number, timestamp: number, notes?: string) => Promise<void>;
   deleteManualLog: (id: string) => Promise<void>;
@@ -106,9 +108,13 @@ type EnergyContextValue = {
 };
 
 const API_URL = "http://104.43.56.204:3001/api/solar";
-const POLL_INTERVAL_MS = 5_000;
+const POLL_FOREGROUND_MS = 5_000;
+const POLL_BACKGROUND_MS = 60_000;
 const DASHBOARD_CACHE_KEY = "voltx.solar.dashboard.v1";
 const PENDING_OPERATIONS_KEY = "voltx.solar.pending-operations.v1";
+const LAST_MONTH_TOTAL_KEY = "voltx.solar.last-month-total.v1";
+const ACTIVE_METER_OVERRIDE_KEY = "voltx.solar.active-meter-override.v1";
+const MANUAL_READINGS_OVERRIDE_KEY = "voltx.solar.manual-readings-override.v1";
 
 const EMPTY_TOMZN: TomznLive = {
   energyKwh: 0, voltageV: 0, currentA: 0, powerW: 0, powerDisplay: "-- W",
@@ -138,7 +144,7 @@ function emptyMeter(id: MeterId): MeterState {
 
 const EMPTY_METERS: Record<MeterId, MeterState> = { meter1: emptyMeter("meter1"), meter2: emptyMeter("meter2") };
 const EMPTY_LIVE: LiveTelemetry = { gridKw: 0, solarKw: 0, homeKw: 0, currentAmp: 0, voltage: 0, frequency: 50, powerFactor: 0 };
-const EMPTY_INVERTER: InverterTelemetry = { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, fetchedAt: "", isLive: false };
+const EMPTY_INVERTER: InverterTelemetry = { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, fetchedAt: "", isLive: false };
 const EMPTY_WEATHER: WeatherState = { code: 0, isDay: true, cloudCover: 0, precipitation: 0, temperatureC: 0, fetchedAt: "", isLive: false };
 const EMPTY_ENERGY_TODAY: EnergyToday = { solarKwh: 0, homeKwh: 0, gridKwh: 0 };
 
@@ -152,6 +158,7 @@ const EnergyContext = createContext<EnergyContextValue | null>(null);
 export function EnergyProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [tomznHistory, setTomznHistory] = useState<any[]>([]);
+  const [flowHistory24h, setFlowHistory24h] = useState<{ timestamp: number; solarKw: number; gridKw: number; loadKw: number }[]>([]);
   const [manualBaselines, setManualBaselines] = useState<Record<MeterId, ManualBaseline | null>>({ meter1: null, meter2: null });
   const [period, setPeriod] = useState<"day" | "week" | "month" | "year">("day");
   const [loading, setLoading] = useState(true);
@@ -161,6 +168,10 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const cacheRef = useRef<StoredDashboard | null>(null);
   const queueSyncRef = useRef<Promise<void> | null>(null);
+  const lastMonthTotalRef = useRef<number | null>(null);
+  const activeMeterOverrideRef = useRef<{ meterId: MeterId; timestamp: number } | null>(null);
+  const manualReadingOverrideRef = useRef<Record<MeterId, { reading: number; timestamp: number } | null>>({ meter1: null, meter2: null });
+  const deletedLogIdsRef = useRef<Set<string>>(new Set());
 
   const normaliseSnapshot = (data: DashboardSnapshot): DashboardSnapshot => ({
       ...data,
@@ -177,6 +188,53 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
   const applySnapshot = (data: DashboardSnapshot, options: { persist?: boolean; clearError?: boolean } = {}) => {
     const next = normaliseSnapshot(data);
+    // Filter out logs that were deleted locally (so polling doesn't re-add them)
+    if (deletedLogIdsRef.current.size > 0 && next.manualLogs?.length) {
+      next.manualLogs = next.manualLogs.filter((l) => !deletedLogIdsRef.current.has(l.id));
+    }
+    // Merge local lastMonthTotal override so it survives polling refreshes
+    if (lastMonthTotalRef.current != null && (next.home?.lastMonthTotal == null || next.home.lastMonthTotal === 0)) {
+      next.home = { ...next.home, lastMonthTotal: lastMonthTotalRef.current };
+      if (next.home.vsLastMonthPercent == null && next.home.projectedMonthly != null && lastMonthTotalRef.current > 0) {
+        next.home.vsLastMonthPercent = Math.max(-99, Math.min(99, Math.round(((next.home.projectedMonthly - lastMonthTotalRef.current) / lastMonthTotalRef.current) * 1000) / 10));
+      }
+    }
+    // Merge active meter override so swaps survive polling refreshes
+    if (activeMeterOverrideRef.current && next.activeMeter !== activeMeterOverrideRef.current.meterId) {
+      const override = activeMeterOverrideRef.current;
+      const otherMeter: MeterId = override.meterId === "meter1" ? "meter2" : "meter1";
+      next.activeMeter = override.meterId;
+      next.changeover = { activeMeter: override.meterId, lastSwitchedAt: override.timestamp };
+      if (next.meters) {
+        next.meters = {
+          ...next.meters,
+          [override.meterId]: { ...next.meters[override.meterId], queueStatus: "ACTIVE" },
+          [otherMeter]: { ...next.meters[otherMeter], queueStatus: "NEXT" },
+        };
+      }
+    }
+    // Merge manual reading overrides so latest readings survive polling refreshes
+    if (next.meters) {
+      for (const meterId of ["meter1", "meter2"] as MeterId[]) {
+        const override = manualReadingOverrideRef.current[meterId];
+        if (override && next.meters[meterId]) {
+          const meter = next.meters[meterId];
+          const baselineReading = meter.reading - (meter.cycleUsage || 0);
+          const cycleUsage = Math.max(0, override.reading - baselineReading);
+          next.meters = {
+            ...next.meters,
+            [meterId]: {
+              ...meter,
+              reading: override.reading,
+              cycleUsage,
+              remainingUnits: Math.max(0, meter.targetUnits - cycleUsage),
+              lastLoggedAt: override.timestamp,
+              lastLoggedReading: override.reading,
+            },
+          };
+        }
+      }
+    }
     setSnapshot(next);
     if (options.persist !== false) saveSnapshot(next);
     if (options.clearError !== false) {
@@ -269,10 +327,29 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     try { setTomznHistory(await request("/tomzn/history")); } catch { /* dashboard remains usable */ }
   };
 
+  const loadFlowHistory = async () => {
+    try {
+      const data = await request("/flow-history");
+      if (Array.isArray(data)) setFlowHistory24h(data);
+    } catch { /* flow history is optional — dashboard still works */ }
+  };
+
   useEffect(() => {
     let disposed = false;
     const bootstrap = async () => {
       try {
+        const rawLastMonth = await AsyncStorage.getItem(LAST_MONTH_TOTAL_KEY);
+        if (rawLastMonth != null) lastMonthTotalRef.current = Number(rawLastMonth) || null;
+        const rawActiveMeter = await AsyncStorage.getItem(ACTIVE_METER_OVERRIDE_KEY);
+        if (rawActiveMeter) {
+          const parsed = JSON.parse(rawActiveMeter);
+          if (parsed?.meterId && Number.isFinite(parsed.timestamp)) activeMeterOverrideRef.current = parsed;
+        }
+        const rawManualReadings = await AsyncStorage.getItem(MANUAL_READINGS_OVERRIDE_KEY);
+        if (rawManualReadings) {
+          const parsed = JSON.parse(rawManualReadings);
+          if (parsed && typeof parsed === "object") manualReadingOverrideRef.current = { meter1: parsed.meter1 ?? null, meter2: parsed.meter2 ?? null };
+        }
         const raw = await AsyncStorage.getItem(DASHBOARD_CACHE_KEY);
         const cached = raw ? JSON.parse(raw) as StoredDashboard : null;
         if (!disposed && cached?.snapshot?.meters && Number.isFinite(cached.savedAt)) {
@@ -290,11 +367,36 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       if (!disposed) {
         void loadDashboard(true);
         void loadHistory();
+        void loadFlowHistory();
       }
     };
     void bootstrap();
-    const interval = setInterval(() => loadDashboard(true), POLL_INTERVAL_MS);
-    return () => { disposed = true; clearInterval(interval); };
+
+    // Adaptive polling: 5s when app is foregrounded, 60s when backgrounded.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const startPolling = (ms: number) => {
+      if (interval) clearInterval(interval);
+      interval = setInterval(() => loadDashboard(true), ms);
+    };
+    const onAppStateChange = (state: AppStateStatus) => {
+      if (state === "active") {
+        // App came to foreground — immediately refresh and switch to 5s polling.
+        void loadDashboard(true);
+        void loadFlowHistory();
+        startPolling(POLL_FOREGROUND_MS);
+      } else {
+        // App went to background — slow down to 60s.
+        startPolling(POLL_BACKGROUND_MS);
+      }
+    };
+    const subscription = AppState.addEventListener("change", onAppStateChange);
+    startPolling(POLL_FOREGROUND_MS);
+
+    return () => {
+      disposed = true;
+      if (interval) clearInterval(interval);
+      subscription.remove();
+    };
   }, []);
 
   const activeMeter = snapshot?.activeMeter || "meter1";
@@ -302,10 +404,14 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const home = snapshot?.home || (error ? { ...EMPTY_HOME, explanation: error } : EMPTY_HOME);
   const live = snapshot?.live || EMPTY_LIVE;
   const tomznLive = snapshot?.tomznLive || EMPTY_TOMZN;
-  const inverter = snapshot?.inverter || EMPTY_INVERTER;
+  const inverter = snapshot?.inverter
+    ? { ...EMPTY_INVERTER, ...snapshot.inverter }
+    : EMPTY_INVERTER;
   const weather = snapshot?.weather || EMPTY_WEATHER;
   const energyToday = snapshot?.energyToday || EMPTY_ENERGY_TODAY;
-  const flowHistory = snapshot?.flowHistory || [];
+  // Prefer the dedicated 24h flow-history endpoint (fresh data even after offline period),
+  // fall back to the dashboard's embedded flowHistory.
+  const flowHistory = flowHistory24h.length > 0 ? flowHistory24h : (snapshot?.flowHistory || []);
   const manualLogs = snapshot?.manualLogs || [];
   const changeover: ChangeoverState = {
     activeMeter,
@@ -346,6 +452,8 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const swapChangeover = async (target?: MeterId) => {
     const meterId = target || (activeMeter === "meter1" ? "meter2" : "meter1");
     const timestamp = Date.now();
+    activeMeterOverrideRef.current = { meterId, timestamp };
+    void AsyncStorage.setItem(ACTIVE_METER_OVERRIDE_KEY, JSON.stringify({ meterId, timestamp })).catch(() => undefined);
     await submitOrQueue(
       { id: `changeover-${timestamp}`, path: "/changeover", method: "POST", body: { meterId, timestamp }, createdAt: timestamp },
       (current) => applyOfflineChangeover(current, meterId, timestamp),
@@ -361,8 +469,23 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     );
   };
 
+  const setLastMonthTotal = async (total: number) => {
+    lastMonthTotalRef.current = total;
+    void AsyncStorage.setItem(LAST_MONTH_TOTAL_KEY, String(total)).catch(() => undefined);
+    const timestamp = Date.now();
+    await submitOrQueue(
+      { id: `last-month-total-${timestamp}`, path: "/last-month-total", method: "POST", body: { total, timestamp }, createdAt: timestamp },
+      (current) => ({ ...current, home: { ...current.home, lastMonthTotal: total } }),
+    );
+  };
+
   const addManualLog = async (meterId: MeterId, reading: number, timestamp: number, notes?: string) => {
     const entryTimestamp = Number.isFinite(timestamp) ? timestamp : Date.now();
+    manualReadingOverrideRef.current = {
+      ...manualReadingOverrideRef.current,
+      [meterId]: { reading, timestamp: entryTimestamp },
+    };
+    void AsyncStorage.setItem(MANUAL_READINGS_OVERRIDE_KEY, JSON.stringify(manualReadingOverrideRef.current)).catch(() => undefined);
     await submitOrQueue(
       { id: `manual-${meterId}-${entryTimestamp}`, path: "/manual-readings", method: "POST", body: { meterId, reading, timestamp: entryTimestamp, notes }, createdAt: entryTimestamp },
       (current) => applyOfflineManualReading(current, meterId, reading, entryTimestamp, notes),
@@ -374,7 +497,35 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteManualLog = async (id: string) => {
-    applySnapshot(await request(`/manual-readings/${encodeURIComponent(id)}`, { method: "DELETE" }));
+    // Track the deleted ID so polling doesn't re-add it
+    deletedLogIdsRef.current.add(id);
+    // Find which meter this log belongs to and clear its override
+    const log = snapshot?.manualLogs?.find((l) => l.id === id);
+    if (log) {
+      manualReadingOverrideRef.current = {
+        ...manualReadingOverrideRef.current,
+        [log.meterId]: null,
+      };
+      void AsyncStorage.setItem(MANUAL_READINGS_OVERRIDE_KEY, JSON.stringify(manualReadingOverrideRef.current)).catch(() => undefined);
+    }
+    // Optimistically remove the log from the local snapshot immediately
+    if (snapshot) {
+      const optimistic = {
+        ...snapshot,
+        manualLogs: snapshot.manualLogs.filter((l) => l.id !== id),
+      };
+      applySnapshot(optimistic);
+    }
+    // Only call the server for non-offline logs
+    if (id && !id.startsWith("offline-")) {
+      try {
+        applySnapshot(await request(`/manual-readings/${encodeURIComponent(id)}`, { method: "DELETE" }));
+        // Server confirmed deletion — remove from tracking set
+        deletedLogIdsRef.current.delete(id);
+      } catch {
+        // Server unavailable — log stays deleted locally via tracking set
+      }
+    }
   };
 
   const refreshTomzn = async () => {
@@ -388,7 +539,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     calibrateMeter: (meterId, reading) => { void addManualLog(meterId, reading, Date.now(), "Manual calibration"); },
-    setManualBaseline, addManualLog, editManualLog, deleteManualLog,
+    setManualBaseline, setLastMonthTotal, addManualLog, editManualLog, deleteManualLog,
     clearAlerts: () => undefined,
     resetAllLogs: async () => { await loadDashboard(false); },
     refreshTomzn,

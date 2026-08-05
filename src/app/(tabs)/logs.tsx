@@ -1,38 +1,49 @@
-import { ComingSoonScreen } from "@/components/ComingSoonScreen";
-import { Colors } from "@/constants/Colors";
-import { MeterId, useEnergy } from "@/context/EnergyContext";
-import { useUiMode } from "@/context/UiModeContext";
-import { Clock } from "lucide-react-native";
-import { useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEnergy } from "@/context/EnergyContext";
+import { Activity, ArrowUpRight, Clock, Trash2 } from "lucide-react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+function formatDateTime(timestamp: number): string {
+  const d = new Date(timestamp);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  if (isToday) return `Today ${time}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
+  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${time}`;
+}
+
+function formatReading(reading: number): string {
+  return reading.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
 
 export default function LogsScreen() {
   const insets = useSafeAreaInsets();
-  const theme = Colors.dark;
-  const { meters, addManualLog, history, manualLogs } = useEnergy();
+  const { manualLogs, deleteManualLog, meters } = useEnergy();
 
-  const [meterId, setMeterId] = useState<MeterId>("meter1");
-  const [reading, setReading] = useState("");
-  const [notes, setNotes] = useState("");
-  const { mode } = useUiMode();
-  if (mode === "new") return <ComingSoonScreen title="Logs" />;
+  const recentLogs = [...manualLogs].sort((a, b) => b.timestamp - a.timestamp).slice(0, 10);
 
-  const handleSave = async () => {
-    const numericReading = Number.parseFloat(reading);
-    if (Number.isNaN(numericReading) || numericReading < 0) {
-      Alert.alert("Invalid Input", "Please enter a valid positive number for units.");
-      return;
-    }
-
-    try {
-      await addManualLog(meterId, numericReading, Date.now(), notes.trim() || undefined);
-      Alert.alert("Success", "Reading logged successfully. Engine has calculated the drift using Tomzn data.");
-      setReading("");
-      setNotes("");
-    } catch(e) {
-      Alert.alert("Error", "Failed to save reading.");
-    }
+  const handleDelete = (logId: string, logMeter: string, logReading: number) => {
+    Alert.alert(
+      "Delete this reading?",
+      `This will remove the ${logMeter} reading of ${logReading.toFixed(1)} units and restore the system to what it was before this entry.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteManualLog(logId);
+            } catch {
+              Alert.alert("Error", "Could not delete the reading. Check the server connection.");
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -42,83 +53,103 @@ export default function LogsScreen() {
           styles.container,
           { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 120 },
         ]}
+        showsVerticalScrollIndicator={false}
       >
+        {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Log Entry</Text>
-          <Text style={styles.subtitle}>Enter meter readings to train the AI with Tomzn gaps.</Text>
+          <Text style={styles.title}>Readings Log</Text>
+          <Text style={styles.subtitle}>Manual meter readings history & calibration logs</Text>
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.label}>Select Meter</Text>
-          <View style={styles.selectorRow}>
-            <Pressable
-              onPress={() => setMeterId("meter1")}
-              style={[styles.selectorChip, meterId === "meter1" && styles.chipActive1]}
-            >
-              <Text style={[styles.selectorChipText, meterId === "meter1" && styles.chipTextActive]}>
-                Meter 1 (Analog)
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setMeterId("meter2")}
-              style={[styles.selectorChip, meterId === "meter2" && styles.chipActive2]}
-            >
-              <Text style={[styles.selectorChipText, meterId === "meter2" && styles.chipTextActive]}>
-                Meter 2 (Digital)
-              </Text>
-            </Pressable>
+        {/* Summary stats */}
+        <View style={styles.statsRow}>
+          <View style={styles.statCard}>
+            <View style={styles.statHighlight} />
+            <Text style={styles.statLabel}>Total Logs</Text>
+            <Text style={styles.statValue}>{manualLogs.length}</Text>
           </View>
-
-          <Text style={[styles.label, { marginTop: 16 }]}>Current Reading (Units)</Text>
-          <TextInput
-            value={reading}
-            onChangeText={setReading}
-            keyboardType="decimal-pad"
-            placeholder="e.g. 5231.4"
-            placeholderTextColor={theme.textSecondary}
-            style={styles.input}
-          />
-          {meters[meterId]?.lastLoggedReading !== undefined && (
-            <Text style={styles.helperText}>
-              Last Logged: {meters[meterId]?.lastLoggedReading.toFixed(1)} units
-            </Text>
-          )}
-
-          <Text style={[styles.label, { marginTop: 16 }]}>Notes (Optional)</Text>
-          <TextInput
-            value={notes}
-            onChangeText={setNotes}
-            placeholder="e.g. Morning sync"
-            placeholderTextColor={theme.textSecondary}
-            style={styles.inputSmall}
-          />
-
-          <Pressable style={styles.saveBtn} onPress={handleSave}>
-            <Text style={styles.saveBtnText}>Save Reading</Text>
-          </Pressable>
+          <View style={styles.statCard}>
+            <View style={styles.statHighlight} />
+            <Text style={styles.statLabel}>Meter 1 Reading</Text>
+            <Text style={styles.statValue}>{formatReading(meters.meter1.reading)}</Text>
+            <Text style={styles.statUnit}>units</Text>
+          </View>
+          <View style={styles.statCard}>
+            <View style={styles.statHighlight} />
+            <Text style={styles.statLabel}>Meter 2 Reading</Text>
+            <Text style={styles.statValue}>{formatReading(meters.meter2.reading)}</Text>
+            <Text style={styles.statUnit}>units</Text>
+          </View>
         </View>
 
-        <View style={styles.recentLogs}>
-          <Text style={styles.sectionTitle}>Recent Manual Logs</Text>
-          {manualLogs.slice(0, 5).map(log => (
-            <View key={log.id} style={styles.logRow}>
-              <View style={styles.logLeft}>
-                <Clock size={14} color={theme.textSecondary} />
-                <View>
-                  <Text style={styles.logMeter}>{log.meterId === 'meter1' ? 'Meter 1' : 'Meter 2'}</Text>
-                  <Text style={styles.logTime}>{new Date(log.timestamp).toLocaleString()}</Text>
+        {/* Recent Readings */}
+        <View style={styles.sectionHeader}>
+          <View style={styles.sectionTitleRow}>
+            <Activity size={14} color="#8862ED" />
+            <Text style={styles.sectionTitle}>Recent Readings</Text>
+          </View>
+          <Text style={styles.sectionCount}>{recentLogs.length} of {manualLogs.length}</Text>
+        </View>
+
+        {recentLogs.length > 0 ? (
+          <View style={styles.logCard}>
+            <View style={styles.cardHighlight} />
+            {recentLogs.map((log, idx) => {
+              const prevLog = recentLogs[idx + 1];
+              const delta = prevLog ? log.reading - prevLog.reading : 0;
+              const isMeter1 = log.meterId === 'meter1';
+              const meterColor = isMeter1 ? '#32E56B' : '#548EFF';
+              const meterLabel = isMeter1 ? 'Meter 1' : 'Meter 2';
+              return (
+                <View key={log.id} style={[styles.logRow, idx === recentLogs.length - 1 && { borderBottomWidth: 0 }]}>
+                  {/* Left: timestamp + meter badge */}
+                  <View style={styles.logLeft}>
+                    <View style={[styles.meterBadge, { backgroundColor: isMeter1 ? 'rgba(50,229,107,0.12)' : 'rgba(84,142,255,0.12)', borderColor: `${meterColor}40` }]}>
+                      <Text style={[styles.meterBadgeText, { color: meterColor }]}>{isMeter1 ? 'M1' : 'M2'}</Text>
+                    </View>
+                    <View style={styles.logInfo}>
+                      <Text style={styles.logMeter}>{meterLabel}</Text>
+                      <Text style={styles.logTime}>{formatDateTime(log.timestamp)}</Text>
+                    </View>
+                  </View>
+
+                  {/* Middle: reading + delta */}
+                  <View style={styles.logMiddle}>
+                    <Text style={styles.logReading}>{formatReading(log.reading)}</Text>
+                    <Text style={styles.logUnit}>units</Text>
+                    {delta > 0 && (
+                      <View style={styles.deltaChip}>
+                        <ArrowUpRight size={8} color={meterColor} />
+                        <Text style={[styles.deltaText, { color: meterColor }]}>+{delta.toFixed(1)}</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Right: notes + delete */}
+                  <View style={styles.logRight}>
+                    {log.notes ? <Text style={styles.logNote} numberOfLines={1}>{log.notes}</Text> : null}
+                    <Pressable
+                      style={styles.deleteBtn}
+                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                      onPress={() => handleDelete(log.id, meterLabel, log.reading)}
+                    >
+                      <Trash2 size={15} color="#EF4C4C" />
+                    </Pressable>
+                  </View>
                 </View>
-              </View>
-              <View style={styles.logRight}>
-                <Text style={styles.logReading}>{log.reading.toFixed(1)} <Text style={styles.logUnit}>kWh</Text></Text>
-                {log.notes && <Text style={styles.logNote}>{log.notes}</Text>}
-              </View>
+              );
+            })}
+          </View>
+        ) : (
+          <View style={styles.emptyCard}>
+            <View style={styles.cardHighlight} />
+            <View style={styles.emptyState}>
+              <Clock size={28} color="#3A4658" />
+              <Text style={styles.emptyTitle}>No readings yet</Text>
+              <Text style={styles.emptySub}>Manual readings logged from Settings will appear here.</Text>
             </View>
-          ))}
-          {manualLogs.length === 0 && (
-            <Text style={{color: theme.textSecondary, fontSize: 12}}>No manual logs found.</Text>
-          )}
-        </View>
+          </View>
+        )}
       </ScrollView>
     </View>
   );
@@ -127,164 +158,238 @@ export default function LogsScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: Colors.dark.background,
+    backgroundColor: '#0B111B',
   },
   container: {
     paddingHorizontal: 16,
-    gap: 16,
+    gap: 14,
   },
   header: {
-    marginBottom: 8,
+    marginBottom: 4,
   },
   title: {
-    color: Colors.dark.text,
-    fontFamily: "Outfit",
-    fontSize: 28,
-    fontWeight: "700",
+    color: '#F4F8FC',
+    fontFamily: 'Outfit',
+    fontSize: 26,
+    fontWeight: '700',
   },
   subtitle: {
-    color: Colors.dark.textSecondary,
-    fontSize: 13,
-    marginTop: 4,
+    color: '#7E91A6',
+    fontSize: 12,
+    fontFamily: 'Outfit',
+    marginTop: 3,
   },
-  card: {
-    backgroundColor: Colors.dark.backgroundElevated,
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: Colors.dark.border,
-  },
-  label: {
-    color: Colors.dark.text,
-    fontFamily: "Outfit",
-    fontSize: 14,
-    fontWeight: "600",
-    marginBottom: 8,
-  },
-  selectorRow: {
-    flexDirection: "row",
+
+  // Stats row
+  statsRow: {
+    flexDirection: 'row',
     gap: 8,
   },
-  selectorChip: {
+  statCard: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 12,
+    backgroundColor: '#0E1521',
     borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.04)",
-  },
-  chipActive1: {
-    backgroundColor: "rgba(16, 185, 129, 0.15)", // exportGlow equivalent
+    padding: 10,
     borderWidth: 1,
-    borderColor: Colors.dark.export,
+    borderColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+    position: 'relative',
   },
-  chipActive2: {
-    backgroundColor: "rgba(10, 132, 255, 0.15)", // info equivalent
-    borderWidth: 1,
-    borderColor: Colors.dark.info,
+  statHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
-  selectorChipText: {
-    color: Colors.dark.textSecondary,
-    fontFamily: "Outfit",
-    fontSize: 12,
-    fontWeight: "600",
+  statLabel: {
+    color: '#5C6C7E',
+    fontSize: 8,
+    fontFamily: 'Outfit',
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
-  chipTextActive: {
-    color: Colors.dark.text,
-  },
-  input: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.dark.borderStrong,
-    backgroundColor: "rgba(255,255,255,0.03)",
-    color: Colors.dark.text,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    fontFamily: "Share Tech Mono",
-    fontSize: 20,
-  },
-  inputSmall: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.dark.borderStrong,
-    backgroundColor: "rgba(255,255,255,0.03)",
-    color: Colors.dark.text,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
-  },
-  helperText: {
-    color: Colors.dark.textSecondary,
-    fontSize: 11,
-    marginTop: 6,
-    marginLeft: 4,
-  },
-  saveBtn: {
-    backgroundColor: Colors.dark.export,
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 24,
-  },
-  saveBtnText: {
-    color: "#000",
-    fontFamily: "Outfit",
+  statValue: {
+    color: '#E4ECF4',
     fontSize: 16,
-    fontWeight: "700",
+    fontFamily: 'Outfit',
+    fontWeight: '700',
+    marginTop: 3,
   },
-  recentLogs: {
-    marginTop: 16,
+  statUnit: {
+    color: '#7E91A6',
+    fontSize: 8,
+    fontFamily: 'Outfit',
+  },
+
+  // Section header
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 6,
+    marginBottom: 2,
+    paddingHorizontal: 2,
+  },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
   },
   sectionTitle: {
-    color: Colors.dark.textSecondary,
-    fontFamily: "Outfit",
-    fontSize: 12,
-    fontWeight: "700",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    marginBottom: 12,
+    color: '#AAB7C7',
+    fontSize: 11,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
+  sectionCount: {
+    color: '#5C6C7E',
+    fontSize: 9,
+    fontFamily: 'Outfit',
+  },
+
+  // Log card
+  logCard: {
+    backgroundColor: '#0E1521',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  cardHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+
+  // Log row
   logRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingVertical: 12,
+    paddingHorizontal: 14,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.dark.border,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
   logLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1.5,
+  },
+  meterBadge: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  meterBadgeText: {
+    fontSize: 10,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
+  },
+  logInfo: {
+    gap: 1,
   },
   logMeter: {
-    color: Colors.dark.text,
-    fontFamily: "Outfit",
-    fontSize: 14,
-    fontWeight: "600",
+    color: '#E4ECF4',
+    fontSize: 12,
+    fontFamily: 'Outfit',
+    fontWeight: '600',
   },
   logTime: {
-    color: Colors.dark.textSecondary,
-    fontSize: 11,
-    marginTop: 2,
+    color: '#5C6C7E',
+    fontSize: 9,
+    fontFamily: 'Outfit',
   },
-  logRight: {
-    alignItems: "flex-end",
+
+  // Middle
+  logMiddle: {
+    alignItems: 'center',
+    flex: 1,
   },
   logReading: {
-    color: Colors.dark.text,
-    fontFamily: "Share Tech Mono",
-    fontSize: 16,
-    fontWeight: "700",
+    color: '#F4F8FC',
+    fontSize: 15,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
   },
   logUnit: {
-    fontSize: 10,
-    color: Colors.dark.textSecondary,
+    color: '#7E91A6',
+    fontSize: 8,
+    fontFamily: 'Outfit',
+  },
+  deltaChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginTop: 3,
+  },
+  deltaText: {
+    fontSize: 8,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
+  },
+
+  // Right
+  logRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    justifyContent: 'flex-end',
   },
   logNote: {
-    color: Colors.dark.info,
-    fontSize: 10,
-    marginTop: 2,
-  }
+    color: '#7E91A6',
+    fontSize: 9,
+    fontFamily: 'Outfit',
+    maxWidth: 60,
+  },
+  deleteBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: 'rgba(239,76,76,0.10)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(239,76,76,0.15)',
+  },
+
+  // Empty state
+  emptyCard: {
+    backgroundColor: '#0E1521',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 40,
+    gap: 8,
+  },
+  emptyTitle: {
+    color: '#7E91A6',
+    fontSize: 14,
+    fontFamily: 'Outfit',
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  emptySub: {
+    color: '#5C6C7E',
+    fontSize: 11,
+    fontFamily: 'Outfit',
+    textAlign: 'center',
+  },
 });

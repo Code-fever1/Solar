@@ -1,8 +1,23 @@
 import { ArrowDown, ArrowUp, Home, Sparkles, SunMedium, TowerControl, Zap } from 'lucide-react-native';
+import { memo } from 'react';
 import { Dimensions, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
 
 const { width: screenWidth } = Dimensions.get('window');
+
+// Color helper: keeps original color above 20 units, transitions yellow→red as it drops below 20
+// At 20: yellow (#F8C653), at 0: red (#EF4C4C), interpolated in between
+function gaugeColor(remaining: number, baseColor: string): string {
+  if (remaining >= 20) return baseColor;
+  // t = 1 at 20 (yellow), t = 0 at 0 (red)
+  const t = Math.max(0, remaining) / 20;
+  // Yellow: #F8C653 = (248, 198, 83)
+  // Red:    #EF4C4C = (239, 76, 76)
+  const r = Math.round(248 * t + 239 * (1 - t));
+  const g = Math.round(198 * t + 76 * (1 - t));
+  const b = Math.round(83 * t + 76 * (1 - t));
+  return `rgb(${r},${g},${b})`;
+}
 const cardWidth = (screenWidth - 32) / 2;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -11,7 +26,7 @@ const cardWidth = (screenWidth - 32) / 2;
 // ═══════════════════════════════════════════════════════════════════════
 
 // ── Energy Received Today ───────────────────────────────────────────────
-export function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWapda }: {
+export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWapda }: {
   totalEnergy: number; solarEnergy: number; gridEnergy: number; isWapda: boolean;
 }) {
   const solarShare = totalEnergy > 0 ? Math.round((solarEnergy / totalEnergy) * 100) : 0;
@@ -28,7 +43,7 @@ export function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWap
       </View>
 
       {/* Hero — total value */}
-      <Text style={s.heroValue}>{totalEnergy.toFixed(1)}<Text style={s.heroUnit}> units</Text></Text>
+      <Text style={s.heroValue}>{totalEnergy.toFixed(2)}<Text style={s.heroUnit}> units</Text></Text>
 
       {/* Source bars — numbers dominate, donut is secondary */}
       <View style={s.sourceBars}>
@@ -37,7 +52,7 @@ export function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWap
             <SunMedium size={10} color="#F5C42E" />
             <Text style={s.sourceBarLabel}>Solar</Text>
           </View>
-          <Text style={s.sourceBarValue}>{solarEnergy.toFixed(1)}</Text>
+          <Text style={s.sourceBarValue}>{solarEnergy.toFixed(2)}</Text>
           <View style={s.sourceBarTrack}>
             <View style={[s.sourceBarFill, { backgroundColor: '#F5C42E', width: `${solarShare}%` }]} />
           </View>
@@ -49,7 +64,7 @@ export function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWap
             <TowerControl size={10} color="#548EFF" />
             <Text style={s.sourceBarLabel}>Grid</Text>
           </View>
-          <Text style={s.sourceBarValue}>{gridEnergy.toFixed(1)}</Text>
+          <Text style={s.sourceBarValue}>{gridEnergy.toFixed(2)}</Text>
           <View style={s.sourceBarTrack}>
             <View style={[s.sourceBarFill, { backgroundColor: '#548EFF', width: `${gridShare}%` }]} />
           </View>
@@ -69,10 +84,10 @@ export function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWap
       </View>
     </View>
   );
-}
+});
 
 // ── Energy Used Today ───────────────────────────────────────────────────
-export function EnergyUsedCard({ totalHomeUsage, liveLoadW, peakLoadW, vsYesterdayPercent, voltage, currentA, loadStatus, normalDrawKw }: {
+export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liveLoadW, peakLoadW, vsYesterdayPercent, voltage, currentA, loadStatus, normalDrawKw }: {
   totalHomeUsage: number; liveLoadW: number; peakLoadW: number; vsYesterdayPercent: number | null;
   voltage: number; currentA: number; loadStatus: 'Low' | 'Normal' | 'High';
   normalDrawKw: number;
@@ -92,14 +107,13 @@ export function EnergyUsedCard({ totalHomeUsage, liveLoadW, peakLoadW, vsYesterd
       </View>
 
       {/* Hero — total usage */}
-      <Text style={s.heroValue}>{totalHomeUsage.toFixed(1)}<Text style={s.heroUnit}> units</Text></Text>
+      <Text style={s.heroValue}>{totalHomeUsage.toFixed(2)}<Text style={s.heroUnit}> units</Text></Text>
 
       {/* Live load — with V·A context and colored zone gauge */}
       <View style={s.liveBlock}>
         <View style={s.liveLeft}>
           <Text style={s.liveLabel}>● Live Load</Text>
           <Text style={s.liveValue}>{Math.round(liveLoadW)}<Text style={s.liveUnit}> W</Text></Text>
-          <Text style={s.liveContext}>{currentA.toFixed(1)}A · {voltage.toFixed(0)}V</Text>
         </View>
 
         {/* Horizontal load indicator with zones */}
@@ -141,36 +155,48 @@ export function EnergyUsedCard({ totalHomeUsage, liveLoadW, peakLoadW, vsYesterd
       </View>
     </View>
   );
-}
+});
 
-// ── AI Forecast & Budget — Hero centerpiece ─────────────────────────────
+// ── AI Forecast & Budget — Hero centerpiece (merged with Meter Details) ─
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-export function ForecastBudgetCard({
-  expectedUnits, vsLastMonth, confidence, dailyUsage, budgetLeft, budgetTarget,
-  daysLeft, meter1Left, meter1Target, meter2Left, meter2Target,
+export const ForecastBudgetCard = memo(function ForecastBudgetCard({
+  expectedUnits, vsLastMonth, lastMonthTotal, confidence, dailyUsage, budgetLeft, budgetTarget,
+  daysLeft, combinedDaysLeft, averageDaily,
+  meter1Left, meter1Target, meter1Used, meter1Today, meter1DaysLeft,
+  meter2Left, meter2Target, meter2Used, meter2Today, meter2DaysLeft,
 }: {
-  expectedUnits: number; vsLastMonth: number | null; confidence: number;
+  expectedUnits: number; vsLastMonth: number | null; lastMonthTotal: number; confidence: number;
   dailyUsage: Array<{ timestamp: number; label: string; usage: number }>;
   budgetLeft: number; budgetTarget: number; daysLeft: number;
-  meter1Left: number; meter1Target: number; meter2Left: number; meter2Target: number;
+  combinedDaysLeft: number; averageDaily: number;
+  meter1Left: number; meter1Target: number; meter1Used: number; meter1Today: number; meter1DaysLeft: number;
+  meter2Left: number; meter2Target: number; meter2Used: number; meter2Today: number; meter2DaysLeft: number;
 }) {
-  const budgetPct = Math.max(0, Math.min(100, (budgetLeft / budgetTarget) * 100));
-  const m1Pct = Math.round((meter1Left / meter1Target) * 100);
-  const m2Pct = Math.round((meter2Left / meter2Target) * 100);
-  const m1Remaining = Math.max(0, meter1Target - meter1Left);
-  const m2Remaining = Math.max(0, meter2Target - meter2Left);
+  const totalTarget = 400;
+  const totalRemaining = meter1Left + meter2Left;
+  const totalUsed = meter1Used + meter2Used;
+  const budgetPct = Math.max(0, Math.min(100, (totalRemaining / totalTarget) * 100));
   const budgetHealth = budgetPct > 50 ? 'Healthy' : budgetPct > 25 ? 'Moderate' : 'Low';
 
+  // Over/under budget — uses backend's projectedMonthly (same as old UI)
+  const overBudget = Math.round(expectedUnits - totalTarget);
+  const isOver = overBudget > 0;
+
+  // Meter gauge calculations
+  const m1Pct = Math.round((meter1Left / meter1Target) * 100);
+  const m2Pct = Math.round((meter2Left / meter2Target) * 100);
+  const arcLength = 167.5;
+  const m1Stroke = (m1Pct / 100) * arcLength;
+  const m2Stroke = (m2Pct / 100) * arcLength;
+
   // Chart dimensions
-  const chH = 70;
-  const chW = screenWidth * 0.38;
+  const chH = 130;
+  const chW = screenWidth * 0.48;
 
   // ── Build cumulative actual + forecast across the billing cycle (29th → 28th) ──
-  // Billing cycle: 28th of prev month → 28th of current month (30-31 days)
   const now = new Date();
   const billingDay = 28;
-  // Cycle start: 28th of current month, or 28th of prev month if before 28th
   const cycleStartMonth = now.getDate() >= billingDay ? now.getMonth() : now.getMonth() - 1;
   const cycleStartYear = cycleStartMonth < 0 ? now.getFullYear() - 1 : now.getFullYear();
   const cycleStartIdx = ((cycleStartMonth % 12) + 12) % 12;
@@ -178,10 +204,8 @@ export function ForecastBudgetCard({
   const cycleEndDate = new Date(cycleStartYear, cycleStartIdx + 1, billingDay);
   const totalCycleDays = Math.max(1, Math.round((cycleEndDate.getTime() - cycleStartDate.getTime()) / 86_400_000));
   const elapsedDays = Math.max(0, Math.min(totalCycleDays, Math.floor((now.getTime() - cycleStartDate.getTime()) / 86_400_000)));
+  const remainingDays = Math.max(1, totalCycleDays - elapsedDays);
 
-  // Map dailyUsage (7-day window) into cumulative actual values
-  // dailyUsage has { timestamp, label, usage } for last 7 days
-  // Build cumulative sum from the earliest available day
   const sortedDaily = [...dailyUsage].sort((a, b) => a.timestamp - b.timestamp);
   let cumulative = 0;
   const actualCumulative: number[] = [];
@@ -190,26 +214,31 @@ export function ForecastBudgetCard({
     actualCumulative.push(cumulative);
   }
 
-  // If we have actual data, the actual line covers those days
-  // The forecast continues from the last actual cumulative value to expectedUnits at month end
+  // Use backend's combinedDaysLeft (blends TOMZN + historical, same as old UI)
+  // combinedDaysLeft = how many days until both meters run out at current burn rate
+  const remainingCycleDays = Math.max(1, totalCycleDays - elapsedDays);
+  const daysBuffer = Math.round(combinedDaysLeft - remainingCycleDays);
+  let displayDays: string;
+  if (daysBuffer > 0) {
+    displayDays = `+${daysBuffer} days buffer`;
+  } else if (daysBuffer < 0) {
+    displayDays = `${Math.abs(daysBuffer)} days over`;
+  } else {
+    displayDays = `On pace`;
+  }
+
+  // Days left for meter gauges middle column — sum per-meter projectedDaysLeft
+  // (same as old UI: m1.projectedDaysLeft + m2.projectedDaysLeft)
+  const estDaysLeft = meter1DaysLeft + meter2DaysLeft;
+
   const actualDays = actualCumulative.length;
   const lastActualCumulative = actualCumulative.length > 0 ? actualCumulative[actualCumulative.length - 1] : 0;
-
-  // Y-axis: dynamic — round up to next 100 above prediction, min 100
   const yMax = Math.max(100, Math.ceil(Math.max(expectedUnits, lastActualCumulative) / 100) * 100);
 
-  // Forecast points: from last actual point to expectedUnits at end of cycle
-  // Use a smooth curve — not straight — that accounts for daily variation
-  const remainingDays = Math.max(1, totalCycleDays - elapsedDays);
-
-  // Generate forecast points with slight variation so it's not a dead-straight line
   const forecastPoints: Array<{ x: number; y: number }> = [];
   const actualPoints: Array<{ x: number; y: number }> = [];
-
-  // Total chart points = totalCycleDays (one per day)
   const totalPoints = totalCycleDays;
 
-  // Actual line: cumulative usage for each elapsed day
   for (let i = 0; i <= elapsedDays && i <= actualDays; i++) {
     const x = (i / totalPoints) * chW;
     const val = actualCumulative[i] || (i === 0 ? 0 : lastActualCumulative);
@@ -217,31 +246,22 @@ export function ForecastBudgetCard({
     actualPoints.push({ x, y });
   }
 
-  // Forecast line: from last actual point to expectedUnits, with daily variation
-  const forecastStartX = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].x : 0;
-  const forecastStartY = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].y : chH;
   for (let i = elapsedDays; i <= totalCycleDays; i++) {
     const x = (i / totalPoints) * chW;
-    // Smooth curve with slight wave — simulates daily variation in forecast
     const progress = (i - elapsedDays) / Math.max(1, totalCycleDays - elapsedDays);
     const baseVal = lastActualCumulative + (expectedUnits - lastActualCumulative) * progress;
-    // Add subtle wave so it's not a straight line (±3% variation)
     const wave = Math.sin(progress * Math.PI * 3) * (expectedUnits * 0.015);
     const val = Math.max(0, baseVal + wave);
     const y = chH - Math.min(1, val / yMax) * chH;
     forecastPoints.push({ x, y });
   }
 
-  // Build SVG paths
   const actualPath = actualPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
   const forecastPath = forecastPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
 
-  // Current point — where actual meets forecast
   const currentX = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].x : 0;
   const currentY = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].y : chH;
 
-  // Dynamic x-axis labels — billing cycle months (29th → 28th)
-  // Show: cycle start month, 1/4, mid, 3/4, cycle end month
   const startMonthLabel = MONTHS[cycleStartIdx];
   const endMonthIdx = (cycleStartIdx + 1) % 12;
   const endMonthLabel = MONTHS[endMonthIdx];
@@ -257,122 +277,193 @@ export function ForecastBudgetCard({
         <View style={s.headerLeft}>
           <Sparkles size={12} color="#8862ED" />
           <Text style={s.cardTitle}>AI Forecast & Budget</Text>
+          <View style={s.confidenceBadge}>
+            <Text style={s.confidenceText}>{confidence}% Confidence</Text>
+          </View>
         </View>
-        <View style={s.confidenceBadge}>
-          <Text style={s.confidenceText}>{confidence}% Confidence</Text>
-        </View>
-      </View>
-
-      {/* Hero metric — prediction dominates */}
-      <View style={s.heroRow}>
-        <View>
-          <Text style={s.forecastHeroValue}>{Math.round(expectedUnits)}</Text>
-          <Text style={s.forecastHeroUnit}>units predicted by {endMonthLabel} {billingDay}</Text>
-        </View>
-        <View style={s.trendChip}>
-          {vsLastMonth == null ? (
-            <Text style={[s.trendText, { color: '#7E91A6' }]}>Building baseline…</Text>
-          ) : (
-            <>
+        <View style={s.headerRight}>
+          {vsLastMonth != null && lastMonthTotal > 0 ? (
+            <View style={s.trendChip}>
               {vsLastMonth <= 0 ? <ArrowDown size={11} color="#32E56B" /> : <ArrowUp size={11} color="#EF4C4C" />}
               <Text style={[s.trendText, { color: vsLastMonth <= 0 ? '#32E56B' : '#EF4C4C' }]}>
-                {Math.abs(vsLastMonth)}% vs daily avg
+                {Math.abs(vsLastMonth)}%
               </Text>
-            </>
+            </View>
+          ) : (
+            <View style={s.trendChip}>
+              <Text style={[s.trendText, { color: '#5C6C7E' }]}>
+                Set last month total in settings
+              </Text>
+            </View>
           )}
         </View>
       </View>
 
-      {/* Forecast chart — cumulative actual + projected forecast */}
-      <View style={s.chartSection}>
-        <View style={s.chartHeader}>
-          <Text style={s.colLabel}>Cumulative Usage (units)</Text>
-          <View style={s.legendRow}>
-            <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: '#32E56B' }]} /><Text style={s.legendText}>Actual</Text></View>
-            <View style={s.legendItem}><View style={[s.legendDash, { backgroundColor: '#8862ED' }]} /><Text style={s.legendText}>Forecast</Text></View>
-          </View>
-        </View>
-        <View style={s.chartArea}>
-          <View style={s.yAxisCol}>
-            <Text style={s.axisText}>{yMax}</Text>
-            <Text style={s.axisText}>{Math.round(yMax * 0.66)}</Text>
-            <Text style={s.axisText}>{Math.round(yMax * 0.33)}</Text>
-            <Text style={s.axisText}>0</Text>
-          </View>
-          <View style={s.chartPlot}>
-            <Svg width="100%" height={chH} viewBox={`0 0 ${chW} ${chH}`} preserveAspectRatio="none">
-              {/* Grid lines — 4 sections */}
-              <Line x1="0" y1={chH * 0.25} x2={chW} y2={chH * 0.25} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
-              <Line x1="0" y1={chH * 0.5} x2={chW} y2={chH * 0.5} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
-              <Line x1="0" y1={chH * 0.75} x2={chW} y2={chH * 0.75} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
-              {/* Forecast line — dashed, from current point to month end */}
-              {forecastPath && <Path d={forecastPath} stroke="#8862ED" strokeWidth="1.5" fill="none" strokeDasharray="3 3" />}
-              {/* Actual line — solid, from cycle start to now */}
-              {actualPath && <Path d={actualPath} stroke="#32E56B" strokeWidth="2" fill="none" />}
-              {/* Current point — where actual meets forecast */}
-              <Circle cx={currentX} cy={currentY} r="3.5" fill="#32E56B" />
-              <Circle cx={currentX} cy={currentY} r="6" fill="#32E56B" opacity="0.2" />
-            </Svg>
-          </View>
-        </View>
-        <View style={s.xAxisRow}>
-          <Text style={s.axisText}>{startMonthLabel} 28</Text>
-          <Text style={s.axisText}>{q1Month} 5</Text>
-          <Text style={s.axisText}>{midMonth} 12</Text>
-          <Text style={s.axisText}>{q3Month} 20</Text>
-          <Text style={s.axisText}>{endMonthLabel} 28</Text>
-        </View>
-      </View>
+      <View style={s.contentRow}>
+        <View style={s.leftCol}>
+          <Text style={s.forecastHeroValue}>{Math.round(expectedUnits)}</Text>
+          <Text style={s.forecastHeroUnit}>units predicted by {endMonthLabel} {billingDay}</Text>
+          <Text style={[s.forecastOverUnder, { color: isOver ? '#EF4C4C' : '#32E56B' }]}>
+            {isOver ? `+${overBudget} units saved` : overBudget === 0 ? 'On budget' : `${Math.abs(overBudget)} units saved`}
+          </Text>
 
-      {/* Budget — connected component: ring + days + status */}
-      <View style={s.budgetSection}>
-        <View style={s.budgetRingWrap}>
-          <Svg width={72} height={72} viewBox="0 0 80 80">
-            <Path d="M 12 68 A 32 32 0 1 1 68 68" stroke="rgba(255,255,255,0.06)" strokeWidth="7" fill="none" strokeLinecap="round" />
-            <Path d="M 12 68 A 32 32 0 1 1 68 68" stroke="#32E56B" strokeWidth="7"
-              strokeDasharray={`${(budgetPct / 100) * 150} 250`} fill="none" strokeLinecap="round" />
-          </Svg>
-          <View style={s.budgetRingInner}>
-            <Text style={s.budgetRingValue}>{Math.round(budgetLeft)}</Text>
-            <Text style={s.budgetRingUnit}>left</Text>
-          </View>
-        </View>
-        <View style={s.budgetInfo}>
-          <Text style={s.budgetTitle}>{budgetLeft.toFixed(0)} / {budgetTarget} units</Text>
-          <Text style={s.budgetDays}>≈ {daysLeft} days remaining</Text>
+          {/* This month vs last month comparison — always visible */}
+          {(() => {
+            const hasLastMonth = lastMonthTotal > 0;
+            const unitGap = hasLastMonth ? Math.round(expectedUnits - lastMonthTotal) : 0;
+            const gapColor = unitGap > 0 ? '#EF4C4C' : unitGap < 0 ? '#32E56B' : '#F4F8FC';
+            return (
+              <View style={s.vsLastMonthRow}>
+                <View style={s.vsLastMonthCol}>
+                  <Text style={s.vsLastMonthLabel}>This month</Text>
+                  <Text style={s.vsLastMonthValue}>{Math.round(expectedUnits)}</Text>
+                </View>
+                <View style={s.vsLastMonthArrow}>
+                  {hasLastMonth ? (
+                    unitGap > 0 ? <ArrowUp size={14} color={gapColor} /> : unitGap < 0 ? <ArrowDown size={14} color={gapColor} /> : <Text style={s.vsLastMonthEqual}>—</Text>
+                  ) : (
+                    <Text style={s.vsLastMonthEqual}>—</Text>
+                  )}
+                  <Text style={[s.vsLastMonthGap, { color: hasLastMonth ? gapColor : '#5C6C7E' }]}>
+                    {hasLastMonth ? `${unitGap > 0 ? '+' : ''}${unitGap}` : 'N/A'}
+                  </Text>
+                </View>
+                <View style={s.vsLastMonthCol}>
+                  <Text style={s.vsLastMonthLabel}>Last month</Text>
+                  <Text style={[s.vsLastMonthValue, !hasLastMonth && { color: '#5C6C7E', fontSize: 10 }]}>
+                    {hasLastMonth ? Math.round(lastMonthTotal) : 'Set in settings'}
+                  </Text>
+                </View>
+              </View>
+            );
+          })()}
+
           <View style={s.budgetHealthChip}>
             <View style={[s.budgetHealthDot, { backgroundColor: budgetPct > 50 ? '#32E56B' : budgetPct > 25 ? '#F8C653' : '#EF4C4C' }]} />
-            <Text style={s.budgetHealthText}>{budgetHealth} Budget</Text>
+            <Text style={s.budgetHealthText}>{displayDays}</Text>
+          </View>
+        </View>
+
+        <View style={s.rightCol}>
+          <View style={s.chartHeader}>
+            <Text style={s.colLabel}>Cumulative Usage (units)</Text>
+            <View style={s.legendRow}>
+              <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: '#32E56B' }]} /><Text style={s.legendText}>Actual</Text></View>
+              <View style={s.legendItem}><View style={[s.legendDash, { backgroundColor: '#8862ED' }]} /><Text style={s.legendText}>Forecast</Text></View>
+            </View>
+          </View>
+          
+          <View style={s.chartArea}>
+            <View style={s.yAxisCol}>
+              <Text style={s.axisText}>{yMax}</Text>
+              <Text style={s.axisText}>{Math.round(yMax * 0.66)}</Text>
+              <Text style={s.axisText}>{Math.round(yMax * 0.33)}</Text>
+              <Text style={s.axisText}>0</Text>
+            </View>
+            <View style={s.chartPlot}>
+              <Svg width="100%" height={chH} viewBox={`0 0 ${chW} ${chH}`} preserveAspectRatio="none">
+                <Line x1="0" y1={chH * 0.25} x2={chW} y2={chH * 0.25} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
+                <Line x1="0" y1={chH * 0.5} x2={chW} y2={chH * 0.5} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
+                <Line x1="0" y1={chH * 0.75} x2={chW} y2={chH * 0.75} stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
+                {forecastPath && <Path d={forecastPath} stroke="#8862ED" strokeWidth="1.5" fill="none" strokeDasharray="3 3" />}
+                {actualPath && <Path d={actualPath} stroke="#32E56B" strokeWidth="2" fill="none" />}
+                <Circle cx={currentX} cy={currentY} r="3.5" fill="#32E56B" />
+                <Circle cx={currentX} cy={currentY} r="6" fill="#32E56B" opacity="0.2" />
+              </Svg>
+            </View>
+          </View>
+          <View style={s.xAxisRow}>
+            <Text style={s.axisText}>{startMonthLabel} 28</Text>
+            <Text style={s.axisText}>{q1Month} 5</Text>
+            <Text style={s.axisText}>{midMonth} 12</Text>
+            <Text style={s.axisText}>{q3Month} 20</Text>
+            <Text style={s.axisText}>{endMonthLabel} 28</Text>
           </View>
         </View>
       </View>
 
-      {/* Meter bars — smarter with %, units left */}
-      <View style={s.meterRow}>
-        <View style={s.meterCol}>
-          <View style={s.meterHeader}>
-            <Text style={s.meterName}>Meter 1</Text>
-            <Text style={s.meterPct}>{m1Pct}%</Text>
+      {/* ── Horizontal divider ── */}
+      <View style={s.sectionDivider} />
+
+      {/* ── Meter Gauges Row ── */}
+      <View style={s.meterDetailsRow}>
+
+        {/* Meter 1 */}
+        <View style={s.meterDetailsCol}>
+          <Text style={s.meterDetailsTitle}>Meter 1 (Analog)</Text>
+          <View style={s.meterGaugeWrap}>
+            <Svg width={100} height={100} viewBox="0 0 100 100">
+              <Circle cx="50" cy="50" r="40" stroke="rgba(50,229,107,0.15)" strokeWidth="8" fill="none" strokeDasharray="167.5 251.3" strokeLinecap="round" transform="rotate(150 50 50)" />
+              <Circle cx="50" cy="50" r="40" stroke={gaugeColor(meter1Left, '#32E56B')} strokeWidth="8" fill="none" strokeDasharray={`${m1Stroke} 251.3`} strokeLinecap="round" transform="rotate(150 50 50)" />
+            </Svg>
+            <View style={s.meterGaugeInner}>
+              <Text style={s.meterGaugeValue}>{Math.round(meter1Left)}</Text>
+              <Text style={s.meterGaugeUnit}>units left</Text>
+            </View>
           </View>
-          <View style={s.meterTrack}>
-            <View style={[s.meterFill, { backgroundColor: '#32E56B', width: `${m1Pct}%` }]} />
+          <View style={s.meterStatsCol}>
+            <Text style={s.meterStatTotalLabel}>Total Used</Text>
+            <Text style={s.meterStatTotalValue}>{meter1Used.toFixed(2)} <Text style={s.meterStatUnit}>units</Text></Text>
+            <View style={s.meterStatSep} />
+            <View style={s.meterTodayPill}>
+              <Text style={s.meterTodayLabel}>Today</Text>
+              <Text style={s.meterTodayValue}>{meter1Today.toFixed(2)} units</Text>
+            </View>
           </View>
-          <Text style={s.meterRemaining}>{m1Remaining.toFixed(0)} units left</Text>
         </View>
-        <View style={s.meterCol}>
-          <View style={s.meterHeader}>
-            <Text style={s.meterName}>Meter 2</Text>
-            <Text style={s.meterPct}>{m2Pct}%</Text>
+
+        <View style={s.meterDetailsDivider} />
+
+        {/* Middle — Total Remaining ring */}
+        <View style={s.meterDetailsMiddle}>
+          <Text style={s.middleTitle}>TOTAL REMAINING</Text>
+          <View style={s.middleRingWrap}>
+            <Svg width={110} height={110} viewBox="0 0 140 140">
+              <Circle cx="70" cy="70" r="60" stroke="rgba(136,98,237,0.15)" strokeWidth="12" fill="none" strokeDasharray="282.7 377" strokeLinecap="round" transform="rotate(135 70 70)" />
+              <Circle cx="70" cy="70" r="60" stroke={gaugeColor(totalRemaining, '#8862ED')} strokeWidth="12" fill="none" strokeDasharray={`${(budgetPct / 100) * 282.7} 377`} strokeLinecap="round" transform="rotate(135 70 70)" />
+            </Svg>
+            <View style={s.middleRingInner}>
+              <Text style={s.middleRingValue}>{Math.round(totalRemaining)}</Text>
+              <Text style={s.middleRingUnit}>units left</Text>
+            </View>
           </View>
-          <View style={s.meterTrack}>
-            <View style={[s.meterFill, { backgroundColor: '#548EFF', width: `${m2Pct}%` }]} />
+          <Text style={s.middleRemainingDays}>≈ {estDaysLeft} days remaining</Text>
+          <View style={s.meterStatsCol}>
+            <Text style={s.meterStatTotalLabel}>Total Used</Text>
+            <Text style={s.meterStatTotalValue}>{totalUsed.toFixed(2)} <Text style={s.meterStatUnit}>units</Text></Text>
           </View>
-          <Text style={s.meterRemaining}>{m2Remaining.toFixed(0)} units left</Text>
         </View>
+
+        <View style={s.meterDetailsDivider} />
+
+        {/* Meter 2 */}
+        <View style={s.meterDetailsCol}>
+          <Text style={s.meterDetailsTitle}>Meter 2 (Digital)</Text>
+          <View style={s.meterGaugeWrap}>
+            <Svg width={100} height={100} viewBox="0 0 100 100">
+              <Circle cx="50" cy="50" r="40" stroke="rgba(84,142,255,0.15)" strokeWidth="8" fill="none" strokeDasharray="167.5 251.3" strokeLinecap="round" transform="rotate(150 50 50)" />
+              <Circle cx="50" cy="50" r="40" stroke={gaugeColor(meter2Left, '#548EFF')} strokeWidth="8" fill="none" strokeDasharray={`${m2Stroke} 251.3`} strokeLinecap="round" transform="rotate(150 50 50)" />
+            </Svg>
+            <View style={s.meterGaugeInner}>
+              <Text style={s.meterGaugeValue}>{Math.round(meter2Left)}</Text>
+              <Text style={s.meterGaugeUnit}>units left</Text>
+            </View>
+          </View>
+          <View style={s.meterStatsCol}>
+            <Text style={s.meterStatTotalLabel}>Total Used</Text>
+            <Text style={s.meterStatTotalValue}>{meter2Used.toFixed(2)} <Text style={s.meterStatUnit}>units</Text></Text>
+            <View style={s.meterStatSep} />
+            <View style={s.meterTodayPill}>
+              <Text style={s.meterTodayLabel}>Today</Text>
+              <Text style={s.meterTodayValue}>{meter2Today.toFixed(2)} units</Text>
+            </View>
+          </View>
+        </View>
+
       </View>
     </View>
   );
-}
+});
 
 // ── Mini Donut helper ───────────────────────────────────────────────────
 function MiniDonut({ solarShare, gridShare, size }: { solarShare: number; gridShare: number; size: number }) {
@@ -679,7 +770,25 @@ const s = StyleSheet.create({
     fontWeight: '700',
   },
 
-  // Forecast card
+  // Forecast card layout updates
+  contentRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginTop: 8,
+  },
+  leftCol: {
+    width: '43%',
+    alignItems: 'center', // Center everything in left col like the image
+  },
+  rightCol: {
+    width: '54%',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   confidenceBadge: {
     backgroundColor: 'rgba(136,98,237,0.15)',
     paddingHorizontal: 8,
@@ -694,25 +803,70 @@ const s = StyleSheet.create({
     fontFamily: 'Outfit',
     fontWeight: '600',
   },
-
-  // Hero row — prediction dominates
-  heroRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
   forecastHeroValue: {
     color: '#F4F8FC',
-    fontSize: 32,
+    fontSize: 42,
     fontFamily: 'Outfit',
     fontWeight: '700',
+    alignSelf: 'flex-start',
   },
   forecastHeroUnit: {
     color: '#7E91A6',
     fontSize: 10,
     fontFamily: 'Outfit',
+    marginTop: -2,
+    alignSelf: 'flex-start',
+  },
+  forecastOverUnder: {
+    fontSize: 10,
+    fontFamily: 'Outfit',
+    fontWeight: '600',
+    marginTop: 3,
+    alignSelf: 'flex-start',
+  },
+  vsLastMonthRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 10,
+    width: '100%',
+  },
+  vsLastMonthCol: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  vsLastMonthLabel: {
+    color: '#5C6C7E',
+    fontSize: 8,
+    fontFamily: 'Outfit',
+    fontWeight: '600',
+  },
+  vsLastMonthValue: {
+    color: '#E4ECF4',
+    fontSize: 16,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
     marginTop: 2,
+  },
+  vsLastMonthArrow: {
+    alignItems: 'center',
+    paddingHorizontal: 8,
+  },
+  vsLastMonthGap: {
+    fontSize: 11,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  vsLastMonthEqual: {
+    color: '#F4F8FC',
+    fontSize: 14,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
   },
   trendChip: {
     flexDirection: 'row',
@@ -729,19 +883,19 @@ const s = StyleSheet.create({
     fontWeight: '600',
   },
 
-  // Chart section
+  // Chart section updates
   chartSection: {
-    marginBottom: 12,
+    flex: 1,
   },
   chartHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 10,
   },
   colLabel: {
     color: '#7E91A6',
-    fontSize: 8,
+    fontSize: 9,
     fontFamily: 'Outfit',
     fontWeight: '600',
   },
@@ -771,15 +925,15 @@ const s = StyleSheet.create({
   },
   chartArea: {
     flexDirection: 'row',
-    height: 70,
+    height: 130, // Updated height
   },
   yAxisCol: {
     justifyContent: 'space-between',
-    paddingRight: 4,
+    paddingRight: 6,
   },
   axisText: {
     color: '#5C6C7E',
-    fontSize: 7,
+    fontSize: 8,
     fontFamily: 'Outfit',
   },
   chartPlot: {
@@ -791,115 +945,177 @@ const s = StyleSheet.create({
   xAxisRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingLeft: 20,
-    marginTop: 3,
+    paddingLeft: 24, // Shift past y-axis
+    marginTop: 6,
   },
 
-  // Budget — connected component
-  budgetSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    paddingBottom: 12,
-    marginBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-  },
-  budgetRingWrap: {
-    width: 72,
-    height: 72,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  budgetRingInner: {
-    position: 'absolute',
-    alignItems: 'center',
-    top: 20,
-  },
-  budgetRingValue: {
-    color: '#F4F8FC',
-    fontSize: 16,
-    fontFamily: 'Outfit',
-    fontWeight: '700',
-  },
-  budgetRingUnit: {
-    color: '#7E91A6',
-    fontSize: 8,
-    fontFamily: 'Outfit',
-  },
-  budgetInfo: {
-    flex: 1,
-  },
-  budgetTitle: {
-    color: '#E4ECF4',
-    fontSize: 13,
-    fontFamily: 'Outfit',
-    fontWeight: '700',
-    marginBottom: 2,
-  },
-  budgetDays: {
-    color: '#7E91A6',
-    fontSize: 10,
-    fontFamily: 'Outfit',
-    marginBottom: 6,
-  },
+  // Big purple budget ring
   budgetHealthChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    alignSelf: 'flex-start',
+    gap: 5,
     backgroundColor: 'rgba(255,255,255,0.04)',
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    marginTop: 12,
   },
   budgetHealthDot: {
-    width: 5,
-    height: 5,
+    width: 6,
+    height: 6,
     borderRadius: 3,
   },
   budgetHealthText: {
-    color: '#AAB7C7',
-    fontSize: 9,
+    color: '#E4ECF4',
+    fontSize: 10,
     fontFamily: 'Outfit',
     fontWeight: '600',
   },
 
-  // Meter bars — smarter
-  meterRow: {
-    flexDirection: 'row',
-    gap: 14,
+  // Meter Details Card
+  sectionDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginVertical: 14,
   },
-  meterCol: { flex: 1 },
-  meterHeader: {
+  meterDetailsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 4,
+    alignItems: 'stretch',
+    marginVertical: 4,
   },
-  meterName: {
-    color: '#AAB7C7',
-    fontSize: 9,
+  meterDetailsCol: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  meterDetailsDivider: {
+    width: 1,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginHorizontal: 8,
+  },
+  meterDetailsMiddle: {
+    flex: 1.2,
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  meterDetailsTitle: {
+    color: '#F4F8FC',
+    fontSize: 12,
     fontFamily: 'Outfit',
+    fontWeight: '600',
+    marginBottom: 8,
   },
-  meterPct: {
-    color: '#E4ECF4',
-    fontSize: 10,
+  meterGaugeWrap: {
+    width: 100,
+    height: 100,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  meterGaugeInner: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+    top: 30, // Push down slightly into the arc
+  },
+  meterGaugeValue: {
+    color: '#F4F8FC',
+    fontSize: 24,
     fontFamily: 'Outfit',
     fontWeight: '700',
   },
-  meterTrack: {
-    height: 3,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 2,
-    marginBottom: 4,
+  meterGaugeUnit: {
+    color: '#7E91A6',
+    fontSize: 9,
+    fontFamily: 'Outfit',
+    marginTop: -2,
   },
-  meterFill: {
-    height: '100%',
-    borderRadius: 2,
+  middleTitle: {
+    color: '#7E91A6',
+    fontSize: 9,
+    fontFamily: 'Outfit',
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    marginBottom: 8,
   },
-  meterRemaining: {
+  middleRingWrap: {
+    width: 110,
+    height: 110,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  middleRingInner: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  middleRingValue: {
+    color: '#F4F8FC',
+    fontSize: 22,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
+  },
+  middleRingUnit: {
     color: '#7E91A6',
     fontSize: 8,
     fontFamily: 'Outfit',
+  },
+  middleRemainingDays: {
+    color: '#AAB7C7',
+    fontSize: 9,
+    fontFamily: 'Outfit',
+    marginTop: 2,
+  },
+  meterStatsCol: {
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  meterStatTotalLabel: {
+    color: '#5C6C7E',
+    fontSize: 8,
+    fontFamily: 'Outfit',
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  meterStatTotalValue: {
+    color: '#E4ECF4',
+    fontSize: 15,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  meterStatUnit: {
+    color: '#7E91A6',
+    fontSize: 8,
+    fontFamily: 'Outfit',
+    fontWeight: '400',
+  },
+  meterStatSep: {
+    width: 24,
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    marginVertical: 8,
+  },
+  meterTodayPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  meterTodayLabel: {
+    color: '#7E91A6',
+    fontSize: 8,
+    fontFamily: 'Outfit',
+    fontWeight: '600',
+  },
+  meterTodayValue: {
+    color: '#AAB7C7',
+    fontSize: 9,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
   },
 });

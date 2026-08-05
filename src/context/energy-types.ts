@@ -22,6 +22,8 @@ export type InverterTelemetry = {
   loadW: number;
   loadVa: number;
   loadPercent: number;
+  acOutV: number;
+  acOutHz: number;
   inverterMode: string;
   inverterFault: string;
   temperatureC: number;
@@ -79,6 +81,8 @@ export type HomeState = {
   combinedDaysLeft?: number;
   daysBuffer?: number;
   combinedTarget?: number;
+  lastMonthTotal?: number;
+  vsLastMonthPercent?: number | null;
 };
 
 export type QueueStatus = 'ACTIVE' | 'NEXT' | 'QUEUED';

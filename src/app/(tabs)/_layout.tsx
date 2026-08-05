@@ -25,7 +25,7 @@ function TabBar({ state, descriptors, navigation }: any) {
   const theme = isLight ? Colors.light : Colors.dark;
   const { mode } = useUiMode();
   const isNew = mode === "new";
-  const titles: Record<string, string> = isNew ? { index: "Home", meters: "Energy", logs: "", history: "History", settings: "Settings" } : { index: "Voltix", meters: "Meters", logs: "Logs", history: "History", settings: "Settings" };
+  const titles: Record<string, string> = isNew ? { index: "Home", meters: "Energy", logs: "Logs", history: "Summary", settings: "Settings" } : { index: "Voltix", meters: "Meters", logs: "Logs", history: "Summary", settings: "Settings" };
 
   return (
     <View
@@ -47,7 +47,7 @@ function TabBar({ state, descriptors, navigation }: any) {
         {state.routes.map((route: any, index: number) => {
           const isFocused = state.index === index;
           const label = titles[route.name] ?? route.name;
-          const isPulse = isNew && route.name === "logs";
+          const isPulse = isNew && route.name === "index";
           const Icon = route.name === "index" ? House : route.name === "meters" ? Zap : route.name === "logs" ? Activity : route.name === "settings" ? SettingsIcon : CalendarDays;
           const activeColor = isNew ? "#35E378" : "#3B82F6";
           const inactiveColor = "#A5B4C5";
@@ -82,15 +82,16 @@ function TabBar({ state, descriptors, navigation }: any) {
 export default function TabsLayout() {
   return (
     <Tabs
+      initialRouteName="index"
       tabBar={(props) => <TabBar {...props} />}
       screenOptions={{
         headerShown: false,
       }}
     >
-      <Tabs.Screen name="index" options={{ title: "Voltix" }} />
-      <Tabs.Screen name="meters" options={{ title: "Meters" }} />
       <Tabs.Screen name="logs" options={{ title: "Logs" }} />
-      <Tabs.Screen name="history" options={{ title: "History" }} />
+      <Tabs.Screen name="meters" options={{ title: "Meters" }} />
+      <Tabs.Screen name="index" options={{ title: "Home" }} />
+      <Tabs.Screen name="history" options={{ title: "Summary" }} />
       <Tabs.Screen name="settings" options={{ title: "Settings" }} />
     </Tabs>
   );

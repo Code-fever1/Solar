@@ -1,167 +1,71 @@
-import { CalendarRange, Edit3, Trash2 } from "lucide-react-native";
-import { useMemo, useState } from "react";
+import { UsageSummaryCard } from "@/components/UsageSummaryCard";
+import { useEnergy } from "@/context/EnergyContext";
 import {
-    Alert,
-    Platform,
+    Activity,
+    AlertCircle,
+    Battery,
+    Clock,
+    Cpu,
+    Gauge,
+    Radio,
+    RefreshCw,
+    Sun,
+    Thermometer,
+    TrendingDown,
+    TrendingUp,
+    Zap
+} from "lucide-react-native";
+import { useCallback, useState } from "react";
+import {
     Pressable,
     ScrollView,
     StyleSheet,
     Text,
     View,
 } from "react-native";
-import Animated, { FadeInDown } from "react-native-reanimated";
+import Animated, {
+    useAnimatedStyle,
+    useSharedValue,
+    withSequence,
+    withTiming,
+} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AnalyticsChart } from "@/components/AnalyticsChart";
-import { BackgroundEngine } from "@/components/BackgroundEngine";
-import { ComingSoonScreen } from "@/components/ComingSoonScreen";
-import { GlassPanel } from "@/components/GlassPanel";
-import { LogReadingModal } from "@/components/LogReadingModal";
-import { Colors } from "@/constants/Colors";
-import type { ManualLog } from "@/context/EnergyContext";
-import { useEnergy } from "@/context/EnergyContext";
-import { useUiMode } from "@/context/UiModeContext";
-
-import { useColorScheme } from "@/hooks/use-color-scheme";
-import React from "react";
+type Tab = "usage" | "fronus" | "tomzn";
 
 export default function HistoryScreen() {
-  const scheme = useColorScheme();
-  const theme = scheme === "light" ? Colors.light : Colors.dark;
-  const styles = React.useMemo(() => getStyles(theme), [theme]);
-
   const insets = useSafeAreaInsets();
-  const {
-    history,
-    period,
-    setPeriod,
-    summary,
-    manualLogs,
-    editManualLog,
-    deleteManualLog,
-    meters,
-  } = useEnergy();
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editLogItem, setEditLogItem] = useState<ManualLog | null>(null);
-  const [expandedMeters, setExpandedMeters] = useState({
-    meter1: false,
-    meter2: false,
-  });
-  const { mode } = useUiMode();
+  const { home, inverter, tomznLive, refreshTomzn, tomznHistory } = useEnergy();
+  const [tab, setTab] = useState<Tab>("usage");
+  const [refreshing, setRefreshing] = useState(false);
 
-  const sortedLogs = useMemo(() => {
-    return [...manualLogs].sort((a, b) => b.timestamp - a.timestamp);
-  }, [manualLogs]);
+  const rotation = useSharedValue(0);
+  const spinStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${rotation.value}deg` }],
+  }));
 
-  if (mode === "new") return <ComingSoonScreen title="History" />;
-
-  const handleEditPress = (log: ManualLog) => {
-    setEditLogItem(log);
-    setModalOpen(true);
-  };
-
-  const handleDeletePress = (id: string) => {
-    if (Platform.OS === "web") {
-      const confirmed = window.confirm(
-        "Are you sure you want to delete this meter log entry? This will update all stats and graph data."
-      );
-      if (confirmed) {
-        deleteManualLog(id);
-      }
-      return;
+  const handleRefresh = useCallback(async () => {
+    if (refreshing) return;
+    rotation.value = withSequence(
+      withTiming(360, { duration: 600 }),
+      withTiming(0, { duration: 0 })
+    );
+    setRefreshing(true);
+    try {
+      await refreshTomzn();
+    } finally {
+      setRefreshing(false);
     }
+  }, [refreshing, refreshTomzn, rotation]);
 
-    Alert.alert(
-      "Delete Entry",
-      "Are you sure you want to delete this meter log entry? This will update all stats and graph data.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => deleteManualLog(id),
-        },
-      ],
-    );
-  };
-
-  const renderLogColumn = (meterId: "meter1" | "meter2", title: string) => {
-    const meterLogs = sortedLogs.filter((log) => log.meterId === meterId);
-    const isExpanded = expandedMeters[meterId];
-    const visibleLogs = isExpanded ? meterLogs : meterLogs.slice(0, 2);
-
-    return (
-      <View style={styles.logColumn}>
-        <View style={styles.columnHeader}>
-          <Text style={styles.columnTitle}>{title}</Text>
-          {meterLogs.length > 2 ? (
-            <Pressable
-              onPress={() =>
-                setExpandedMeters((current) => ({
-                  ...current,
-                  [meterId]: !current[meterId],
-                }))
-              }
-              style={styles.expandButton}
-            >
-              <Text style={styles.expandButtonText}>
-                {isExpanded ? "Show Less" : `Show All (${meterLogs.length})`}
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
-
-        <View style={styles.columnTimeline}>
-          {visibleLogs.map((entry, index) => (
-            <View key={entry.id} style={styles.timelineItem}>
-              <View style={styles.timelineDot} />
-              {index !== visibleLogs.length - 1 ? (
-                <View style={styles.timelineLine} />
-              ) : null}
-              <View style={styles.timelineContent}>
-                <View style={styles.timelineHeaderRow}>
-                  <Text style={styles.timelineTitle}>
-                    {entry.reading.toFixed(1)} kWh
-                  </Text>
-                  <View style={styles.actionButtonsRow}>
-                    <Pressable
-                      onPress={() => handleEditPress(entry)}
-                      style={styles.iconBtn}
-                    >
-                      <Edit3 color={Colors.dark.textSecondary} size={14} />
-                    </Pressable>
-                    <Pressable
-                      onPress={() => handleDeletePress(entry.id)}
-                      style={styles.iconBtn}
-                    >
-                      <Trash2 color={Colors.dark.critical} size={14} />
-                    </Pressable>
-                  </View>
-                </View>
-                <Text style={styles.timelineTime}>
-                  {new Date(entry.timestamp).toLocaleDateString()}{" "}
-                  {new Date(entry.timestamp).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </Text>
-                {entry.notes ? (
-                  <Text style={styles.timelineNotes}>Note: {entry.notes}</Text>
-                ) : null}
-              </View>
-            </View>
-          ))}
-          {meterLogs.length === 0 ? (
-            <Text style={styles.emptyLogsText}>No logs</Text>
-          ) : null}
-        </View>
-      </View>
-    );
-  };
+  const tabs: { key: Tab; label: string; icon: any }[] = [
+    { key: "usage", label: "Usage", icon: Activity },
+    { key: "fronus", label: "Fronus", icon: Sun },
+    { key: "tomzn", label: "Tomzn", icon: Cpu },
+  ];
 
   return (
     <View style={styles.screen}>
-      <BackgroundEngine />
       <ScrollView
         contentContainerStyle={[
           styles.container,
@@ -169,312 +73,627 @@ export default function HistoryScreen() {
         ]}
         showsVerticalScrollIndicator={false}
       >
-        <Animated.View entering={FadeInDown.delay(100)} style={styles.hero}>
-          <Text style={styles.title}>Analytics</Text>
-          <Text style={styles.subtitle}>
-            Financial-grade grid import charting.
-          </Text>
-        </Animated.View>
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.title}>Summary</Text>
+          <Text style={styles.subtitle}>Complete device telemetry & usage analytics</Text>
+        </View>
 
-        {/* Period Selector */}
-        <Animated.View
-          entering={FadeInDown.delay(200)}
-          style={styles.segmentRow}
-        >
-          {(["day", "week", "month", "year"] as const).map((value) => (
-            <Pressable
-              key={value}
-              onPress={() => setPeriod(value)}
-              style={[styles.segment, period === value && styles.segmentActive]}
-            >
-              <Text
-                style={[
-                  styles.segmentText,
-                  period === value && styles.segmentTextActive,
-                ]}
+        {/* Tab Selector */}
+        <View style={styles.tabBar}>
+          {tabs.map((t) => {
+            const Icon = t.icon;
+            const isActive = tab === t.key;
+            return (
+              <Pressable
+                key={t.key}
+                onPress={() => setTab(t.key)}
+                style={[styles.tab, isActive && styles.tabActive]}
               >
-                {value.toUpperCase()}
-              </Text>
-            </Pressable>
-          ))}
-        </Animated.View>
+                <Icon size={14} color={isActive ? "#35E378" : "#7E91A6"} />
+                <Text style={[styles.tabText, isActive && styles.tabTextActive]}>{t.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
 
-        {/* Graph Card */}
-        <Animated.View entering={FadeInDown.delay(300)}>
-          <GlassPanel style={styles.chartPanel}>
-            <AnalyticsChart data={history} />
-          </GlassPanel>
-        </Animated.View>
-
-        {/* Metrics Row */}
-        <Animated.View
-          entering={FadeInDown.delay(400)}
-          style={styles.metricRow}
-        >
-          <GlassPanel style={styles.metricCard}>
-            <Text style={styles.metricLabel}>BEST DAY</Text>
-            <Text style={styles.metricValue}>{summary.bestDay}</Text>
-          </GlassPanel>
-          <GlassPanel style={styles.metricCard}>
-            <Text style={styles.metricLabel}>WORST DAY</Text>
-            <Text style={styles.metricValue}>{summary.worstDay}</Text>
-          </GlassPanel>
-        </Animated.View>
-
-        {/* Central Logs Registry - 2 Column Layout */}
-        <Animated.View entering={FadeInDown.delay(500)}>
-          <GlassPanel style={styles.logsCard}>
-            <View style={styles.logsHeader}>
-              <CalendarRange color={theme.text} size={16} />
-              <Text style={styles.sectionTitle}>Manual Logs Registry</Text>
-            </View>
-            <View style={styles.logsColumns}>
-              {renderLogColumn("meter1", "Meter 1 (Analog)")}
-              {renderLogColumn("meter2", "Meter 2 (Digital)")}
-            </View>
-          </GlassPanel>
-        </Animated.View>
+        {/* Tab Content */}
+        {tab === "usage" && <UsageTab />}
+        {tab === "fronus" && <FronusTab inverter={inverter} />}
+        {tab === "tomzn" && (
+          <TomznTab
+            tomznLive={tomznLive}
+            home={home}
+            tomznHistory={tomznHistory}
+            onRefresh={handleRefresh}
+            refreshing={refreshing}
+            spinStyle={spinStyle}
+          />
+        )}
       </ScrollView>
-
-      {/* Log Reading Modal */}
-      <LogReadingModal
-        visible={modalOpen}
-        editLog={editLogItem}
-        onClose={() => {
-          setModalOpen(false);
-          setEditLogItem(null);
-        }}
-        onSave={async (_mId, val, ts, note) => {
-          if (editLogItem) {
-            await editManualLog(editLogItem.id, val, ts, note);
-          }
-          setModalOpen(false);
-          setEditLogItem(null);
-        }}
-      />
     </View>
   );
 }
 
-const getStyles = (theme: typeof Colors.light) => StyleSheet.create({
+/* ─────────────────── Usage Summary Tab ─────────────────── */
+
+function UsageTab() {
+  return (
+    <View style={styles.tabContent}>
+      <UsageSummaryCard />
+    </View>
+  );
+}
+
+/* ─────────────────── Fronus (Inverter) Tab ─────────────────── */
+
+function FronusTab({ inverter }: { inverter: any }) {
+  const isLive = inverter?.isLive;
+  const statusColor = isLive ? "#32E56B" : "#EF4C4C";
+  const statusText = isLive ? "LIVE" : "OFFLINE";
+  const fetchedAt = inverter?.fetchedAt
+    ? new Date(inverter.fetchedAt).toLocaleString()
+    : "Never";
+
+  return (
+    <View style={styles.tabContent}>
+      {/* Fronus Header Card */}
+      <View style={styles.card}>
+        <View style={styles.cardHighlight} />
+        <View style={styles.deviceHeader}>
+          <View style={styles.deviceHeaderLeft}>
+            {/* Placeholder for Fronus image — replace with actual image when available */}
+            <View style={styles.deviceLogoPlaceholder}>
+              <Sun size={24} color="#F8C653" />
+            </View>
+            <View>
+              <Text style={styles.deviceName}>Fronus Inverter</Text>
+              <Text style={styles.deviceSubtitle}>Solar inverter telemetry</Text>
+            </View>
+          </View>
+          <View style={[styles.statusBadge, { backgroundColor: `${statusColor}20`, borderColor: `${statusColor}40` }]}>
+            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+            <Text style={[styles.statusText, { color: statusColor }]}>{statusText}</Text>
+          </View>
+        </View>
+
+        {/* Last fetched */}
+        <View style={styles.fetchedRow}>
+          <Clock size={10} color="#5C6C7E" />
+          <Text style={styles.fetchedText}>Last fetched: {fetchedAt}</Text>
+        </View>
+
+        {/* Solar Section */}
+        <SectionHeader icon={<Sun size={12} color="#F8C653" />} title="Solar (PV)" color="#F8C653" />
+        <View style={styles.dataGrid}>
+          <DataTile label="Power" value={inverter?.solarW ? `${inverter.solarW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#F8C653" />} />
+          <DataTile label="Voltage" value={inverter?.solarV ? `${inverter.solarV.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#F8C653" />} />
+          <DataTile label="Current" value={inverter?.solarA ? `${inverter.solarA.toFixed(1)} A` : "-- A"} icon={<Activity size={10} color="#F8C653" />} />
+        </View>
+
+        {/* Grid Section */}
+        <SectionHeader icon={<Zap size={12} color="#548EFF" />} title="Grid" color="#548EFF" />
+        <View style={styles.dataGrid}>
+          <DataTile label="Power" value={inverter?.gridW ? `${inverter.gridW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#548EFF" />} />
+          <DataTile label="Voltage" value={inverter?.gridV ? `${inverter.gridV.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#548EFF" />} />
+          <DataTile label="Frequency" value={inverter?.gridHz ? `${inverter.gridHz.toFixed(2)} Hz` : "-- Hz"} icon={<Activity size={10} color="#548EFF" />} />
+        </View>
+        <View style={styles.dataGrid}>
+          <DataTile
+            label="Connection"
+            value={inverter?.gridConnected ? "Connected" : "Disconnected"}
+            icon={<Radio size={10} color={inverter?.gridConnected ? "#32E56B" : "#EF4C4C"} />}
+          />
+          <DataTile
+            label="Direction"
+            value={inverter?.gridDirection === "import" ? "Importing" : inverter?.gridDirection === "export" ? "Exporting" : "--"}
+            icon={inverter?.gridDirection === "import" ? <TrendingDown size={10} color="#EF4C4C" /> : <TrendingUp size={10} color="#32E56B" />}
+          />
+        </View>
+
+        {/* Load Section */}
+        <SectionHeader icon={<Battery size={12} color="#32E56B" />} title="Load" color="#32E56B" />
+        <View style={styles.dataGrid}>
+          <DataTile label="Power" value={inverter?.loadW ? `${inverter.loadW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#32E56B" />} />
+          <DataTile label="Apparent Power" value={inverter?.loadVa ? `${inverter.loadVa.toFixed(0)} VA` : "-- VA"} icon={<Activity size={10} color="#32E56B" />} />
+          <DataTile label="Load %" value={inverter?.loadPercent ? `${inverter.loadPercent.toFixed(1)}%` : "-- %"} icon={<Gauge size={10} color="#32E56B" />} />
+        </View>
+        <View style={styles.dataGrid}>
+          <DataTile label="Output Voltage" value={inverter?.acOutV ? `${inverter.acOutV.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#32E56B" />} />
+          <DataTile label="Output Frequency" value={inverter?.acOutHz ? `${inverter.acOutHz.toFixed(2)} Hz` : "-- Hz"} icon={<Activity size={10} color="#32E56B" />} />
+        </View>
+
+        {/* Inverter Status Section */}
+        <SectionHeader icon={<Cpu size={12} color="#8862ED" />} title="Inverter Status" color="#8862ED" />
+        <View style={styles.dataGrid}>
+          <DataTile label="Mode" value={inverter?.inverterMode || "--"} icon={<Cpu size={10} color="#8862ED" />} />
+          <DataTile label="Fault" value={inverter?.inverterFault || "--"} icon={<AlertCircle size={10} color={inverter?.inverterFault && inverter.inverterFault !== "OK" && inverter.inverterFault !== "UNKNOWN" ? "#EF4C4C" : "#5C6C7E"} />} />
+          <DataTile label="Temperature" value={inverter?.temperatureC ? `${inverter.temperatureC.toFixed(1)}°C` : "-- °C"} icon={<Thermometer size={10} color="#8862ED" />} />
+        </View>
+        <View style={styles.dataGrid}>
+          <DataTile label="Rated Output" value={inverter?.ratedOutputW ? `${inverter.ratedOutputW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#8862ED" />} />
+          <DataTile label="Signal" value={inverter?.signal != null ? `${inverter.signal}%` : "-- %"} icon={<Radio size={10} color="#8862ED" />} />
+          <DataTile label="Data Status" value={isLive ? "Live" : "Stale"} icon={<Activity size={10} color={isLive ? "#32E56B" : "#EF4C4C"} />} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/* ─────────────────── Tomzn Tab ─────────────────── */
+
+function TomznTab({
+  tomznLive,
+  home,
+  tomznHistory,
+  onRefresh,
+  refreshing,
+  spinStyle,
+}: {
+  tomznLive: any;
+  home: any;
+  tomznHistory: any[];
+  onRefresh: () => void;
+  refreshing: boolean;
+  spinStyle: any;
+}) {
+  const isLive = tomznLive?.isLive;
+  const isOnline = tomznLive?.isOnline;
+  const statusColor = isLive ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
+  const statusText = isLive ? "LIVE" : isOnline ? "STALE" : "OFFLINE";
+  const fetchedAt = tomznLive?.fetchedAt
+    ? new Date(tomznLive.fetchedAt).toLocaleString()
+    : "Never";
+
+  const hourlyUsage = home.hourlyUsage || [];
+  const maxHourly = Math.max(0.001, ...hourlyUsage.map((h: any) => h.usage));
+
+  return (
+    <View style={styles.tabContent}>
+      {/* Tomzn Header Card */}
+      <View style={styles.card}>
+        <View style={styles.cardHighlight} />
+        <View style={styles.deviceHeader}>
+          <View style={styles.deviceHeaderLeft}>
+            {/* Placeholder for Tomzn image — replace with actual image when available */}
+            <View style={styles.deviceLogoPlaceholder}>
+              <Cpu size={24} color="#548EFF" />
+            </View>
+            <View>
+              <Text style={styles.deviceName}>Tomzn Meter</Text>
+              <Text style={styles.deviceSubtitle}>Smart meter telemetry</Text>
+            </View>
+          </View>
+          <View style={[styles.statusBadge, { backgroundColor: `${statusColor}20`, borderColor: `${statusColor}40` }]}>
+            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+            <Text style={[styles.statusText, { color: statusColor }]}>{statusText}</Text>
+          </View>
+        </View>
+
+        {/* Refresh button + last fetched */}
+        <View style={styles.fetchedRow}>
+          <Clock size={10} color="#5C6C7E" />
+          <Text style={styles.fetchedText}>Last fetched: {fetchedAt}</Text>
+          <Pressable onPress={onRefresh} style={styles.refreshBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Animated.View style={spinStyle}>
+              <RefreshCw size={13} color="#548EFF" />
+            </Animated.View>
+          </Pressable>
+        </View>
+
+        {/* Live Telemetry Section */}
+        <SectionHeader icon={<Zap size={12} color="#548EFF" />} title="Live Telemetry" color="#548EFF" />
+        <View style={styles.dataGrid}>
+          <DataTile label="Power" value={tomznLive?.powerW > 0 ? tomznLive.powerDisplay : "-- W"} icon={<Zap size={10} color="#548EFF" />} />
+          <DataTile label="Voltage" value={tomznLive?.voltageV > 0 ? `${tomznLive.voltageV.toFixed(0)} V` : "-- V"} icon={<Gauge size={10} color="#548EFF" />} />
+          <DataTile label="Current" value={tomznLive?.currentA > 0 ? `${tomznLive.currentA.toFixed(1)} A` : "-- A"} icon={<Activity size={10} color="#548EFF" />} />
+        </View>
+        <View style={styles.dataGrid}>
+          <DataTile label="Frequency" value={tomznLive?.frequencyHz ? `${tomznLive.frequencyHz.toFixed(2)} Hz` : "-- Hz"} icon={<Activity size={10} color="#548EFF" />} />
+          <DataTile label="Total Energy" value={tomznLive?.energyKwh ? `${tomznLive.energyKwh.toFixed(2)} kWh` : "-- kWh"} icon={<Zap size={10} color="#548EFF" />} />
+          <DataTile label="Active Meter" value={tomznLive?.activeMeter === "meter1" ? "Meter 1" : tomznLive?.activeMeter === "meter2" ? "Meter 2" : "--"} icon={<Cpu size={10} color="#548EFF" />} />
+        </View>
+
+        {/* Switch & Fault Section */}
+        <SectionHeader icon={<AlertCircle size={12} color="#F8C653" />} title="Switch & Fault" color="#F8C653" />
+        <View style={styles.dataGrid}>
+          <DataTile
+            label="Switch"
+            value={tomznLive?.switchOn ? "ON" : "OFF"}
+            icon={<Radio size={10} color={tomznLive?.switchOn ? "#32E56B" : "#EF4C4C"} />}
+          />
+          <DataTile label="Online" value={isOnline ? "Online" : "Offline"} icon={<Radio size={10} color={isOnline ? "#32E56B" : "#EF4C4C"} />} />
+          <DataTile label="Fault Code" value={tomznLive?.faultCode ? String(tomznLive.faultCode) : "0"} icon={<AlertCircle size={10} color={tomznLive?.faultCode ? "#EF4C4C" : "#32E56B"} />} />
+        </View>
+
+        {/* Data Status Section */}
+        <SectionHeader icon={<Activity size={12} color="#8862ED" />} title="Data Status" color="#8862ED" />
+        <View style={styles.dataGrid}>
+          <DataTile label="Live Status" value={isLive ? "Live" : "Stale"} icon={<Activity size={10} color={isLive ? "#32E56B" : "#EF4C4C"} />} />
+          <DataTile label="Timestamp" value={tomznLive?.timestamp ? new Date(tomznLive.timestamp).toLocaleTimeString() : "--"} icon={<Clock size={10} color="#8862ED" />} />
+          <DataTile label="Today Usage" value={home?.todayUsage ? `${home.todayUsage.toFixed(2)} kWh` : "-- kWh"} icon={<Zap size={10} color="#8862ED" />} />
+        </View>
+      </View>
+
+      {/* 24-Hour Usage Chart */}
+      <View style={styles.card}>
+        <View style={styles.cardHighlight} />
+        <View style={styles.cardHeader}>
+          <View style={styles.headerLeft}>
+            <TrendingUp size={12} color="#548EFF" />
+            <Text style={styles.cardTitle}>24-Hour Usage</Text>
+          </View>
+          <Text style={styles.cardSubtitle}>Hourly consumption</Text>
+        </View>
+        {hourlyUsage.length > 0 ? (
+          <View style={styles.hourlyChart}>
+            {hourlyUsage.map((hour: any, idx: number) => {
+              const heightPct = (hour.usage / maxHourly) * 100;
+              const isPeak = hour.usage === maxHourly;
+              return (
+                <View key={idx} style={styles.hourlyBar}>
+                  <View style={[styles.hourlyBarFill, {
+                    height: `${Math.max(2, heightPct)}%`,
+                    backgroundColor: isPeak ? "#548EFF" : hour.usage > maxHourly * 0.5 ? "rgba(84,142,255,0.6)" : "rgba(84,142,255,0.3)",
+                  }]} />
+                </View>
+              );
+            })}
+          </View>
+        ) : (
+          <Text style={styles.emptyText}>No hourly data available</Text>
+        )}
+      </View>
+
+      {/* Tomzn History (recent 10) */}
+      <View style={styles.card}>
+        <View style={styles.cardHighlight} />
+        <View style={styles.cardHeader}>
+          <View style={styles.headerLeft}>
+            <Clock size={12} color="#548EFF" />
+            <Text style={styles.cardTitle}>History (Recent 10)</Text>
+          </View>
+          <Text style={styles.cardSubtitle}>{tomznHistory.length} total records</Text>
+        </View>
+        {tomznHistory.length > 0 ? (
+          tomznHistory.slice(-10).reverse().map((row: any, idx: number) => (
+            <View key={idx} style={styles.historyRow}>
+              <View style={styles.historyLeft}>
+                <Clock size={10} color="#5C6C7E" />
+                <Text style={styles.historyTime}>
+                  {row.timestamp ? new Date(row.timestamp).toLocaleString() : "--"}
+                </Text>
+              </View>
+              <View style={styles.historyRight}>
+                <Text style={styles.historyPower}>{row.powerW || 0} W</Text>
+                <Text style={styles.historyEnergy}>{(row.energyKwh || 0).toFixed(2)} kWh</Text>
+              </View>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.emptyText}>No history records available</Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
+/* ─────────────────── Shared Components ─────────────────── */
+
+function SectionHeader({ icon, title, color }: { icon: React.ReactNode; title: string; color: string }) {
+  return (
+    <View style={[styles.sectionHeader, { marginTop: 14 }]}>
+      {icon}
+      <Text style={[styles.sectionHeaderText, { color }]}>{title}</Text>
+      <View style={[styles.sectionHeaderLine, { backgroundColor: `${color}20` }]} />
+    </View>
+  );
+}
+
+function DataTile({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  return (
+    <View style={styles.dataTile}>
+      <View style={styles.dataTileHeader}>
+        {icon}
+        <Text style={styles.dataTileLabel}>{label}</Text>
+      </View>
+      <Text style={styles.dataTileValue}>{value}</Text>
+    </View>
+  );
+}
+
+/* ─────────────────── Styles ─────────────────── */
+
+const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: theme.background,
+    backgroundColor: "#0B111B",
   },
   container: {
     paddingHorizontal: 16,
-    gap: 16,
+    gap: 12,
   },
-  hero: {
-    gap: 4,
-    marginBottom: 8,
+  header: {
+    marginBottom: 4,
   },
   title: {
-    color: theme.text,
+    color: "#F4F8FC",
     fontFamily: "Outfit",
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: "700",
-    letterSpacing: -0.5,
   },
   subtitle: {
-    color: theme.textSecondary,
+    color: "#7E91A6",
+    fontSize: 12,
     fontFamily: "Outfit",
-    fontSize: 13,
-    lineHeight: 18,
+    marginTop: 3,
   },
-  segmentRow: {
+
+  // Tab bar
+  tabBar: {
     flexDirection: "row",
-    gap: 8,
-  },
-  segment: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "rgba(100, 100, 100, 0.05)",
-    borderWidth: 1,
-    borderColor: "rgba(100, 100, 100, 0.1)",
-  },
-  segmentActive: {
-    backgroundColor: theme.borderStrong,
-    borderColor: theme.border,
-  },
-  segmentText: {
-    color: theme.textSecondary,
-    fontFamily: "Outfit",
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-  },
-  segmentTextActive: {
-    color: theme.text,
-  },
-  chartPanel: {
-    padding: 12,
-  },
-  metricRow: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  metricCard: {
-    flex: 1,
-    padding: 16,
-    gap: 4,
-  },
-  metricLabel: {
-    color: theme.textMuted,
-    fontFamily: "Outfit",
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1,
-  },
-  metricValue: {
-    color: theme.text,
-    fontFamily: "Share Tech Mono",
-    fontSize: 20,
-  },
-  reportCard: {
-    padding: 16,
-    gap: 16,
-  },
-  reportHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  sectionTitle: {
-    color: theme.text,
-    fontFamily: "Outfit",
-    fontSize: 14,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-  },
-  reportButtons: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  reportBtn: {
-    flex: 1,
-    paddingVertical: 10,
-  },
-  logsCard: {
-    padding: 16,
-    gap: 16,
-  },
-  logsHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  logsColumns: {
-    flexDirection: "row",
-    gap: 16,
-  },
-  logColumn: {
-    flex: 1,
-    gap: 8,
-  },
-  columnHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 8,
-  },
-  columnTitle: {
-    color: theme.textSecondary,
-    fontFamily: "Outfit",
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
-  },
-  expandButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: "rgba(100, 100, 100, 0.05)",
-    borderWidth: 1,
-    borderColor: "rgba(100, 100, 100, 0.08)",
-  },
-  expandButtonText: {
-    color: theme.textSecondary,
-    fontFamily: "Outfit",
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  columnTimeline: {
-    paddingTop: 8,
-  },
-  timeline: {
-    paddingTop: 8,
-  },
-  timelineItem: {
-    paddingVertical: 12,
-    position: "relative",
-    paddingLeft: 24,
-  },
-  timelineDot: {
-    position: "absolute",
-    left: 4,
-    top: 18,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: theme.load,
-    shadowColor: theme.loadGlow,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 8,
-  },
-  timelineLine: {
-    position: "absolute",
-    left: 7.5,
-    top: 28,
-    bottom: -10,
-    width: 1,
-    backgroundColor: "rgba(150, 150, 150, 0.2)",
-  },
-  timelineContent: {
-    gap: 4,
-  },
-  timelineHeaderRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  timelineTitle: {
-    color: theme.text,
-    fontFamily: "Share Tech Mono",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  actionButtonsRow: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  iconBtn: {
+    backgroundColor: "#0E1521",
+    borderRadius: 12,
     padding: 4,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    gap: 4,
   },
-  timelineTime: {
-    color: theme.textSecondary,
-    fontFamily: "Outfit",
+  tab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingVertical: 10,
+    borderRadius: 9,
+  },
+  tabActive: {
+    backgroundColor: "rgba(53,227,120,0.08)",
+  },
+  tabText: {
+    color: "#7E91A6",
     fontSize: 11,
-  },
-  boldText: {
-    color: theme.text,
+    fontFamily: "Outfit",
     fontWeight: "600",
   },
-  timelineNotes: {
-    color: theme.solar,
+  tabTextActive: {
+    color: "#35E378",
+    fontWeight: "700",
+  },
+
+  // Tab content
+  tabContent: {
+    gap: 10,
+  },
+
+  // Card
+  card: {
+    backgroundColor: "#0E1521",
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    overflow: "hidden",
+    position: "relative",
+  },
+  cardHighlight: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  headerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  cardTitle: {
+    color: "#E4ECF4",
+    fontSize: 12,
     fontFamily: "Outfit",
-    fontSize: 11,
-    fontStyle: "italic",
+    fontWeight: "700",
+  },
+  cardSubtitle: {
+    color: "#5C6C7E",
+    fontSize: 9,
+    fontFamily: "Outfit",
+  },
+
+  // Device header
+  deviceHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  deviceHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  deviceLogoPlaceholder: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+  deviceName: {
+    color: "#F4F8FC",
+    fontSize: 16,
+    fontFamily: "Outfit",
+    fontWeight: "700",
+  },
+  deviceSubtitle: {
+    color: "#7E91A6",
+    fontSize: 10,
+    fontFamily: "Outfit",
+    marginTop: 2,
+  },
+
+  // Status badge
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusText: {
+    fontSize: 9,
+    fontFamily: "Outfit",
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+
+  // Fetched row
+  fetchedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 10,
+    paddingHorizontal: 2,
+  },
+  fetchedText: {
+    color: "#5C6C7E",
+    fontSize: 9,
+    fontFamily: "Outfit",
+    flex: 1,
+  },
+  refreshBtn: {
+    padding: 4,
+  },
+
+  // Section header
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginBottom: 8,
+  },
+  sectionHeaderText: {
+    fontSize: 10,
+    fontFamily: "Outfit",
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
+  sectionHeaderLine: {
+    flex: 1,
+    height: 1,
+  },
+
+  // Data grid
+  dataGrid: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+  },
+  dataTile: {
+    flex: 1,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.04)",
+  },
+  dataTileHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: 4,
+  },
+  dataTileLabel: {
+    color: "#5C6C7E",
+    fontSize: 8,
+    fontFamily: "Outfit",
+    fontWeight: "600",
+  },
+  dataTileValue: {
+    color: "#E4ECF4",
+    fontSize: 13,
+    fontFamily: "Outfit",
+    fontWeight: "700",
+  },
+
+  // Hourly chart
+  hourlyChart: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    height: 80,
+    gap: 2,
     marginTop: 4,
   },
-  emptyLogsText: {
-    color: theme.textSecondary,
+  hourlyBar: {
+    flex: 1,
+    height: "100%",
+    justifyContent: "flex-end",
+  },
+  hourlyBarFill: {
+    borderRadius: 3,
+    minHeight: 2,
+  },
+
+  // History rows
+  historyRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.04)",
+  },
+  historyLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flex: 1,
+  },
+  historyTime: {
+    color: "#7E91A6",
+    fontSize: 9,
     fontFamily: "Outfit",
-    fontSize: 12,
+  },
+  historyRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  historyPower: {
+    color: "#E4ECF4",
+    fontSize: 10,
+    fontFamily: "Outfit",
+    fontWeight: "600",
+  },
+  historyEnergy: {
+    color: "#5C6C7E",
+    fontSize: 9,
+    fontFamily: "Outfit",
+  },
+
+  // Empty
+  emptyText: {
+    color: "#5C6C7E",
+    fontSize: 11,
+    fontFamily: "Outfit",
     textAlign: "center",
-    paddingVertical: 16,
+    paddingVertical: 20,
   },
 });

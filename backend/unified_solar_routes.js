@@ -15,6 +15,7 @@ const METER_IDS = new Set(["meter1", "meter2"]);
 const PAKISTAN_OFFSET = "+05:00";
 const INVERTERZONE_HOST = "inverterzone.com";
 const INVERTER_POLL_MAX_AGE_MS = 5_000;
+const TOMZN_POLL_MAX_AGE_MS = 5_000;
 const WEATHER_POLL_MAX_AGE_MS = 30 * 60_000;
 const BHAKKAR_COORDINATES = { latitude: 31.6269, longitude: 71.0657 };
 
@@ -66,19 +67,29 @@ async function requestInverterZone() {
   const data = response?.dataDTO;
   if (!data || data.deviceId !== deviceId) throw new Error("InverterZone returned an invalid device payload");
   const timestamp = Date.now();
+  const gridV = Math.max(0, finiteNumber(data.gridV, 0));
+  // When gridV is 0, the grid relay is open (standby/disconnected).
+  // The InverterZone API may still report a small gridW value (leakage/artifact);
+  // force it to 0 so the graph doesn't show phantom grid import during solar-only mode.
+  // Also zero out readings < 200W that appear even when gridV is non-zero but relay is off
+  // (the inverter reports tiny phantom grid feed during high solar production).
+  const rawGridW = Math.max(0, finiteNumber(data.gridW, 0));
+  const gridW = (gridV > 0 && rawGridW >= 200) ? rawGridW : 0;
   return {
     timestamp,
     solarW: Math.max(0, finiteNumber(data.solarW, 0)),
     solarV: Math.max(0, finiteNumber(data.solarV, 0)),
     solarA: Math.max(0, finiteNumber(data.solarA, 0)),
-    gridW: Math.max(0, finiteNumber(data.gridW, 0)),
-    gridV: Math.max(0, finiteNumber(data.gridV, 0)),
+    gridW,
+    gridV,
     gridHz: Math.max(0, finiteNumber(data.gridHz, 0)),
     gridConnected: Boolean(data.grid),
     gridDirection: finiteNumber(data.gridFeed, 0) > 0 ? "export" : "import",
     loadW: Math.max(0, finiteNumber(data.acOutW, 0)),
     loadVa: Math.max(0, finiteNumber(data.acOutVa, 0)),
     loadPercent: Math.max(0, finiteNumber(data.acOutPercent, 0)),
+    acOutV: Math.max(0, finiteNumber(data.acOutV, 0)),
+    acOutHz: Math.max(0, finiteNumber(data.acOutHz, 0)),
     inverterMode: typeof data.iv_mode === "string" ? data.iv_mode : "unknown",
     inverterFault: typeof data.fault === "string" ? data.fault : "UNKNOWN",
     temperatureC: finiteNumber(data.heatSinkDegC, 0),
@@ -425,6 +436,9 @@ async function rolloverBillingCycle({ stateCollection, allocations }, state, now
   const needsRollover = Array.from(METER_IDS).some((meterId) => (state.meters[meterId].cycleBaselineAt || 0) < cycleStart);
   if (!needsRollover) return state;
 
+  // Before resetting baselines, capture the total usage from the ending cycle
+  // and save it as lastMonthTotalOverride for trend comparison.
+  let cycleTotal = 0;
   for (const meterId of METER_IDS) {
     const meter = state.meters[meterId];
     if ((meter.cycleBaselineAt || 0) >= cycleStart) continue;
@@ -433,8 +447,12 @@ async function rolloverBillingCycle({ stateCollection, allocations }, state, now
       ? await meterUsageSince(allocations, meterId, anchorAt, cycleStart)
       : 0;
     const usageUpToCycleStart = calibratedUnits(meter, rawUsageUpToCycleStart);
+    cycleTotal += usageUpToCycleStart;
     meter.cycleBaselineReading = round((meter.anchorReading ?? meter.cycleBaselineReading) + usageUpToCycleStart, 2);
     meter.cycleBaselineAt = cycleStart;
+  }
+  if (cycleTotal > 0) {
+    state.lastMonthTotalOverride = round(cycleTotal, 1);
   }
   state.updatedAt = now;
   await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
@@ -516,8 +534,9 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   let state = await ensureState(stateCollection);
   state = await rolloverBillingCycle({ stateCollection, allocations }, state, now);
   const cycleStart = billingCycleStart(now, state.billingDay);
+  const prevCycleStart = billingCycleStart(cycleStart - 1, state.billingDay);
   const todayStart = startOfPakistanDay(now);
-  const [cycleUsage, todayUsage, recentUsage, logs, firstAllocation, recentAllocations, recentSnapshots, inverterHistory, latestWeather] = await Promise.all([
+  const [cycleUsage, todayUsage, recentUsage, logs, firstAllocation, recentAllocations, recentSnapshots, inverterHistory, latestWeather, lastCycleUsage] = await Promise.all([
     usageByMeter(allocations, cycleStart, now),
     usageByMeter(allocations, todayStart, now),
     usageByMeter(allocations, Math.max(cycleStart, now - 7 * 86_400_000), now),
@@ -525,8 +544,9 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     allocations.find({}).sort({ timestamp: 1 }).limit(1).next(),
     allocations.find({ timestamp: { $gte: todayStart - 7 * 86_400_000, $lte: now } }).sort({ timestamp: 1 }).toArray(),
     snapshots.find({ timestamp: { $gte: now - 30 * 86_400_000 } }).sort({ timestamp: -1 }).limit(5_000).toArray(),
-    inverterSnapshots.find({ timestamp: { $gte: todayStart - 23 * 3_600_000, $lte: now } }).sort({ timestamp: 1 }).limit(5_000).toArray(),
+    inverterSnapshots.find({ timestamp: { $gte: now - 24 * 3_600_000, $lte: now } }).sort({ timestamp: 1 }).limit(5_000).toArray(),
     weatherSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next(),
+    usageByMeter(allocations, prevCycleStart, cycleStart),
   ]);
   const latestInverter = inverterHistory[inverterHistory.length - 1] || null;
   const inverterLive = Boolean(latestInverter && now - latestInverter.timestamp < 2 * 60_000);
@@ -542,6 +562,8 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     loadW: latestInverter.loadW,
     loadVa: latestInverter.loadVa,
     loadPercent: latestInverter.loadPercent,
+    acOutV: latestInverter.acOutV,
+    acOutHz: latestInverter.acOutHz,
     inverterMode: latestInverter.inverterMode,
     inverterFault: latestInverter.inverterFault,
     temperatureC: latestInverter.temperatureC,
@@ -549,7 +571,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     signal: latestInverter.signal,
     fetchedAt: new Date(latestInverter.timestamp).toISOString(),
     isLive: inverterLive,
-  } : { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, fetchedAt: "", isLive: false };
+  } : { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, fetchedAt: "", isLive: false };
   const weather = latestWeather ? {
     code: latestWeather.code,
     isDay: latestWeather.isDay,
@@ -559,18 +581,40 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     fetchedAt: new Date(latestWeather.timestamp).toISOString(),
     isLive: now - latestWeather.timestamp < WEATHER_POLL_MAX_AGE_MS * 2,
   } : { code: 0, isDay: pakistanHour(now) >= 6 && pakistanHour(now) < 19, cloudCover: 0, precipitation: 0, temperatureC: 0, fetchedAt: "", isLive: false };
-  const todayInverterSamples = inverterHistory.filter((sample) => sample.timestamp >= todayStart - 5 * 60_000);
-  const energyToday = {
-    solarKwh: integrateWatts(todayInverterSamples, "solarW"),
-    homeKwh: integrateWatts(todayInverterSamples, "loadW"),
-    gridKwh: integrateWatts(todayInverterSamples, "gridW"),
-  };
-  const flowHistory = inverterHistory.map((sample) => ({
-    timestamp: sample.timestamp,
-    solarKw: round(sample.solarW / 1000, 3),
-    gridKw: round(sample.gridW / 1000, 3),
-    loadKw: round(sample.loadW / 1000, 3),
+  // Sanitize historical samples: zero out gridW when gridV is 0 (grid relay open)
+  // or when gridW is a phantom reading (< 200W) that the InverterZone API
+  // reports even when the grid relay is on standby.
+  const sanitizedInverterHistory = inverterHistory.map((s) => ({
+    ...s,
+    gridW: (s.gridV > 0 && s.gridW >= 200) ? s.gridW : 0,
   }));
+  const todaySanitized = sanitizedInverterHistory.filter((sample) => sample.timestamp >= todayStart - 5 * 60_000);
+  const energyToday = {
+    solarKwh: integrateWatts(todaySanitized, "solarW"),
+    homeKwh: integrateWatts(todaySanitized, "loadW"),
+    gridKwh: integrateWatts(todaySanitized, "gridW"),
+  };
+  // Downsample flow history to 1 point per 5-minute bucket (max 288 points/24h).
+  // This prevents the frontend graph from rendering thousands of duplicate path segments.
+  const FLOW_BUCKET_MS = 5 * 60_000;
+  const flowBuckets = new Map();
+  for (const sample of sanitizedInverterHistory) {
+    const bucket = Math.floor(sample.timestamp / FLOW_BUCKET_MS) * FLOW_BUCKET_MS;
+    const existing = flowBuckets.get(bucket);
+    // Keep the latest sample within each 5-minute bucket.
+    if (!existing || sample.timestamp > existing.timestamp) {
+      flowBuckets.set(bucket, sample);
+    }
+  }
+  const flowHistory = Array.from(flowBuckets.values())
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((sample) => ({
+      timestamp: sample.timestamp,
+      solarKw: round(sample.solarW / 1000, 3),
+      // Zero out gridW when gridV is 0 or gridW is a phantom reading (< 200W).
+      gridKw: (sample.gridV > 0 && sample.gridW >= 200) ? round(sample.gridW / 1000, 3) : 0,
+      loadKw: round(sample.loadW / 1000, 3),
+    }));
   const windowStart = Math.max(cycleStart, now - 7 * 86_400_000, firstAllocation?.timestamp || now);
   const observedDays = Math.max(0, (now - windowStart) / 86_400_000);
   const totalObservedDays = Math.max(0, (now - (firstAllocation?.timestamp || now)) / 86_400_000);
@@ -598,7 +642,14 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     ? round(tomznAverageDaily * 0.7 + historicalAverageDaily * 0.3, 2)
     : tomznAverageDaily || historicalAverageDaily;
   const safeAverageDaily = averageDaily || 0;
-  const currentDrawKw = inverterLive ? round(inverter.loadW / 1000, 2) : (state.lastTomzn?.powerW ? round(state.lastTomzn.powerW / 1000, 2) : 0);
+  // Load status uses TOMZN powerW for BOTH current and normal draw.
+  // TOMZN sits between grid and home — it sees ALL power flowing to the home
+  // whether from solar or grid. Mixing inverter loadW (solar output) with
+  // TOMZN powerW (grid import) historical averages produced false "High" readings
+  // during solar hours because inverter loadW >> historical grid import.
+  const currentDrawKw = state.lastTomzn?.powerW != null
+    ? round(state.lastTomzn.powerW / 1000, 2)
+    : 0;
   const targetHourOfDay = pakistanHour(now);
   const sameHourSnapshots = recentSnapshots.filter((snapshot) => pakistanHour(snapshot.timestamp) === targetHourOfDay && snapshot.powerW > 0);
   // If fewer than 3 readings exist for this exact hour (new hour just started),
@@ -616,7 +667,12 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     : round(safeAverageDaily / 24, 2);
   const loadRatio = normalDrawKw > 0 ? currentDrawKw / normalDrawKw : 1;
   const loadStatus = loadRatio >= 1.2 ? "High" : loadRatio <= 0.8 ? "Low" : "Normal";
-  const totalToday = round(Object.values(todayUsage).reduce((sum, value) => sum + value, 0), 2);
+  const totalToday = round(Array.from(METER_IDS).reduce((sum, meterId) =>
+    sum + calibratedUnits(state.meters[meterId], todayUsage[meterId] || 0), 0), 2);
+  // Last month total = sum of all meter usage in the previous billing cycle (28th → 28th)
+  // Uses manual override if set (from settings), otherwise calculated from allocations.
+  const calculatedLastMonth = round(Object.values(lastCycleUsage).reduce((sum, value) => sum + value, 0), 1);
+  const lastMonthTotal = finiteNumber(state.lastMonthTotalOverride, calculatedLastMonth) || calculatedLastMonth;
   const sevenDayStart = todayStart - 6 * 86_400_000;
   const dailyMap = new Map();
   for (let offset = 0; offset < 7; offset += 1) {
@@ -658,11 +714,12 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   for (const allocation of recentAllocations) {
     const key = pakistanDateKey(allocation.timestamp);
     const bucket = dailyMap.get(key);
-    if (bucket) bucket.usage += allocation.delta;
+    const calibratedDelta = calibratedUnits(state.meters[allocation.meterId], allocation.delta);
+    if (bucket) bucket.usage += calibratedDelta;
     const h = pakistanHour(allocation.timestamp);
-    if (isNightHour(h)) periodNight += allocation.delta;
-    else if (isDayHour(h)) periodDay += allocation.delta;
-    else periodMorningEvening += allocation.delta;
+    if (isNightHour(h)) periodNight += calibratedDelta;
+    else if (isDayHour(h)) periodDay += calibratedDelta;
+    else periodMorningEvening += calibratedDelta;
   }
   const dailyUsage = Array.from(dailyMap.values()).map((item) => ({ ...item, usage: round(item.usage, 2) }));
   let usageTrendPercent = null;
@@ -689,7 +746,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   for (const allocation of recentAllocations) {
     const timestamp = Math.floor(allocation.timestamp / 3_600_000) * 3_600_000;
     const bucket = hourlyMap.get(timestamp);
-    if (bucket) bucket.usage += allocation.delta;
+    if (bucket) bucket.usage += calibratedUnits(state.meters[allocation.meterId], allocation.delta);
   }
   const hourlyUsage = Array.from(hourlyMap.values()).map((item) => ({ ...item, usage: round(item.usage, 3) }));
   // Build a time-of-day hourly profile from the last 7 past days.
@@ -726,7 +783,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     for (const allocation of recentAllocations) {
       if (allocation.timestamp < dayStart || allocation.timestamp >= dayEnd) continue;
       const hourBucket = Math.floor((allocation.timestamp - dayStart) / 3_600_000);
-      dayHourlyMap.set(hourBucket, (dayHourlyMap.get(hourBucket) || 0) + allocation.delta);
+      dayHourlyMap.set(hourBucket, (dayHourlyMap.get(hourBucket) || 0) + calibratedUnits(state.meters[allocation.meterId], allocation.delta));
     }
 
     // Only include days with meaningful data
@@ -848,6 +905,10 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     };
   }
   const projected = projectMeters(state, readings, safeAverageDaily, now);
+  // vsLastMonthPercent: how this month's projection compares to last month's actual total
+  const vsLastMonthPercent = lastMonthTotal > 0
+    ? Math.max(-99, Math.min(99, round(((projected.projectedHome - lastMonthTotal) / lastMonthTotal) * 100, 1)))
+    : null;
   const billingEnd = nextBillingCycleStart(now, state.billingDay);
   const daysInCycle = Math.max(1, (billingEnd - cycleStart) / 86_400_000);
   const remainingCycleDays = Math.max(0, (billingEnd - now) / 86_400_000);
@@ -924,6 +985,8 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       combinedDaysLeft: round(combinedDaysLeft, 1),
       daysBuffer,
       combinedTarget,
+      lastMonthTotal,
+      vsLastMonthPercent,
     },
     meters: readings,
     manualLogs: logs.map(({ _id, ...log }) => log),
@@ -944,6 +1007,9 @@ function registerUnifiedSolarRoutes(app, db) {
 
   const context = { stateCollection, snapshots, allocations, manualLogs, inverterSnapshots, weatherSnapshots };
   const pollTomzn = async () => {
+    // Max-age guard: skip if data is fresher than 5s (prevents over-polling Tuya when app polls every 5s)
+    const latestTomzn = await snapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
+    if (latestTomzn && Date.now() - latestTomzn.timestamp < TOMZN_POLL_MAX_AGE_MS) return latestTomzn;
     if (pollInFlight) return pollInFlight;
     pollInFlight = (async () => recordTomzn({ ...context, snapshot: await requestTomzn() }))();
     try { return await pollInFlight; } finally { pollInFlight = null; }
@@ -954,7 +1020,11 @@ function registerUnifiedSolarRoutes(app, db) {
     if (inverterPollInFlight) return inverterPollInFlight;
     inverterPollInFlight = requestInverterZone()
       .then(async (snapshot) => {
-        if (snapshot) await inverterSnapshots.insertOne(snapshot);
+        if (snapshot) await inverterSnapshots.updateOne(
+          { timestamp: snapshot.timestamp },
+          { $set: snapshot },
+          { upsert: true }
+        );
         return snapshot;
       })
       .catch(() => latest)
@@ -1082,8 +1152,24 @@ function registerUnifiedSolarRoutes(app, db) {
       if (latest?.id === log.id) {
         const prior = await manualLogs.find({ meterId: log.meterId }).sort({ timestamp: -1 }).limit(1).next();
         const meter = state.meters[log.meterId];
+        // Revert anchor to prior reading (or cycle baseline if none)
         meter.anchorReading = prior?.reading ?? meter.cycleBaselineReading;
         meter.anchorAt = prior?.anchorAt ?? meter.cycleBaselineAt;
+        // Revert calibration data to what it was before this reading
+        if (log.meterRatioBefore != null) {
+          meter.tomznToMeterRatio = log.meterRatioBefore;
+        }
+        if (prior) {
+          // Restore correction from the prior log
+          meter.lastManualCorrection = finiteNumber(prior.correction, 0);
+        } else {
+          // No prior logs — reset to defaults
+          meter.lastManualCorrection = 0;
+          meter.calibrationTomznUnits = 0;
+          meter.calibrationMeterUnits = 0;
+          meter.ratioObservationCount = 0;
+          meter.tomznToMeterRatio = 1;
+        }
       }
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
@@ -1100,12 +1186,32 @@ function registerUnifiedSolarRoutes(app, db) {
       const state = await ensureState(stateCollection);
       // Billing readings are always anchored to the configured 28th, never to
       // the day a phone happens to submit the settings form.
+      // Only update the cycle baseline — do NOT touch anchorReading/anchorAt,
+      // which track the live current reading from manual logs / TOMZN.
       const at = billingCycleStart(Date.now(), state.billingDay);
       const meter = state.meters[meterId];
+      const oldBaseline = meter.cycleBaselineReading;
+      const baselineDelta = reading - oldBaseline;
       meter.cycleBaselineReading = reading;
       meter.cycleBaselineAt = at;
-      meter.anchorReading = reading;
-      meter.anchorAt = Date.now();
+      // Shift the anchor by the same delta so the live reading stays consistent
+      // (the current reading doesn't jump when the baseline is corrected).
+      if (meter.anchorReading != null && Number.isFinite(baselineDelta)) {
+        meter.anchorReading = round(meter.anchorReading + baselineDelta, 2);
+      }
+      state.updatedAt = Date.now();
+      await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
+      res.json(await buildDashboard(context));
+    } catch (error) { res.status(502).json({ error: error.message }); }
+  });
+
+  // Manual override for last month's total units used (for trend comparison)
+  app.post("/api/solar/last-month-total", async (req, res) => {
+    try {
+      const total = finiteNumber(req.body?.total);
+      if (total == null || total < 0) return res.status(400).json({ error: "A non-negative total is required" });
+      const state = await ensureState(stateCollection);
+      state.lastMonthTotalOverride = total;
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
       res.json(await buildDashboard(context));
@@ -1126,10 +1232,47 @@ function registerUnifiedSolarRoutes(app, db) {
   app.get("/api/solar/tomzn/cron", async (_req, res) => {
     try { await pollTomzn(); res.json({ triggered: true }); } catch (error) { res.status(502).json({ error: error.message }); }
   });
+  // Dedicated endpoint for last 24h flow history (solar/grid/load kW per sample).
+  app.get("/api/solar/flow-history", async (_req, res) => {
+    try {
+      const now = Date.now();
+      const history = await inverterSnapshots.find({ timestamp: { $gte: now - 24 * 3_600_000, $lte: now } }).sort({ timestamp: 1 }).limit(5_000).toArray();
+      res.json(history.map((sample) => ({
+        timestamp: sample.timestamp,
+        solarKw: round(sample.solarW / 1000, 3),
+        gridKw: (sample.gridV > 0 && sample.gridW >= 200) ? round(sample.gridW / 1000, 3) : 0,
+        loadKw: round(sample.loadW / 1000, 3),
+      })));
+    } catch (error) { res.status(500).json({ error: error.message }); }
+  });
 
   // Polling is server-owned. It continues while the phone is closed.
   setTimeout(() => pollTomzn().catch((error) => console.error("[Solar Engine] initial TOMZN poll failed:", error.message)), 2_000);
   setInterval(() => pollTomzn().catch((error) => console.error("[Solar Engine] TOMZN poll failed:", error.message)), 5 * 60_000);
+
+  // Server-side inverter polling — collects data even when the app is closed.
+  // Poll every 60 seconds (the 5s max-age guard in pollInverter prevents over-polling
+  // when the frontend is also requesting refreshes).
+  setTimeout(() => pollInverter().catch((error) => console.error("[Solar Engine] initial inverter poll failed:", error.message)), 3_000);
+  setInterval(() => pollInverter().catch((error) => console.error("[Solar Engine] inverter poll failed:", error.message)), 60_000);
+
+  // Cleanup: delete inverter snapshots older than 24 hours (flow graph is last-24h only).
+  // TOMZN snapshots are kept for 30 days — they're needed for billing cycle calculations,
+  // load status history, daily/hourly summaries, and the /tomzn/history endpoint.
+  // Weather snapshots older than 7 days are also pruned (only the latest is ever used).
+  setInterval(async () => {
+    try {
+      const inverterCutoff = Date.now() - 24 * 3_600_000;
+      const tomznCutoff = Date.now() - 30 * 86_400_000;
+      const weatherCutoff = Date.now() - 7 * 86_400_000;
+      await inverterSnapshots.deleteMany({ timestamp: { $lt: inverterCutoff } });
+      await snapshots.deleteMany({ timestamp: { $lt: tomznCutoff } });
+      await weatherSnapshots.deleteMany({ timestamp: { $lt: weatherCutoff } });
+    } catch (error) {
+      console.error("[Solar Engine] cleanup failed:", error.message);
+    }
+  }, 3_600_000);
+
   try {
     const cron = require("node-cron");
     cron.schedule("0 12 28 * *", () => {

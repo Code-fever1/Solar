@@ -1,9 +1,20 @@
-import { RefreshCw } from "lucide-react-native";
-import { useEffect, useState } from "react";
-import { Image, StyleSheet, Text, View } from "react-native";
+import {
+  BlurMask,
+  Canvas,
+  Group,
+  Circle as SkiaCircle,
+  LinearGradient as SkiaLinearGradient,
+  Path as SkiaPath,
+  vec,
+} from "@shopify/react-native-skia";
+import { RefreshCw, SunMedium, TowerControl } from "lucide-react-native";
+import { memo, useEffect, useState } from "react";
+import { AppState, Image, Platform, StyleSheet, Text, View } from "react-native";
 import Animated, {
+  cancelAnimation,
   Easing,
   useAnimatedProps,
+  useDerivedValue,
   useSharedValue,
   withRepeat,
   withSequence,
@@ -29,36 +40,46 @@ const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 // Fixed aspect ratio for the card so day/night backgrounds never change sizing.
 const CARD_ASPECT = 1600 / 899;
 
-// ── Layer 1 — Invisible Bézier guide paths ──────────────────────────────
-// Organic, non-symmetrical curves from solar (left) and grid (right)
-// converging at the invisible energy hub behind the house (center).
+// ── Layer 1 — Conduit-style guide paths (90° routing) ───────────────────
+// Real cable routing: solar panel (left) and grid tower (right) both go
+// straight up, turn 90°, and connect to the inverter hub (center).
+// Home stream goes from inverter straight up to the home label.
 const SOLAR_CTRL: CtrlArray = [
-  { x: 58, y: 88 },   // solar panel (left, mid)
-  { x: 96, y: 18 },   // rises sharply
-  { x: 168, y: 44 },  // gentle curve over
-  { x: 230, y: 158 }, // descends to house hub
+  { x: 40, y: 185 },   // solar panel (left, bottom)
+  { x: 40, y: 136 },   // straight up
+  { x: 48, y: 130 },   // tight 90° corner
+  { x: 230, y: 130 },  // horizontal to inverter hub
 ];
 
 const GRID_CTRL: CtrlArray = [
-  { x: 402, y: 88 },  // grid tower (right, mid)
-  { x: 352, y: 52 },  // curves upward gently
-  { x: 288, y: 184 }, // dips low then sweeps up
-  { x: 230, y: 158 }, // arrives at house hub
+  { x: 420, y: 185 },  // grid tower (right, bottom)
+  { x: 420, y: 136 },  // straight up
+  { x: 412, y: 130 },  // tight 90° corner
+  { x: 230, y: 130 },  // horizontal to inverter hub
+];
+
+const HOME_CTRL: CtrlArray = [
+  { x: 230, y: 130 },  // inverter hub (center)
+  { x: 230, y: 100 },  // straight up
+  { x: 230, y: 75 },   // continue up
+  { x: 230, y: 50 },   // to home label (center top)
 ];
 
 const HUB_X = 230;
-const HUB_Y = 158;
+const HUB_Y = 130;
 
 const SOLAR_PATH_D = `M ${SOLAR_CTRL[0].x} ${SOLAR_CTRL[0].y} C ${SOLAR_CTRL[1].x} ${SOLAR_CTRL[1].y}, ${SOLAR_CTRL[2].x} ${SOLAR_CTRL[2].y}, ${SOLAR_CTRL[3].x} ${SOLAR_CTRL[3].y}`;
 const GRID_PATH_D = `M ${GRID_CTRL[0].x} ${GRID_CTRL[0].y} C ${GRID_CTRL[1].x} ${GRID_CTRL[1].y}, ${GRID_CTRL[2].x} ${GRID_CTRL[2].y}, ${GRID_CTRL[3].x} ${GRID_CTRL[3].y}`;
+const HOME_PATH_D = `M ${HOME_CTRL[0].x} ${HOME_CTRL[0].y} C ${HOME_CTRL[1].x} ${HOME_CTRL[1].y}, ${HOME_CTRL[2].x} ${HOME_CTRL[2].y}, ${HOME_CTRL[3].x} ${HOME_CTRL[3].y}`;
 
 type CtrlPoint = { x: number; y: number };
 type CtrlArray = readonly [CtrlPoint, CtrlPoint, CtrlPoint, CtrlPoint];
 
-type SceneProps = { inverter: InverterTelemetry; weather: WeatherState; offline: boolean; tomznLive: TomznLive; inverterOff: boolean };
+type SceneProps = { inverter: InverterTelemetry; weather: WeatherState; offline: boolean; tomznLive: TomznLive; inverterOff: boolean; loadStatus?: 'Low' | 'Normal' | 'High'; normalDrawKw?: number; isVisible?: boolean };
 
-function formatPower(watts: number) {
-  return watts >= 1000 ? `${(watts / 1000).toFixed(1)} kW` : `${Math.round(watts)} W`;
+function formatPowerShort(watts: number) {
+  if (watts >= 1000) return { value: (watts / 1000).toFixed(2), unit: "kW" };
+  return { value: String(Math.round(watts)), unit: "W" };
 }
 
 // ── Layer 4 — Moving Energy Particles ───────────────────────────────────
@@ -84,7 +105,7 @@ function Particle({
   useEffect(() => {
     progress.value = 0;
     progress.value = withRepeat(withTiming(1, { duration, easing: Easing.linear }), -1, false);
-  }, [duration]);
+  }, [duration, progress]);
 
   const animatedProps = useAnimatedProps(() => {
     const t = (progress.value + offset) % 1;
@@ -116,6 +137,7 @@ function StreamLayer({
   active,
   power,
   particleColor,
+  strokeWidth = 2.5,
 }: {
   ctrl: CtrlArray;
   pathD: string;
@@ -124,13 +146,14 @@ function StreamLayer({
   active: boolean;
   power: number;
   particleColor: string;
+  strokeWidth?: number;
 }) {
   const activeOpacity = useSharedValue(active ? 1 : 0);
   const pulse = useSharedValue(0.85);
 
   useEffect(() => {
     activeOpacity.value = withTiming(active ? 1 : 0, { duration: 500 });
-  }, [active]);
+  }, [active, activeOpacity]);
 
   useEffect(() => {
     if (active) {
@@ -141,7 +164,7 @@ function StreamLayer({
         false,
       );
     }
-  }, [active]);
+  }, [active, pulse]);
 
   // Particle count scales with power: 0W→0, 500W→1, 1500W→2, 4000W→4, 8000W→8
   const particleCount = active ? Math.min(8, Math.max(1, Math.round(power / 1000))) : 0;
@@ -159,7 +182,7 @@ function StreamLayer({
       <AnimatedPath
         d={pathD}
         stroke={glowColor}
-        strokeWidth={5}
+        strokeWidth={strokeWidth + 3}
         fill="none"
         strokeLinecap="round"
         animatedProps={glowProps}
@@ -169,7 +192,7 @@ function StreamLayer({
       <AnimatedPath
         d={pathD}
         stroke={`url(#${streamId})`}
-        strokeWidth={2.5}
+        strokeWidth={strokeWidth}
         fill="none"
         strokeLinecap="round"
         animatedProps={streamProps}
@@ -190,79 +213,291 @@ function StreamLayer({
   );
 }
 
-// ── Energy Hub — breathing glow where particles merge ───────────────────
-function HouseHub({ solarActive, gridActive }: { solarActive: boolean; gridActive: boolean }) {
+// ── Inverter Hub — central junction node where all energy converges ────
+function InverterHub({ solarActive, gridActive, homeActive }: { solarActive: boolean; gridActive: boolean; homeActive: boolean }) {
   const breath = useSharedValue(0.3);
-  const anyActive = solarActive || gridActive;
+  const anyActive = solarActive || gridActive || homeActive;
 
   useEffect(() => {
     breath.value = 0.3;
     breath.value = withRepeat(
       withSequence(
-        withTiming(anyActive ? 0.7 : 0.4, { duration: 1000 }),
+        withTiming(anyActive ? 0.8 : 0.4, { duration: 1000 }),
         withTiming(anyActive ? 0.3 : 0.2, { duration: 1000 }),
       ),
       -1,
       false,
     );
-  }, [anyActive]);
+  }, [anyActive, breath]);
 
   const glowProps = useAnimatedProps(() => ({
-    r: 8 + breath.value * 10,
-    opacity: breath.value * 0.4,
+    r: 10 + breath.value * 12,
+    opacity: breath.value * 0.35,
   }));
 
   const coreProps = useAnimatedProps(() => ({
-    r: 3 + breath.value * 2,
-    opacity: breath.value * 0.6,
+    r: 4 + breath.value * 3,
+    opacity: breath.value * 0.7,
+  }));
+
+  const ringProps = useAnimatedProps(() => ({
+    r: 8 + breath.value * 2,
+    opacity: anyActive ? 0.5 : 0.2,
   }));
 
   return (
     <>
-      <AnimatedCircle cx={HUB_X} cy={HUB_Y} animatedProps={glowProps} fill="#AAFFAA" filter="url(#hubGlow)" />
-      <AnimatedCircle cx={HUB_X} cy={HUB_Y} animatedProps={coreProps} fill="#E0FFE0" />
+      {/* Outer glow */}
+      <AnimatedCircle cx={HUB_X} cy={HUB_Y} animatedProps={glowProps} fill="#5EE6FF" filter="url(#hubGlow)" />
+      {/* Static ring */}
+      <AnimatedCircle cx={HUB_X} cy={HUB_Y} animatedProps={ringProps} fill="none" stroke="#5EE6FF" strokeWidth={1.5} />
+      {/* Bright core */}
+      <AnimatedCircle cx={HUB_X} cy={HUB_Y} animatedProps={coreProps} fill="#E0F8FF" />
     </>
   );
 }
 
-export function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverterOff }: SceneProps) {
-  const [isDayTime, setIsDayTime] = useState(weather.isDay);
-  const [now, setNow] = useState(Date.now());
+function SkiaParticle({ ctrl, color, offset, progress, size, activeOpacity }: { ctrl: CtrlArray; color: string; offset: number; progress: SharedValue<number>; size: number; activeOpacity: SharedValue<number> }) {
+  const cx = useDerivedValue(() => {
+    const t = (progress.value + offset) % 1;
+    const u = 1 - t;
+    return u * u * u * ctrl[0].x + 3 * u * u * t * ctrl[1].x + 3 * u * t * t * ctrl[2].x + t * t * t * ctrl[3].x;
+  });
+  const cy = useDerivedValue(() => {
+    const t = (progress.value + offset) % 1;
+    const u = 1 - t;
+    return u * u * u * ctrl[0].y + 3 * u * u * t * ctrl[1].y + 3 * u * t * t * ctrl[2].y + t * t * t * ctrl[3].y;
+  });
+  const opacity = useDerivedValue(() => {
+    const t = (progress.value + offset) % 1;
+    if (t < 0.08) return activeOpacity.value * t / 0.08;
+    if (t > 0.88) return activeOpacity.value * (1 - t) / 0.12;
+    return activeOpacity.value;
+  });
+
+  return (
+    <>
+      <SkiaCircle cx={cx} cy={cy} r={size * 2.8} color={color} opacity={opacity}>
+        <BlurMask blur={2} />
+      </SkiaCircle>
+      <SkiaCircle cx={cx} cy={cy} r={size * 0.7} color={color} opacity={opacity} />
+    </>
+  );
+}
+
+function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gradientColors, active, power, particleColor, strokeWidth = 2.5, isVisible }: { ctrl: CtrlArray; path: string; glowColor: string; gradientStart: CtrlPoint; gradientEnd: CtrlPoint; gradientColors: string[]; active: boolean; power: number; particleColor: string; strokeWidth?: number; isVisible: boolean }) {
+  const activeOpacity = useSharedValue(active ? 1 : 0);
+  const pulse = useSharedValue(0.85);
+  const progress = useSharedValue(0);
+  const particleCount = active ? Math.min(8, Math.max(1, Math.round(power / 1000))) : 0;
+  const duration = Math.max(2000, 6000 - power / 8000 * 4000);
+  const particleSize = 3 + Math.min(2, power / 4000);
+  const glowOpacity = useDerivedValue(() => activeOpacity.value * 0.2);
+  const streamOpacity = useDerivedValue(() => activeOpacity.value * pulse.value);
+
+  useEffect(() => {
+    activeOpacity.value = withTiming(active ? 1 : 0, { duration: 500 });
+  }, [active, activeOpacity]);
+
+  useEffect(() => {
+    cancelAnimation(progress);
+    if (!active || !isVisible) {
+      progress.value = 0;
+      return;
+    }
+    progress.value = 0;
+    progress.value = withRepeat(withTiming(1, { duration, easing: Easing.linear }), -1, false);
+  }, [active, duration, isVisible, progress]);
+
+  useEffect(() => {
+    cancelAnimation(pulse);
+    if (!active || !isVisible) {
+      pulse.value = 0.85;
+      return;
+    }
+    pulse.value = 0.85;
+    pulse.value = withRepeat(withSequence(withTiming(1, { duration: 1000 }), withTiming(0.7, { duration: 1000 })), -1, false);
+  }, [active, isVisible, pulse]);
+
+  return (
+    <>
+      <SkiaPath path={path} color={glowColor} style="stroke" strokeWidth={strokeWidth + 3} strokeCap="round" opacity={glowOpacity}>
+        <BlurMask blur={4} />
+      </SkiaPath>
+      <SkiaPath path={path} style="stroke" strokeWidth={strokeWidth} strokeCap="round" opacity={streamOpacity}>
+        <SkiaLinearGradient start={vec(gradientStart.x, gradientStart.y)} end={vec(gradientEnd.x, gradientEnd.y)} colors={gradientColors} />
+      </SkiaPath>
+      {Array.from({ length: particleCount }).map((_, index) => (
+        <SkiaParticle key={`skia-p-${particleCount}-${index}`} ctrl={ctrl} color={particleColor} offset={index / particleCount} progress={progress} size={particleSize} activeOpacity={activeOpacity} />
+      ))}
+    </>
+  );
+}
+
+function SkiaInverterHub({ solarActive, gridActive, homeActive, isVisible }: { solarActive: boolean; gridActive: boolean; homeActive: boolean; isVisible: boolean }) {
+  const breath = useSharedValue(0.3);
+  const anyActive = solarActive || gridActive || homeActive;
+  const glowRadius = useDerivedValue(() => 10 + breath.value * 12);
+  const glowOpacity = useDerivedValue(() => breath.value * 0.35);
+  const coreRadius = useDerivedValue(() => 4 + breath.value * 3);
+  const coreOpacity = useDerivedValue(() => breath.value * 0.7);
+  const ringRadius = useDerivedValue(() => 8 + breath.value * 2);
+  const ringOpacity = useDerivedValue(() => anyActive ? 0.5 : 0.2);
+
+  useEffect(() => {
+    cancelAnimation(breath);
+    breath.value = 0.3;
+    if (!isVisible) return;
+    breath.value = withRepeat(withSequence(withTiming(anyActive ? 0.8 : 0.4, { duration: 1000 }), withTiming(anyActive ? 0.3 : 0.2, { duration: 1000 })), -1, false);
+  }, [anyActive, breath, isVisible]);
+
+  return (
+    <>
+      <SkiaCircle cx={HUB_X} cy={HUB_Y} r={glowRadius} color="#5EE6FF" opacity={glowOpacity}>
+        <BlurMask blur={6} />
+      </SkiaCircle>
+      <SkiaCircle cx={HUB_X} cy={HUB_Y} r={ringRadius} color="#5EE6FF" opacity={ringOpacity} style="stroke" strokeWidth={1.5} />
+      <SkiaCircle cx={HUB_X} cy={HUB_Y} r={coreRadius} color="#E0F8FF" opacity={coreOpacity} />
+    </>
+  );
+}
+
+function EnergyCanvas({ solarOnline, gridImporting, homeActive, solarPower, gridPower, homePower, gridArcColor, width, height, isVisible }: { solarOnline: boolean; gridImporting: boolean; homeActive: boolean; solarPower: number; gridPower: number; homePower: number; gridArcColor: string; width: number; height: number; isVisible: boolean }) {
+  if (width <= 0 || height <= 0) return null;
+  const scale = Math.min(width / 460, height / 216);
+  const offsetX = (width - 460 * scale) / 2;
+  const offsetY = (height - 216 * scale) / 2;
+
+  return (
+    <Canvas style={styles.svg} pointerEvents="none">
+      <Group transform={[{ scale }, { translateX: offsetX }, { translateY: offsetY }]}>
+        <SkiaStreamLayer ctrl={SOLAR_CTRL} path={SOLAR_PATH_D} glowColor="#FFD54F" gradientStart={SOLAR_CTRL[0]} gradientEnd={SOLAR_CTRL[3]} gradientColors={["#FFE066", "#FFB300"]} active={solarOnline} power={solarPower} particleColor="#FFE066" strokeWidth={3} isVisible={isVisible} />
+        <SkiaStreamLayer ctrl={GRID_CTRL} path={GRID_PATH_D} glowColor={gridArcColor} gradientStart={GRID_CTRL[0]} gradientEnd={GRID_CTRL[3]} gradientColors={[gridArcColor, gridArcColor]} active={gridImporting} power={gridPower} particleColor={gridArcColor} strokeWidth={3} isVisible={isVisible} />
+        <SkiaStreamLayer ctrl={HOME_CTRL} path={HOME_PATH_D} glowColor="#45E376" gradientStart={HOME_CTRL[0]} gradientEnd={HOME_CTRL[3]} gradientColors={["#45E376", "#2DD66B"]} active={homeActive} power={homePower} particleColor="#5EE87E" strokeWidth={3.5} isVisible={isVisible} />
+        <SkiaInverterHub solarActive={solarOnline} gridActive={gridImporting} homeActive={homeActive} isVisible={isVisible} />
+      </Group>
+    </Canvas>
+  );
+}
+
+export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverterOff, loadStatus, normalDrawKw, isVisible = true }: SceneProps) {
+  const [sunrise, setSunrise] = useState<Date | null>(null);
+  const [sunset, setSunset] = useState<Date | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [appActive, setAppActive] = useState(AppState.currentState === "active");
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => setAppActive(state === "active"));
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     fetch("https://api.sunrise-sunset.org/json?lat=31.6265&lng=71.0664&formatted=0")
       .then((res) => res.json())
       .then((data) => {
         if (data.status === "OK") {
-          const now = new Date();
-          const sunrise = new Date(data.results.sunrise);
-          const sunset = new Date(data.results.sunset);
-          setIsDayTime(now >= sunrise && now < sunset);
+          setSunrise(new Date(data.results.sunrise));
+          setSunset(new Date(data.results.sunset));
         }
       })
       .catch(() => {});
   }, []);
 
-  // Tick every second so time display stays live.
+  // Tick every 10 seconds for the time display — no need for 1s precision.
   useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), 1000);
+    const interval = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(interval);
   }, []);
 
+  // Evaluate day/night every tick — uses sunrise/sunset if available,
+  // otherwise falls back to the weather.isDay prop from the backend.
+  const isDayTime = sunrise && sunset
+    ? (now >= sunrise.getTime() && now < sunset.getTime())
+    : weather.isDay;
+
   const solarOnline = !inverterOff && inverter.isLive && !offline && inverter.solarW > 25;
-  // When inverter is offline, override its W/V/A with 0.
-  const invW = inverterOff ? 0 : inverter.loadW;
-  const invV = inverterOff ? 0 : inverter.gridV;
-  const invA = inverterOff ? 0 : inverter.loadW / Math.max(1, inverter.gridV);
+  // When inverter is offline or system is offline (no internet), override W/V/A with 0.
+  const invW = (inverterOff || offline) ? 0 : (inverter.loadW || 0);
+  // Use inverter AC output V and VA when grid is on standby or not connected.
+  // A = VA / V (derived from the inverter's AC output readings).
+  const gridV = inverter.gridV || 0;
+  const acOutV = inverter.acOutV || 0;
+  const loadVa = inverter.loadVa || 0;
+  const usingAcOut = !inverterOff && !offline && gridV <= 0 && acOutV > 0;
+  const invV = (inverterOff || offline) ? 0 : (gridV > 0 ? gridV : acOutV);
+  const invA = (inverterOff || offline) ? 0 : (usingAcOut ? loadVa / acOutV : (inverter.loadW || 0) / Math.max(1, gridV));
   // Relay off with fault code 2048 = cutoff state
-  const wapdaCutOff = tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode === 2048;
+  const wapdaCutOff = !offline && tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode === 2048;
   // Relay off without fault code = standby state
-  const wapdaStandby = tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode !== 2048;
+  const wapdaStandby = !offline && tomznLive.isOnline && !tomznLive.switchOn && tomznLive.faultCode !== 2048;
   // Grid arc always uses Tomzn (Wapda) meter data — independent of inverter state.
-  const gridImporting = tomznLive.isOnline && tomznLive.powerW > 0 && !wapdaCutOff && !wapdaStandby;
+  const gridImporting = !offline && tomznLive.isOnline && tomznLive.powerW > 0 && !wapdaCutOff && !wapdaStandby;
   const gridPowerW = gridImporting ? Math.max(0, tomznLive.powerW) : 0;
-  const solarColor = solarOnline ? "#F9C641" : "#8A8A8A";
   const gridColor = gridImporting ? "#6E9BFF" : wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : "#8A8A8A";
+
+  // Pace algorithm — same as old UI DashboardGrid speed section
+  // loadRatio: how current draw compares to the historical avg for this hour
+  // ratio > 1 = above normal, ratio < 1 = below normal, ratio = 1 = on pace
+  const lerpSpeed = (a: number, b: number, x: number) => Math.round(a + (b - a) * Math.max(0, Math.min(1, x)));
+  const getPowerColor = (): string => {
+    const gridKw = gridPowerW / 1000;
+    if (gridKw <= 0) return "#6B7280";
+    const normalKw = normalDrawKw ?? 0;
+    const loadRatio = normalKw > 0 && gridKw > 0 ? gridKw / normalKw : 1;
+    const delta = loadRatio - 1;
+    if (Math.abs(delta) < 0.08) return "#F8FAFC"; // within 8% → white
+    if (delta > 0) {
+      // white → yellow → orange → red
+      const t = Math.min(1, delta / 1.0);
+      if (t < 0.4) {
+        const s = t / 0.4;
+        return `rgb(255,${lerpSpeed(255, 200, s)},${lerpSpeed(255, 50, s)})`;
+      } else if (t < 0.7) {
+        const s = (t - 0.4) / 0.3;
+        return `rgb(255,${lerpSpeed(200, 130, s)},${lerpSpeed(50, 15, s)})`;
+      }
+      const s = (t - 0.7) / 0.3;
+      return `rgb(${lerpSpeed(255, 239, s)},${lerpSpeed(130, 68, s)},${lerpSpeed(15, 68, s)})`;
+    }
+    // white → mint → green
+    const t = Math.min(1, Math.abs(delta) / 0.6);
+    if (t < 0.45) {
+      const s = t / 0.45;
+      return `rgb(${lerpSpeed(255, 100, s)},${lerpSpeed(255, 230, s)},${lerpSpeed(255, 175, s)})`;
+    }
+    const s = (t - 0.45) / 0.55;
+    return `rgb(${lerpSpeed(100, 16, s)},${lerpSpeed(230, 185, s)},${lerpSpeed(175, 129, s)})`;
+  };
+  const paceColor = getPowerColor();
+  const paceLabel = !gridImporting
+    ? "No draw"
+    : loadStatus === "High" ? "↑ High"
+    : loadStatus === "Low" ? "↓ Low"
+    : "On Pace";
+  // Grid arc color uses pace algorithm when importing, falls back to status color otherwise
+  const gridArcColor = gridImporting ? paceColor : gridColor;
+
+  // ── Power mode label + color ──
+  // Solar only: solar is producing, wapda not importing
+  // Hybrid: both solar and wapda supplying power
+  // Wapda Importing: solar near zero, wapda supplying
+  // Bypass Mode: inverter fully off, tomzn importing
+  // Wapda Cut Off / Standby / Idle / Offline: wapda states when no solar
+  const solarProducing = !inverterOff && inverter.isLive && !offline && inverter.solarW > 5;
+  const solarLow = !inverterOff && inverter.isLive && !offline && inverter.solarW <= 5;
+  const { modeLabel, modeColor } = (() => {
+    if (offline) return { modeLabel: "System Offline", modeColor: "#EF4C4C" };
+    if (wapdaCutOff) return { modeLabel: "Wapda Cut Off", modeColor: "#EF4C4C" };
+    if (inverterOff && gridImporting) return { modeLabel: "Bypass Mode", modeColor: "#F8C653" };
+    if (solarProducing && gridImporting) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
+    if (solarProducing && !gridImporting) return { modeLabel: "Solar Only", modeColor: "#F9C641" };
+    if (solarLow && gridImporting) return { modeLabel: "Wapda Importing", modeColor: paceColor };
+    if (gridImporting) return { modeLabel: "Wapda Importing", modeColor: paceColor };
+    if (wapdaStandby) return { modeLabel: solarProducing ? "Solar Only" : "Wapda Standby", modeColor: solarProducing ? "#F9C641" : "#F8C653" };
+    if (tomznLive.isOnline) return { modeLabel: solarProducing ? "Solar Only" : "Wapda Idle", modeColor: solarProducing ? "#F9C641" : "#F8C653" };
+    return { modeLabel: "Wapda Offline", modeColor: "#EF4C4C" };
+  })();
   // Home Usage shows whichever watt source is higher; V/A must match that source.
   const usingTomznW = gridPowerW > invW;
   // Real time display based on whichever source updated most recently.
@@ -271,7 +506,9 @@ export function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverte
   const invTs = inverter.fetchedAt ? new Date(inverter.fetchedAt).getTime() : 0;
   const latestTs = Math.max(tomznTs, invTs);
   const elapsedSec = latestTs > 0 ? Math.max(0, Math.floor((now - latestTs) / 1000)) : null;
-  const updatedLabel = elapsedSec == null
+  const updatedLabel = offline
+    ? "Offline"
+    : elapsedSec == null
     ? "Waiting for data"
     : elapsedSec === 0
       ? "Just now"
@@ -285,111 +522,172 @@ export function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverte
     ? require("../../assets/images/dayback.jpeg")
     : require("../../assets/images/nightback.jpeg");
 
+  // Home power = whichever source is supplying (inverter load or grid)
+  const homeW = offline ? 0 : Math.max(invW, gridPowerW);
+  const homeV = offline ? 0 : usingTomznW ? (wapdaCutOff || wapdaStandby ? 0 : tomznLive.voltageV) : invV;
+  const homeA = offline ? 0 : usingTomznW ? (wapdaCutOff || wapdaStandby ? 0 : tomznLive.currentA) : invA;
+  const homeActive = !offline && homeW > 0;
+
+  // Solar V/A
+  const solarV = inverter.solarV || 0;
+  const solarA = inverter.solarA || 0;
+  // Grid V/A (from tomzn meter)
+  const tomznV = tomznLive.voltageV || 0;
+  const tomznA = tomznLive.currentA || 0;
+
+  const solarP = formatPowerShort(offline ? 0 : inverter.solarW);
+  const homeP = formatPowerShort(homeW);
+  const gridP = formatPowerShort(offline ? 0 : gridPowerW);
+
   return (
-    <View style={[styles.card, { aspectRatio: CARD_ASPECT }]}>
+    <View
+      style={[styles.card, { aspectRatio: CARD_ASPECT }]}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+        setCanvasSize((current) => current.width === width && current.height === height ? current : { width, height });
+      }}
+    >
       <Image source={bgImage} style={styles.background} resizeMode="stretch" />
       <View style={StyleSheet.absoluteFill}>
-        <Svg style={styles.svg} viewBox="0 0 460 216">
-          <Defs>
-            {/* Solar stream gradient: bright yellow → deep amber */}
-            <LinearGradient id="solarStream" x1="0" y1="0" x2="1" y2="1">
-              <Stop offset="0" stopColor="#FFE066" />
-              <Stop offset="1" stopColor="#FFB300" />
-            </LinearGradient>
-            {/* Grid stream gradient: light blue → deep blue */}
-            <LinearGradient id="gridStream" x1="1" y1="0" x2="0" y2="1">
-              <Stop offset="0" stopColor="#64B5F6" />
-              <Stop offset="1" stopColor="#2196F3" />
-            </LinearGradient>
-            {/* Blur filters for glow effects */}
-            <Filter id="streamGlow" x="-50%" y="-50%" width="200%" height="200%">
-              <FeGaussianBlur stdDeviation="4" />
-            </Filter>
-            <Filter id="particleGlow" x="-200%" y="-200%" width="500%" height="500%">
-              <FeGaussianBlur stdDeviation="2" />
-            </Filter>
-            <Filter id="hubGlow" x="-150%" y="-150%" width="400%" height="400%">
-              <FeGaussianBlur stdDeviation="6" />
-            </Filter>
-          </Defs>
+        {Platform.OS === "web" ? (
+          <Svg style={styles.svg} viewBox="0 0 460 216">
+            <Defs>
+              {/* Solar stream gradient: bright yellow → deep amber */}
+              <LinearGradient id="solarStream" x1="0" y1="1" x2="1" y2="0">
+                <Stop offset="0" stopColor="#FFE066" />
+                <Stop offset="1" stopColor="#FFB300" />
+              </LinearGradient>
+              {/* Grid stream gradient */}
+              <LinearGradient id="gridStream" x1="1" y1="1" x2="0" y2="0">
+                <Stop offset="0" stopColor={gridArcColor} stopOpacity={0.9} />
+                <Stop offset="1" stopColor={gridArcColor} stopOpacity={0.6} />
+              </LinearGradient>
+              {/* Home stream gradient: green */}
+              <LinearGradient id="homeStream" x1="0" y1="1" x2="0" y2="0">
+                <Stop offset="0" stopColor="#45E376" />
+                <Stop offset="1" stopColor="#2DD66B" />
+              </LinearGradient>
+              {/* Blur filters for glow effects */}
+              <Filter id="streamGlow" x="-50%" y="-50%" width="200%" height="200%">
+                <FeGaussianBlur stdDeviation="4" />
+              </Filter>
+              <Filter id="particleGlow" x="-200%" y="-200%" width="500%" height="500%">
+                <FeGaussianBlur stdDeviation="2" />
+              </Filter>
+              <Filter id="hubGlow" x="-150%" y="-150%" width="400%" height="400%">
+                <FeGaussianBlur stdDeviation="6" />
+              </Filter>
+            </Defs>
 
-          <StreamLayer
-            ctrl={SOLAR_CTRL}
-            pathD={SOLAR_PATH_D}
-            glowColor="#FFD54F"
-            streamId="solarStream"
-            active={solarOnline}
-            power={inverter.solarW}
-            particleColor="#FFE066"
+            {/* Solar → Inverter (left to center, 90° conduit) */}
+            <StreamLayer
+              ctrl={SOLAR_CTRL}
+              pathD={SOLAR_PATH_D}
+              glowColor="#FFD54F"
+              streamId="solarStream"
+              active={solarOnline}
+              power={inverter.solarW}
+              particleColor="#FFE066"
+              strokeWidth={3}
+            />
+            {/* Grid → Inverter (right to center, 90° conduit) */}
+            <StreamLayer
+              ctrl={GRID_CTRL}
+              pathD={GRID_PATH_D}
+              glowColor={gridArcColor}
+              streamId="gridStream"
+              active={gridImporting}
+              power={gridPowerW}
+              particleColor={gridArcColor}
+              strokeWidth={3}
+            />
+            {/* Inverter → Home (center, going up) */}
+            <StreamLayer
+              ctrl={HOME_CTRL}
+              pathD={HOME_PATH_D}
+              glowColor="#45E376"
+              streamId="homeStream"
+              active={homeActive}
+              power={homeW}
+              particleColor="#5EE87E"
+              strokeWidth={3.5}
+            />
+            {/* Inverter junction hub */}
+            <InverterHub solarActive={solarOnline} gridActive={gridImporting} homeActive={homeActive} />
+          </Svg>
+        ) : (
+          <EnergyCanvas
+            solarOnline={solarOnline}
+            gridImporting={gridImporting}
+            homeActive={homeActive}
+            solarPower={inverter.solarW}
+            gridPower={gridPowerW}
+            homePower={homeW}
+            gridArcColor={gridArcColor}
+            width={canvasSize.width}
+            height={canvasSize.height}
+            isVisible={isVisible && appActive}
           />
-          <StreamLayer
-            ctrl={GRID_CTRL}
-            pathD={GRID_PATH_D}
-            glowColor="#4FC3F7"
-            streamId="gridStream"
-            active={gridImporting}
-            power={gridPowerW}
-            particleColor="#64B5F6"
-          />
-          <HouseHub solarActive={solarOnline} gridActive={gridImporting} />
-        </Svg>
+        )}
 
+        {/* ── LIVE tag (top left, small) ── */}
         <View style={styles.topRow}>
           <View style={styles.liveTag}>
-            <View style={[styles.liveDot, { backgroundColor: inverter.isLive && !offline ? "#3BE070" : "#F5BF4A" }]} />
-            <Text style={styles.liveText}>Live Energy Flow</Text>
+            <View style={[styles.liveDot, { backgroundColor: offline ? "#EF4C4C" : inverter.isLive && !offline ? "#3BE070" : "#F5BF4A" }]} />
+            <Text style={styles.liveText}>Live</Text>
           </View>
         </View>
-        {Math.max(invW, gridPowerW) > 0 && (
-          <View style={styles.homeUsage}>
-            <Text style={styles.homeNumber}>{formatPower(Math.max(invW, gridPowerW))}</Text>
-            <Text style={styles.homeLabel}>Home Usage</Text>
+
+        {/* ── 3-column labels: Solar | Home | Grid ── */}
+        {/* Solar column (left) */}
+        <View style={styles.colSolar}>
+          <SunMedium size={18} color={solarOnline ? "#F9C641" : "#8A8A8A"} />
+          <View style={styles.powerRow}>
+            <Text style={[styles.powerValue, { color: solarOnline ? "#FFD54F" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.value}</Text>
+            <Text style={[styles.powerUnit, { color: solarOnline ? "#FFD54F" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.unit}</Text>
           </View>
-        )}
-        {!inverterOff && (
-          <View style={[styles.node, styles.solarNode]}>
-            <Text style={[styles.nodeValue, { color: solarColor }]}>{formatPower(inverter.solarW)}</Text>
-            <Text style={styles.nodeCaption}>{solarOnline ? "Solar Power" : "Solar Offline"}</Text>
+          <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarV.toFixed(0)}V · {solarA.toFixed(1)}A</Text>
+        </View>
+
+        {/* Home column (center) */}
+        <View style={styles.colHome}>
+          <View style={styles.powerRow}>
+            <Text style={[styles.powerValue, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.value}</Text>
+            <Text style={[styles.powerUnit, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.unit}</Text>
           </View>
-        )}
-        {!wapdaCutOff && (
-          <View style={[styles.node, styles.gridNode]}>
-            <Text style={[styles.nodeValue, { color: gridColor }]}>{formatPower(gridPowerW)}</Text>
-            <Text style={styles.nodeCaption}>
-              {wapdaStandby ? "Wapda Standby" : gridImporting ? "From Wapda" : tomznLive.isOnline ? "Wapda Idle" : "Wapda Offline"}
-            </Text>
-            {wapdaStandby && (
-              <Text style={styles.nodeVA}>{tomznLive.voltageV.toFixed(0)}V · {tomznLive.currentA.toFixed(1)}A</Text>
-            )}
+          <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeV.toFixed(0)}V · {homeA.toFixed(1)}A</Text>
+        </View>
+
+        {/* Grid column (right) */}
+        <View style={styles.colGrid}>
+          <TowerControl size={18} color={gridImporting ? gridArcColor : wapdaStandby ? "#F8C653" : "#8A8A8A"} />
+          <View style={styles.powerRow}>
+            <Text style={[styles.powerValue, { color: gridImporting ? gridArcColor : wapdaStandby ? "#F8C653" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.value}</Text>
+            <Text style={[styles.powerUnit, { color: gridImporting ? gridArcColor : wapdaStandby ? "#F8C653" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.unit}</Text>
           </View>
-        )}
+          <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{tomznV.toFixed(0)}V · {tomznA.toFixed(1)}A</Text>
+        </View>
+
+        {/* ── Footer: time | mode ── */}
         <View style={styles.footer}>
           <View style={styles.footerPill}>
             <RefreshCw size={9} color="#DCE7F2" />
-            <Text style={styles.footerText}>
-              {updatedLabel}
-            </Text>
+            <Text style={styles.footerText}>{updatedLabel}</Text>
           </View>
-          {Math.max(invW, gridPowerW) > 0 && (
-            <View style={[styles.footerPill, styles.footerPillCenter]}>
-              <Text style={styles.footerText}>
-                {usingTomznW
-                  ? `${wapdaCutOff || wapdaStandby ? 0 : tomznLive.voltageV.toFixed(0)} V · ${wapdaCutOff || wapdaStandby ? 0 : tomznLive.currentA.toFixed(1)} A`
-                  : `${invV.toFixed(0)} V · ${invA.toFixed(1)} A`}
-              </Text>
-            </View>
-          )}
           <View style={styles.footerPill}>
-            <View style={[styles.footerDot, { backgroundColor: gridImporting ? "#6E9BFF" : wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : tomznLive.isOnline ? "#F8C653" : "#EF4C4C" }]} />
-            <Text style={styles.footerText}>
-              {wapdaCutOff ? "Wapda Cut Off" : wapdaStandby ? "Wapda Standby" : inverterOff && gridImporting ? "Bypass Mode" : gridImporting ? "Wapda Importing" : tomznLive.isOnline ? "Wapda Idle" : "Wapda Offline"}
-            </Text>
+            <View style={[styles.footerDot, { backgroundColor: modeColor }]} />
+            <Text style={[styles.footerText, { color: modeColor }]}>{modeLabel}</Text>
+            {gridImporting && (
+              <Text style={[styles.footerText, { color: paceColor, fontWeight: '700', marginLeft: 4 }]}>
+                · {paceLabel}
+              </Text>
+            )}
           </View>
         </View>
       </View>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {
@@ -403,19 +701,53 @@ const styles = StyleSheet.create({
   },
   background: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%" },
   svg: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%" },
-  topRow: { position: "absolute", top: "5%", left: "3.2%" },
-  liveTag: { flexDirection: "row", alignItems: "center", gap: 6 },
+  // ── LIVE tag ──
+  topRow: { position: "absolute", top: "4%", left: "3.2%" },
+  liveTag: { flexDirection: "row", alignItems: "center", gap: 5 },
   liveDot: { width: 7, height: 7, borderRadius: 4 },
-  liveText: { color: "#F5F9FD", fontFamily: "Outfit", fontSize: 11, fontWeight: "600" },
-  homeUsage: { position: "absolute", top: "6%", left: 0, right: 0, alignItems: "center" },
-  homeNumber: { color: "#45E376", fontFamily: "Outfit", fontSize: 24, fontWeight: "700" },
-  homeLabel: { color: "#EDF3FA", fontFamily: "Outfit", fontSize: 10, marginTop: 1 },
-  node: { position: "absolute", top: "22%", alignItems: "center", width: 96 },
-  solarNode: { left: "1.5%" },
-  gridNode: { right: "1.5%" },
-  nodeValue: { fontFamily: "Outfit", fontSize: 17, fontWeight: "700" },
-  nodeCaption: { color: "#DCE6F0", fontFamily: "Outfit", fontSize: 9, marginTop: 1 },
-  nodeVA: { color: "#8BA8C8", fontFamily: "Outfit", fontSize: 8, marginTop: 2 },
+  liveText: { color: "#F5F9FD", fontFamily: "Outfit", fontSize: 10, fontWeight: "600" },
+  // ── 3-column labels ──
+  colSolar: {
+    position: "absolute",
+    top: "10%",
+    left: "3%",
+    alignItems: "center",
+    width: 90,
+  },
+  colHome: {
+    position: "absolute",
+    top: "8%",
+    left: "50%",
+    transform: [{ translateX: -45 }],
+    alignItems: "center",
+    width: 90,
+  },
+  colGrid: {
+    position: "absolute",
+    top: "10%",
+    right: "3%",
+    alignItems: "center",
+    width: 90,
+  },
+  powerRow: { flexDirection: "row", alignItems: "baseline", gap: 2, marginTop: 3 },
+  powerValue: { fontFamily: "Outfit", fontSize: 18, fontWeight: "800" },
+  powerUnit: { fontFamily: "Outfit", fontSize: 10, fontWeight: "600" },
+  // Black outline for watt values in daytime so they're readable over bright background
+  textOutlineDay: {
+    textShadowColor: "rgba(0,0,0,0.85)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 3,
+  },
+  // White outline for watt values at night so they're readable over dark background
+  textOutlineNight: {
+    textShadowColor: "rgba(255,255,255,0.5)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 2,
+  },
+  colLabel: { color: "#DCE6F0", fontFamily: "Outfit", fontSize: 9, fontWeight: "600", marginTop: 2 },
+  // ── V/A text (no container, just outlined) ──
+  vaText: { color: "#E8F0FA", fontFamily: "Outfit", fontSize: 9, fontWeight: "600", marginTop: 3 },
+  // ── Footer ──
   footer: {
     position: "absolute",
     left: "2.6%",
@@ -432,11 +764,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 9,
     paddingVertical: 5,
-  },
-  footerPillCenter: {
-    position: "absolute",
-    left: "50%",
-    transform: [{ translateX: -50 }],
   },
   footerDot: { width: 6, height: 6, borderRadius: 3 },
   footerText: { color: "#E4EDF6", fontFamily: "Outfit", fontSize: 9 },
