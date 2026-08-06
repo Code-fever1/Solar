@@ -120,10 +120,10 @@ function Particle({
 
   return (
     <>
-      {/* Glow halo */}
-      <AnimatedCircle animatedProps={animatedProps} r={size * 2.8} fill={color} filter="url(#particleGlow)" />
-      {/* Sharp core */}
-      <AnimatedCircle animatedProps={animatedProps} r={size * 0.7} fill={color} />
+      {/* Soft glow halo */}
+      <AnimatedCircle animatedProps={animatedProps} r={size * 1.8} fill={color} filter="url(#particleGlow)" />
+      {/* Water droplet core */}
+      <AnimatedCircle animatedProps={animatedProps} r={size * 0.55} fill={color} />
     </>
   );
 }
@@ -187,8 +187,7 @@ function StreamLayer({
   active,
   power,
   particleColor,
-  strokeWidth = 2.5,
-  bubble = false,
+  strokeWidth = 1.5,
 }: {
   ctrl: CtrlArray;
   pathD: string;
@@ -198,7 +197,6 @@ function StreamLayer({
   power: number;
   particleColor: string;
   strokeWidth?: number;
-  bubble?: boolean;
 }) {
   const activeOpacity = useSharedValue(active ? 1 : 0);
   const pulse = useSharedValue(0.85);
@@ -222,19 +220,19 @@ function StreamLayer({
   const particleCount = active ? Math.min(8, Math.max(1, Math.round(power / 1000))) : 0;
   // Duration: 6s at low power → 2s at high power
   const duration = Math.max(2000, 6000 - (power / 8000) * 4000);
-  // Particle size: 3px at low power → 5px at high power
-  const particleSize = 3 + Math.min(2, power / 4000);
+  // Particle size: 2px at low power → 3px at high power (slim water droplets)
+  const particleSize = 2 + Math.min(1, power / 4000);
 
-  const glowProps = useAnimatedProps(() => ({ opacity: activeOpacity.value * 0.2 }));
+  const glowProps = useAnimatedProps(() => ({ opacity: activeOpacity.value * 0.15 }));
   const streamProps = useAnimatedProps(() => ({ opacity: activeOpacity.value * pulse.value }));
 
   return (
     <>
-      {/* Layer 2 — Base Glow (ambient halo) */}
+      {/* Layer 2 — Base Glow (slim ambient halo) */}
       <AnimatedPath
         d={pathD}
         stroke={glowColor}
-        strokeWidth={strokeWidth + 3}
+        strokeWidth={strokeWidth + 2}
         fill="none"
         strokeLinecap="round"
         animatedProps={glowProps}
@@ -249,29 +247,17 @@ function StreamLayer({
         strokeLinecap="round"
         animatedProps={streamProps}
       />
-      {/* Layer 4 — Energy Particles (moving or bubble) */}
+      {/* Layer 4 — Water-flow particles travelling smoothly along the path */}
       {Array.from({ length: particleCount }).map((_, i) => (
-        bubble ? (
-          <BubbleParticle
-            key={`b-${particleCount}-${i}`}
-            ctrl={ctrl}
-            color={particleColor}
-            offset={i / particleCount}
-            duration={duration}
-            size={particleSize}
-            activeOpacity={activeOpacity}
-          />
-        ) : (
-          <Particle
-            key={`p-${particleCount}-${i}`}
-            ctrl={ctrl}
-            color={particleColor}
-            offset={i / particleCount}
-            duration={duration}
-            size={particleSize}
-            activeOpacity={activeOpacity}
-          />
-        )
+        <Particle
+          key={`p-${particleCount}-${i}`}
+          ctrl={ctrl}
+          color={particleColor}
+          offset={i / particleCount}
+          duration={duration}
+          size={particleSize}
+          activeOpacity={activeOpacity}
+        />
       ))}
     </>
   );
@@ -341,10 +327,10 @@ function SkiaParticle({ ctrl, color, offset, progress, size, activeOpacity }: { 
 
   return (
     <>
-      <SkiaCircle cx={cx} cy={cy} r={size * 2.8} color={color} opacity={opacity}>
+      <SkiaCircle cx={cx} cy={cy} r={size * 1.8} color={color} opacity={opacity}>
         <BlurMask blur={2} />
       </SkiaCircle>
-      <SkiaCircle cx={cx} cy={cy} r={size * 0.7} color={color} opacity={opacity} />
+      <SkiaCircle cx={cx} cy={cy} r={size * 0.55} color={color} opacity={opacity} />
     </>
   );
 }
@@ -377,14 +363,14 @@ function SkiaBubbleParticle({ ctrl, color, offset, progress, size, activeOpacity
   );
 }
 
-function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gradientColors, active, power, particleColor, strokeWidth = 2.5, isVisible, bubble = false }: { ctrl: CtrlArray; path: string; glowColor: string; gradientStart: CtrlPoint; gradientEnd: CtrlPoint; gradientColors: string[]; active: boolean; power: number; particleColor: string; strokeWidth?: number; isVisible: boolean; bubble?: boolean }) {
+function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gradientColors, active, power, particleColor, strokeWidth = 1.5, isVisible }: { ctrl: CtrlArray; path: string; glowColor: string; gradientStart: CtrlPoint; gradientEnd: CtrlPoint; gradientColors: string[]; active: boolean; power: number; particleColor: string; strokeWidth?: number; isVisible: boolean }) {
   const activeOpacity = useSharedValue(active ? 1 : 0);
   const pulse = useSharedValue(0.85);
   const progress = useSharedValue(0);
   const particleCount = active ? Math.min(8, Math.max(1, Math.round(power / 1000))) : 0;
   const duration = Math.max(2000, 6000 - power / 8000 * 4000);
-  const particleSize = 3 + Math.min(2, power / 4000);
-  const glowOpacity = useDerivedValue(() => activeOpacity.value * 0.2);
+  const particleSize = 2 + Math.min(1, power / 4000);
+  const glowOpacity = useDerivedValue(() => activeOpacity.value * 0.15);
   const streamOpacity = useDerivedValue(() => activeOpacity.value * pulse.value);
 
   useEffect(() => {
@@ -413,16 +399,14 @@ function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gr
 
   return (
     <>
-      <SkiaPath path={path} color={glowColor} style="stroke" strokeWidth={strokeWidth + 3} strokeCap="round" opacity={glowOpacity}>
+      <SkiaPath path={path} color={glowColor} style="stroke" strokeWidth={strokeWidth + 2} strokeCap="round" opacity={glowOpacity}>
         <BlurMask blur={4} />
       </SkiaPath>
       <SkiaPath path={path} style="stroke" strokeWidth={strokeWidth} strokeCap="round" opacity={streamOpacity}>
         <SkiaLinearGradient start={vec(gradientStart.x, gradientStart.y)} end={vec(gradientEnd.x, gradientEnd.y)} colors={gradientColors} />
       </SkiaPath>
       {Array.from({ length: particleCount }).map((_, index) => (
-        bubble
-          ? <SkiaBubbleParticle key={`skia-b-${particleCount}-${index}`} ctrl={ctrl} color={particleColor} offset={index / particleCount} progress={progress} size={particleSize} activeOpacity={activeOpacity} />
-          : <SkiaParticle key={`skia-p-${particleCount}-${index}`} ctrl={ctrl} color={particleColor} offset={index / particleCount} progress={progress} size={particleSize} activeOpacity={activeOpacity} />
+        <SkiaParticle key={`skia-p-${particleCount}-${index}`} ctrl={ctrl} color={particleColor} offset={index / particleCount} progress={progress} size={particleSize} activeOpacity={activeOpacity} />
       ))}
     </>
   );
@@ -465,9 +449,9 @@ function EnergyCanvas({ solarOnline, gridImporting, homeActive, solarPower, grid
   return (
     <Canvas style={styles.svg} pointerEvents="none">
       <Group transform={[{ scale }, { translateX: offsetX }, { translateY: offsetY }]}>
-        <SkiaStreamLayer ctrl={SOLAR_CTRL} path={SOLAR_PATH_D} glowColor="#FFD54F" gradientStart={SOLAR_CTRL[0]} gradientEnd={SOLAR_CTRL[3]} gradientColors={["#FFE066", "#FFB300"]} active={solarOnline} power={solarPower} particleColor="#FFE066" strokeWidth={3} isVisible={isVisible} />
-        <SkiaStreamLayer ctrl={GRID_CTRL} path={GRID_PATH_D} glowColor={gridArcColor} gradientStart={GRID_CTRL[0]} gradientEnd={GRID_CTRL[3]} gradientColors={[gridArcColor, gridArcColor]} active={gridImporting} power={gridPower} particleColor={gridArcColor} strokeWidth={3} isVisible={isVisible} />
-        <SkiaStreamLayer ctrl={HOME_CTRL} path={HOME_PATH_D} glowColor="#45E376" gradientStart={HOME_CTRL[0]} gradientEnd={HOME_CTRL[3]} gradientColors={["#45E376", "#2DD66B"]} active={homeActive} power={homePower} particleColor="#5EE87E" strokeWidth={3.5} isVisible={isVisible} bubble />
+        <SkiaStreamLayer ctrl={SOLAR_CTRL} path={SOLAR_PATH_D} glowColor="#FFD54F" gradientStart={SOLAR_CTRL[0]} gradientEnd={SOLAR_CTRL[3]} gradientColors={["#FFE066", "#FFB300"]} active={solarOnline} power={solarPower} particleColor="#FFE066" strokeWidth={1.5} isVisible={isVisible} />
+        <SkiaStreamLayer ctrl={GRID_CTRL} path={GRID_PATH_D} glowColor={gridArcColor} gradientStart={GRID_CTRL[0]} gradientEnd={GRID_CTRL[3]} gradientColors={[gridArcColor, gridArcColor]} active={gridImporting} power={gridPower} particleColor={gridArcColor} strokeWidth={1.5} isVisible={isVisible} />
+        <SkiaStreamLayer ctrl={HOME_CTRL} path={HOME_PATH_D} glowColor="#45E376" gradientStart={HOME_CTRL[0]} gradientEnd={HOME_CTRL[3]} gradientColors={["#45E376", "#2DD66B"]} active={homeActive} power={homePower} particleColor="#5EE87E" strokeWidth={1.5} isVisible={isVisible} />
         <SkiaInverterHub solarActive={solarOnline} gridActive={gridImporting} homeActive={homeActive} isVisible={isVisible} />
       </Group>
     </Canvas>
@@ -726,7 +710,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
               active={solarOnline}
               power={inverter.solarW}
               particleColor="#FFE066"
-              strokeWidth={3}
+              strokeWidth={1.5}
             />
             {/* Grid → Inverter (right to center, 90° conduit) */}
             <StreamLayer
@@ -737,7 +721,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
               active={gridImporting}
               power={gridPowerW}
               particleColor={gridArcColor}
-              strokeWidth={3}
+              strokeWidth={1.5}
             />
             {/* Inverter → Home (center, going up) — bubble particles */}
             <StreamLayer
@@ -748,8 +732,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
               active={homeActive}
               power={homeW}
               particleColor="#5EE87E"
-              strokeWidth={3.5}
-              bubble
+              strokeWidth={1.5}
             />
             {/* Inverter junction hub */}
             <InverterHub solarActive={solarOnline} gridActive={gridImporting} homeActive={homeActive} />
