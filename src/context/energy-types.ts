@@ -29,8 +29,10 @@ export type InverterTelemetry = {
   temperatureC: number;
   ratedOutputW: number;
   signal: number | null;
+  sourceTime: string | null;
   fetchedAt: string;
   isLive: boolean;
+  isOnline?: boolean;
 };
 
 export type WeatherState = {
@@ -39,6 +41,8 @@ export type WeatherState = {
   cloudCover: number;
   precipitation: number;
   temperatureC: number;
+  sunrise: string | null;
+  sunset: string | null;
   fetchedAt: string;
   isLive: boolean;
 };

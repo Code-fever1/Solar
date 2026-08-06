@@ -1,0 +1,226 @@
+{
+  "fetchedAt": "2026-08-06T08:18:36.768Z",
+  "tick": 623,
+  "homeKw": 2.387,
+  "solarKw": 3.694,
+  "gridKw": 0,
+  "gridDirection": "export",
+  "batteryKw": 0.4,
+  "batteryPercent": 72,
+  "selfPoweredPercent": 65,
+  "todaySolar": {
+    "label": "Today's Solar",
+    "kwh": 2.14,
+    "trendPercent": 16,
+    "trendDirection": "up",
+    "spark": [
+      0.2,
+      0.5,
+      0.9,
+      1,
+      0.85,
+      0.6,
+      0.3,
+      0.1
+    ],
+    "accent": "#F5B313"
+  },
+  "todayImport": {
+    "label": "Today's Import",
+    "kwh": 2.14,
+    "trendPercent": 12,
+    "trendDirection": "down",
+    "spark": [
+      1,
+      0.8,
+      0.5,
+      0.3,
+      0.2,
+      0.4,
+      0.7,
+      0.9
+    ],
+    "accent": "#3E7BFF"
+  },
+  "totalUsedToday": {
+    "label": "Total Used Today",
+    "value": 5.4,
+    "unit": "kWh",
+    "note": "On pace",
+    "noteTone": "good",
+    "bars": [
+      0.3,
+      0.5,
+      0.8,
+      0.6,
+      0.7,
+      1,
+      0.4
+    ]
+  },
+  "totalUsedMonth": {
+    "label": "Total Used This Month",
+    "value": 288,
+    "unit": "kWh",
+    "note": "112 kWh saved",
+    "noteTone": "good"
+  },
+  "projectedMonth": {
+    "label": "Projected This Month",
+    "value": 288,
+    "unit": "kWh",
+    "note": "",
+    "noteTone": "neutral",
+    "confidence": 90
+  },
+  "flowToday": [
+    {
+      "hour": 0,
+      "solarKw": 0,
+      "gridKw": 0.8,
+      "homeKw": 0.8
+    },
+    {
+      "hour": 1,
+      "solarKw": 0,
+      "gridKw": 0.6,
+      "homeKw": 0.6
+    },
+    {
+      "hour": 2,
+      "solarKw": 0,
+      "gridKw": 0.5,
+      "homeKw": 0.5
+    },
+    {
+      "hour": 3,
+      "solarKw": 0,
+      "gridKw": 0.5,
+      "homeKw": 0.5
+    },
+    {
+      "hour": 4,
+      "solarKw": 0,
+      "gridKw": 0.6,
+      "homeKw": 0.6
+    },
+    {
+      "hour": 5,
+      "solarKw": 0,
+      "gridKw": 0.7,
+      "homeKw": 0.7
+    },
+    {
+      "hour": 6,
+      "solarKw": 0.2,
+      "gridKw": 0.5,
+      "homeKw": 0.7
+    },
+    {
+      "hour": 7,
+      "solarKw": 0.8,
+      "gridKw": 0.3,
+      "homeKw": 1
+    },
+    {
+      "hour": 8,
+      "solarKw": 1.6,
+      "gridKw": 0.1,
+      "homeKw": 1.4
+    },
+    {
+      "hour": 9,
+      "solarKw": 2.4,
+      "gridKw": 0,
+      "homeKw": 1.8
+    },
+    {
+      "hour": 10,
+      "solarKw": 3.1,
+      "gridKw": 0,
+      "homeKw": 2.2
+    },
+    {
+      "hour": 11,
+      "solarKw": 3.6,
+      "gridKw": 0,
+      "homeKw": 2.4
+    },
+    {
+      "hour": 12,
+      "solarKw": 3.8,
+      "gridKw": 0,
+      "homeKw": 2.5
+    },
+    {
+      "hour": 13,
+      "solarKw": 3.7,
+      "gridKw": 0,
+      "homeKw": 2.4
+    },
+    {
+      "hour": 14,
+      "solarKw": 3.3,
+      "gridKw": 0,
+      "homeKw": 2.2
+    },
+    {
+      "hour": 15,
+      "solarKw": 2.8,
+      "gridKw": 0,
+      "homeKw": 2
+    },
+    {
+      "hour": 16,
+      "solarKw": 2,
+      "gridKw": 0.2,
+      "homeKw": 1.8
+    },
+    {
+      "hour": 17,
+      "solarKw": 1.1,
+      "gridKw": 0.5,
+      "homeKw": 1.4
+    },
+    {
+      "hour": 18,
+      "solarKw": 0.3,
+      "gridKw": 0.9,
+      "homeKw": 1.1
+    },
+    {
+      "hour": 19,
+      "solarKw": 0,
+      "gridKw": 1.2,
+      "homeKw": 1.2
+    },
+    {
+      "hour": 20,
+      "solarKw": 0,
+      "gridKw": 1.4,
+      "homeKw": 1.4
+    },
+    {
+      "hour": 21,
+      "solarKw": 0,
+      "gridKw": 1.3,
+      "homeKw": 1.3
+    },
+    {
+      "hour": 22,
+      "solarKw": 0,
+      "gridKw": 1,
+      "homeKw": 1
+    },
+    {
+      "hour": 23,
+      "solarKw": 0,
+      "gridKw": 0.9,
+      "homeKw": 0.9
+    }
+  ],
+  "weather": "clear-day",
+  "isDay": true,
+  "temperatureC": 24,
+  "cloudCover": 0.2
+}

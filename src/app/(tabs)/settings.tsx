@@ -1,5 +1,5 @@
-import { useTheme } from "@/hooks/use-theme";
 import { useEnergy } from "@/context/EnergyContext";
+import { useTheme } from "@/hooks/use-theme";
 import { Activity, ArrowLeft, BarChart2, CalendarDays, Edit3, History, RefreshCw, Save, Sparkles } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -99,21 +99,21 @@ export default function SettingsScreen() {
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <View style={s.backBtn}>
-              <ArrowLeft size={20} color="#F4F8FC" />
+            <View style={[s.backBtn, { backgroundColor: theme.overlayBg }]}>
+              <ArrowLeft size={20} color={isLight ? "#0F172A" : "#F4F8FC"} />
             </View>
             <View>
               <Text style={[s.title, { color: theme.text }]}>Settings</Text>
-              <Text style={s.subtitle}>Manage changeover & billing-cycle baselines</Text>
+              <Text style={[s.subtitle, { color: theme.textSecondary }]}>Manage changeover & billing-cycle baselines</Text>
             </View>
           </View>
           <View style={s.headerRight}>
-            <View style={s.updatePill}>
+            <View style={[s.updatePill, { backgroundColor: theme.overlayBg }]}>
               <View style={s.updateDot} />
-              <Text style={s.updateText}>Updated 10s ago</Text>
+              <Text style={[s.updateText, { color: theme.textMuted }]}>Updated 10s ago</Text>
             </View>
-            <View style={s.refreshBtn}>
-              <RefreshCw size={16} color="#F4F8FC" />
+            <View style={[s.refreshBtn, { backgroundColor: theme.overlayBg }]}>
+              <RefreshCw size={16} color={isLight ? "#0F172A" : "#F4F8FC"} />
             </View>
           </View>
         </View>
@@ -141,7 +141,7 @@ export default function SettingsScreen() {
                   </View>
                 </View>
               </View>
-              <View style={s.changeoverSep} />
+              <View style={[s.changeoverSep, { backgroundColor: theme.border }]} />
               <View style={s.changeoverRight}>
                 <Text style={[s.aboutTitle, { color: theme.text }]}>About Changeover</Text>
                 <Text style={[s.aboutDesc, { color: theme.textSecondary }]}>Switch between meters to control which meter records the consumption.</Text>
@@ -162,7 +162,7 @@ export default function SettingsScreen() {
           </View>
           
           <View style={s.baselineCardWrapper}>
-            <View style={s.cardHighlight} />
+            <View style={[s.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
             <View style={[s.card, s.blueCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
               <View style={s.baselineContentRow}>
                 
@@ -173,8 +173,8 @@ export default function SettingsScreen() {
                       <Text style={s.calendarIconNum}>28</Text>
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={s.whiteCardTitle}>Meter readings on the 28th</Text>
-                      <Text style={s.grayCardDesc}>Enter the physical readings from your bill. Both values anchor the current monthly cycle.</Text>
+                      <Text style={[s.whiteCardTitle, { color: theme.text }]}>Meter readings on the 28th</Text>
+                      <Text style={[s.grayCardDesc, { color: theme.textSecondary }]}>Enter the physical readings from your bill. Both values anchor the current monthly cycle.</Text>
                       <Text style={s.blueCycleText}>Billing cycle starts on the 28th of every month</Text>
                     </View>
                   </View>
@@ -182,14 +182,14 @@ export default function SettingsScreen() {
                   <View style={s.inputRow}>
                     <View style={s.inputWrapper}>
                       <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 1 (Analog)</Text>
-                      <View style={s.inputContainer}>
+                      <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
                         <TextInput value={meter1Baseline} onChangeText={setMeter1Baseline} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder="0.00" placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                         <Edit3 size={14} color="#4A85FF" />
                       </View>
                     </View>
                     <View style={s.inputWrapper}>
                       <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 2 (Digital)</Text>
-                      <View style={s.inputContainer}>
+                      <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
                         <TextInput value={meter2Baseline} onChangeText={setMeter2Baseline} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder="0.00" placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                         <Edit3 size={14} color="#4A85FF" />
                       </View>
@@ -240,8 +240,8 @@ export default function SettingsScreen() {
                   <Activity size={18} color="#B69AFF" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.whiteCardTitle}>Log current readings</Text>
-                  <Text style={s.grayCardDesc}>Enter the latest physical readings from both meters.</Text>
+                  <Text style={[s.whiteCardTitle, { color: theme.text }]}>Log current readings</Text>
+                  <Text style={[s.grayCardDesc, { color: theme.textSecondary }]}>Enter the latest physical readings from both meters.</Text>
                 </View>
                 <Pressable style={s.historyBtn}>
                   <History size={12} color="#B69AFF" />
@@ -252,14 +252,14 @@ export default function SettingsScreen() {
               <View style={s.inputRow}>
                 <View style={s.inputWrapper}>
                   <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 1 (Analog)</Text>
-                  <View style={s.inputContainer}>
+                  <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
                     <TextInput value={meter1Reading} onChangeText={setMeter1Reading} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder={meters.meter1.reading.toFixed(1)} placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                     <Edit3 size={14} color="#B69AFF" />
                   </View>
                 </View>
                 <View style={s.inputWrapper}>
                   <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 2 (Digital)</Text>
-                  <View style={s.inputContainer}>
+                  <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
                     <TextInput value={meter2Reading} onChangeText={setMeter2Reading} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder={meters.meter2.reading.toFixed(1)} placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                     <Edit3 size={14} color="#B69AFF" />
                   </View>
@@ -275,17 +275,17 @@ export default function SettingsScreen() {
             {/* Last Logged Card */}
             <View style={[s.card, { flex: 1, backgroundColor: theme.card, borderColor: theme.cardBorder, justifyContent: 'center' }]}>
               <View style={s.lastLoggedHeader}>
-                <History size={12} color="#7E91A6" />
-                <Text style={s.lastLoggedLabel}>Last Logged</Text>
+                <History size={12} color={isLight ? "#94A3B8" : "#7E91A6"} />
+                <Text style={[s.lastLoggedLabel, { color: theme.textMuted }]}>Last Logged</Text>
               </View>
-              <Text style={s.lastLoggedDate}>Jul 21, 2025</Text>
-              <Text style={s.lastLoggedTime}>3:02 PM</Text>
+              <Text style={[s.lastLoggedDate, { color: theme.text }]}>Jul 21, 2025</Text>
+              <Text style={[s.lastLoggedTime, { color: theme.textSecondary }]}>3:02 PM</Text>
 
-              <View style={s.lastLoggedDivider} />
+              <View style={[s.lastLoggedDivider, { backgroundColor: theme.border }]} />
 
-              <Text style={s.diffLabel}>Difference</Text>
+              <Text style={[s.diffLabel, { color: theme.textMuted }]}>Difference</Text>
               <Text style={s.diffValue}>44492.9</Text>
-              <Text style={s.diffUnit}>units</Text>
+              <Text style={[s.diffUnit, { color: theme.textMuted }]}>units</Text>
             </View>
           </View>
         </View>
@@ -306,14 +306,14 @@ export default function SettingsScreen() {
                     <BarChart2 size={18} color="#32E56B" />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.whiteCardTitle}>Units used last billing cycle</Text>
-                    <Text style={s.grayCardDesc}>Manually set the total units used last month for trend comparison. Overrides auto-calculated value.</Text>
+                    <Text style={[s.whiteCardTitle, { color: theme.text }]}>Units used last billing cycle</Text>
+                    <Text style={[s.grayCardDesc, { color: theme.textSecondary }]}>Manually set the total units used last month for trend comparison. Overrides auto-calculated value.</Text>
                   </View>
                 </View>
 
                 <View style={s.inputWrapper}>
                   <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Total units</Text>
-                  <View style={s.inputContainer}>
+                  <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
                     <TextInput value={lastMonthInput} onChangeText={setLastMonthInput} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder={home?.lastMonthTotal != null ? String(Math.round(home.lastMonthTotal)) : "0"} placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
                   </View>
                 </View>
@@ -324,29 +324,29 @@ export default function SettingsScreen() {
                 </Pressable>
               </View>
 
-              <View style={s.lastMonthSep} />
+              <View style={[s.lastMonthSep, { backgroundColor: theme.border }]} />
 
               <View style={s.lastMonthRight}>
                 <View style={s.aiTrendHeader}>
                   <Sparkles size={12} color="#32E56B" />
                   <Text style={s.aiTrendTitle}>AI Trend Impact</Text>
                 </View>
-                
+
                 <View style={s.aiTrendContent}>
                   <View>
-                    <Text style={s.aiImpactValue}>0.0</Text>
-                    <Text style={s.aiImpactUnit}>units</Text>
-                    <Text style={s.aiImpactDesc}>Impact on forecast</Text>
+                    <Text style={[s.aiImpactValue, { color: theme.text }]}>0.0</Text>
+                    <Text style={[s.aiImpactUnit, { color: theme.textMuted }]}>units</Text>
+                    <Text style={[s.aiImpactDesc, { color: theme.textSecondary }]}>Impact on forecast</Text>
                   </View>
                   <View style={s.trendGauge}>
                     <Svg width={56} height={32} viewBox="0 0 100 50">
-                      <Path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="8" strokeLinecap="round" />
+                      <Path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke={isLight ? "rgba(15,23,42,0.06)" : "rgba(255,255,255,0.05)"} strokeWidth="8" strokeLinecap="round" />
                       <Path d="M 10 50 A 40 40 0 0 1 50 10" fill="none" stroke="#4A85FF" strokeWidth="8" strokeLinecap="round" />
                       <Path d="M 50 10 A 40 40 0 0 1 90 50" fill="none" stroke="#B69AFF" strokeWidth="8" strokeLinecap="round" />
                       <Circle cx="50" cy="50" r="4" fill="#32E56B" />
                     </Svg>
                     <Text style={s.gaugeLabel}>Neutral</Text>
-                    <Text style={s.gaugeSub}>No impact yet</Text>
+                    <Text style={[s.gaugeSub, { color: theme.textMuted }]}>No impact yet</Text>
                   </View>
                 </View>
               </View>

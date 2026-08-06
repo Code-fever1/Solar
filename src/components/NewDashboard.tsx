@@ -165,18 +165,22 @@ export const NewDashboard = memo(function NewDashboard() {
     liveSceneVisible.current = visible;
     setIsLiveSceneVisible(visible);
   };
-  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive } = useEnergy();
+  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive, meta } = useEnergy();
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : hour < 21 ? "Good Evening" : "Good Night";
   const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const meterOne = meters.meter1;
   const meterTwo = meters.meter2;
   const chartWidth = Math.min(width - 32, 520);
-  const startOfToday = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }, []);
+  // Use Pakistan midnight from backend (meta.todayStart) for consistency with
+  // the server's flow history query. Falls back to device local midnight.
+  const startOfToday = useMemo(() => {
+    if (meta?.todayStart && typeof meta.todayStart === "number") return meta.todayStart;
+    const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime();
+  }, [meta?.todayStart]);
   const budgetMeter = activeMeter === "meter1" ? meterOne : meterTwo;
   const peakLoadW = useMemo(() => Math.max(...flowHistory.slice(-288).map(p => p.loadKw * 1000), inverter.loadW), [flowHistory, inverter.loadW]);
-  // Show last 24 hours of flow data (not just today).
-  // Show only today's flow data (from start of today), downsampled to max 1 point per 5 min.
+  // Show only today's flow data (from Pakistan midnight), downsampled to max 1 point per 5 min.
   const todayFlow = useMemo(() => {
     const filtered = flowHistory.filter((p) => p.timestamp >= startOfToday);
     if (filtered.length <= 288) return filtered;
@@ -190,12 +194,20 @@ export const NewDashboard = memo(function NewDashboard() {
     }
     return Array.from(buckets.values()).sort((a, b) => a.timestamp - b.timestamp);
   }, [flowHistory, startOfToday]);
-  const solarLive = inverter.isLive && inverter.solarW > 25;
+  const solarLive = inverter.isLive && inverter.isOnline !== false && inverter.solarW > 25;
   // Inverter is considered OFF when:
+  //  - it's explicitly offline (isOnline = false), OR
   //  - it's not responding at all (isLive = false), OR
   //  - it reports standby mode ("S"), OR
   //  - all its readings are zero (gridV 0, solar 0, grid 0, load 0)
-  const inverterOff = !inverter.isLive ||
+  // Note: sourceTime staleness is NOT checked client-side. The server already
+  // checks staleness at poll time (3-minute threshold) and sets isOnline=false
+  // when the inverter is genuinely unresponsive. A client-side check compared
+  // the inverter's hardware clock against the phone's clock, which caused false
+  // "offline" flickering due to the inverter's 1-2 min update interval and
+  // clock skew between the phone and the inverter.
+  const inverterOff = inverter.isOnline === false ||
+    !inverter.isLive ||
     inverter.inverterMode === "S" ||
     (inverter.gridV === 0 && inverter.solarW === 0 && inverter.gridW === 0 && inverter.loadW === 0);
   // TOMZN fault codes:

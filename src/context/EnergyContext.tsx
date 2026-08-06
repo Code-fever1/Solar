@@ -88,6 +88,7 @@ type EnergyContextValue = {
   learningProfiles: Record<string, never>;
   manualBaselines: Record<MeterId, ManualBaseline | null>;
   tomznHistory: any[];
+  meta?: { billingEnd?: number; todayStart?: number; [key: string]: unknown };
   summary: ReturnType<typeof summarizeHistory>;
   period: "day" | "week" | "month" | "year";
   loading: boolean;
@@ -144,8 +145,8 @@ function emptyMeter(id: MeterId): MeterState {
 
 const EMPTY_METERS: Record<MeterId, MeterState> = { meter1: emptyMeter("meter1"), meter2: emptyMeter("meter2") };
 const EMPTY_LIVE: LiveTelemetry = { gridKw: 0, solarKw: 0, homeKw: 0, currentAmp: 0, voltage: 0, frequency: 50, powerFactor: 0 };
-const EMPTY_INVERTER: InverterTelemetry = { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, fetchedAt: "", isLive: false };
-const EMPTY_WEATHER: WeatherState = { code: 0, isDay: true, cloudCover: 0, precipitation: 0, temperatureC: 0, fetchedAt: "", isLive: false };
+const EMPTY_INVERTER: InverterTelemetry = { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, sourceTime: null, fetchedAt: "", isLive: false };
+const EMPTY_WEATHER: WeatherState = { code: 0, isDay: true, cloudCover: 0, precipitation: 0, temperatureC: 0, sunrise: null, sunset: null, fetchedAt: "", isLive: false };
 const EMPTY_ENERGY_TODAY: EnergyToday = { solarKwh: 0, homeKwh: 0, gridKwh: 0 };
 
 const EnergyContext = createContext<EnergyContextValue | null>(null);
@@ -536,7 +537,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
   const value: EnergyContextValue = {
     live, tomznLive, inverter, weather, energyToday, flowHistory, home, meters, activeMeter, changeover, recommendations, alerts,
-    history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, summary,
+    history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     calibrateMeter: (meterId, reading) => { void addManualLog(meterId, reading, Date.now(), "Manual calibration"); },
     setManualBaseline, setLastMonthTotal, addManualLog, editManualLog, deleteManualLog,

@@ -8,7 +8,7 @@ import {
   vec,
 } from "@shopify/react-native-skia";
 import { RefreshCw, SunMedium, TowerControl } from "lucide-react-native";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { AppState, Image, Platform, StyleSheet, Text, View } from "react-native";
 import Animated, {
   cancelAnimation,
@@ -475,8 +475,6 @@ function EnergyCanvas({ solarOnline, gridImporting, homeActive, solarPower, grid
 }
 
 export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather, offline, tomznLive, inverterOff, loadStatus, normalDrawKw, isVisible = true }: SceneProps) {
-  const [sunrise, setSunrise] = useState<Date | null>(null);
-  const [sunset, setSunset] = useState<Date | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
@@ -486,29 +484,57 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
     return () => subscription.remove();
   }, []);
 
-  useEffect(() => {
-    fetch("https://api.sunrise-sunset.org/json?lat=31.6265&lng=71.0664&formatted=0")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.status === "OK") {
-          setSunrise(new Date(data.results.sunrise));
-          setSunset(new Date(data.results.sunset));
-        }
-      })
-      .catch(() => {});
-  }, []);
-
   // Tick every 10 seconds for the time display — no need for 1s precision.
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(interval);
   }, []);
 
-  // Evaluate day/night every tick — uses sunrise/sunset if available,
-  // otherwise falls back to the weather.isDay prop from the backend.
-  const isDayTime = sunrise && sunset
-    ? (now >= sunrise.getTime() && now < sunset.getTime())
+  // Sunrise/sunset come from the backend weather API (Open-Meteo) which fetches
+  // them daily. Falls back to weather.isDay if sunrise/sunset aren't available.
+  const sunriseMs = weather.sunrise ? new Date(weather.sunrise).getTime() : null;
+  const sunsetMs = weather.sunset ? new Date(weather.sunset).getTime() : null;
+  const TRANSITION_MS = 30 * 60_000; // 30 minutes
+  const isDayTime = sunriseMs && sunsetMs
+    ? (now >= sunriseMs && now < sunsetMs)
     : weather.isDay;
+
+  // ── Weather-based background selection ──
+  // Open-Meteo WMO weather codes:
+  //   0 = clear, 1-3 = partly/minor clouds, 45/48 = fog,
+  //   51-67 = drizzle/rain, 71-77 = snow, 80-86 = showers,
+  //   95-99 = thunderstorm
+  // Background priority: night > fog > heavy clouds > light clouds > clear
+  // At night, always use night.png regardless of weather (except thunderstorm).
+  const bgImage = useMemo(() => {
+    const code = weather.code || 0;
+    const isNight = !isDayTime;
+    const isFog = code === 45 || code === 48;
+    const isHeavyClouds = code >= 51 || code >= 95;
+    const isLightClouds = code >= 1 && code <= 3;
+
+    // Night: always night.png (no matter fog), unless thunderstorm shows cloudy.png
+    if (isNight) {
+      if (code >= 95) return require("../../assets/images/cloudy.png");
+      return require("../../assets/images/night.png");
+    }
+
+    // Transition periods around sunrise/sunset
+    if (sunriseMs && sunsetMs) {
+      const beforeSunrise = now >= sunriseMs - TRANSITION_MS && now < sunriseMs;
+      const afterSunset = now >= sunsetMs && now < sunsetMs + TRANSITION_MS;
+      const afterSunrise = now >= sunriseMs && now < sunriseMs + TRANSITION_MS;
+      const beforeSunset = now >= sunsetMs - TRANSITION_MS && now < sunsetMs;
+      if (beforeSunrise || afterSunset) return require("../../assets/images/transitiondark.jpeg");
+      if (afterSunrise || beforeSunset) return require("../../assets/images/transitionlight.png");
+    }
+
+    // Daytime — weather condition overrides
+    if (isFog) return require("../../assets/images/fog.png");
+    if (isHeavyClouds) return require("../../assets/images/cloudy.png");
+    if (isLightClouds) return require("../../assets/images/clouds.jpeg");
+    return require("../../assets/images/day.png");
+  }, [weather.code, isDayTime, now, sunriseMs, sunsetMs]);
 
   const solarOnline = !inverterOff && inverter.isLive && !offline && inverter.solarW > 25;
   // Inverter is considered unavailable when it's off (standby) OR not responding at all.
@@ -634,10 +660,6 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
           ? `${Math.floor(elapsedSec / 60)}m`
           : `${Math.floor(elapsedSec / 3600)}h`;
 
-  const bgImage = isDayTime
-    ? require("../../assets/images/dayback.jpeg")
-    : require("../../assets/images/nightback.jpeg");
-
   // Home power = whichever source is supplying (inverter load or grid)
   const homeW = offline ? 0 : Math.max(invW, gridPowerW);
   const homeV = offline ? 0 : usingTomznW ? (wapdaCutOff || wapdaStandby ? 0 : tomznLive.voltageV) : invV;
@@ -756,16 +778,16 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
         </View>
 
         {/* ── 3-column labels: Solar | Home | Grid ── */}
-        {/* Solar column (left) — hidden when inverter is unavailable */}
+        {/* Solar column (left) — W/V/A hidden when inverter is unavailable OR solar is idle (0W/0V/0A) */}
         <View style={styles.colSolar}>
           <SunMedium size={18} color={solarOnline ? "#F9C641" : "#8A8A8A"} />
-          {!inverterUnavailable && (
+          {!inverterUnavailable && solarOnline && (
             <>
               <View style={styles.powerRow}>
-                <Text style={[styles.powerValue, { color: solarOnline ? "#FFD54F" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.value}</Text>
-                <Text style={[styles.powerUnit, { color: solarOnline ? "#FFD54F" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.unit}</Text>
+                <Text style={[styles.powerValue, { color: "#FFD54F" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.value}</Text>
+                <Text style={[styles.powerUnit, { color: "#FFD54F" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.unit}</Text>
               </View>
-              <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarV.toFixed(0)}V · {solarA.toFixed(1)}A</Text>
+              <Text style={[styles.vaText, styles.vaOutline]}>{solarV.toFixed(0)}V · {solarA.toFixed(1)}A</Text>
             </>
           )}
         </View>
@@ -778,19 +800,19 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({ inverter, weather
                 <Text style={[styles.powerValue, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.value}</Text>
                 <Text style={[styles.powerUnit, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.unit}</Text>
               </View>
-              <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeV.toFixed(0)}V · {homeA.toFixed(1)}A</Text>
+              <Text style={[styles.vaText, styles.vaOutline]}>{homeV.toFixed(0)}V · {homeA.toFixed(1)}A</Text>
             </>
           )}
         </View>
 
-        {/* Grid column (right) */}
+        {/* Grid column (right) — always visible, color reflects grid status */}
         <View style={styles.colGrid}>
-          <TowerControl size={18} color={gridImporting ? gridArcColor : wapdaStandby ? "#F8C653" : "#8A8A8A"} />
+          <TowerControl size={18} color={gridImporting ? gridArcColor : gridColor} />
           <View style={styles.powerRow}>
-            <Text style={[styles.powerValue, { color: gridImporting ? gridArcColor : wapdaStandby ? "#F8C653" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.value}</Text>
-            <Text style={[styles.powerUnit, { color: gridImporting ? gridArcColor : wapdaStandby ? "#F8C653" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.unit}</Text>
+            <Text style={[styles.powerValue, { color: gridImporting ? gridArcColor : gridColor }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.value}</Text>
+            <Text style={[styles.powerUnit, { color: gridImporting ? gridArcColor : gridColor }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.unit}</Text>
           </View>
-          <Text style={[styles.vaText, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{tomznV.toFixed(0)}V · {tomznA.toFixed(1)}A</Text>
+          <Text style={[styles.vaText, styles.vaOutline]}>{tomznV.toFixed(0)}V · {tomznA.toFixed(1)}A</Text>
         </View>
 
         {/* ── Footer: time | mode ── */}
@@ -870,8 +892,13 @@ const styles = StyleSheet.create({
     textShadowRadius: 2,
   },
   colLabel: { color: "#DCE6F0", fontFamily: "Outfit", fontSize: 9, fontWeight: "600", marginTop: 2 },
-  // ── V/A text (no container, just outlined) ──
-  vaText: { color: "#E8F0FA", fontFamily: "Outfit", fontSize: 9, fontWeight: "600", marginTop: 3 },
+  // ── V/A text — white with black outline for visibility on any background ──
+  vaText: { color: "#FFFFFF", fontFamily: "Outfit", fontSize: 9, fontWeight: "600", marginTop: 3 },
+  vaOutline: {
+    textShadowColor: "rgba(0,0,0,0.9)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 3,
+  },
   // ── Footer ──
   footer: {
     position: "absolute",

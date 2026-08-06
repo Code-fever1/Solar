@@ -1,5 +1,5 @@
-import { useTheme } from "@/hooks/use-theme";
 import { useEnergy } from "@/context/EnergyContext";
+import { useTheme } from "@/hooks/use-theme";
 import { Activity, ArrowUpRight, Clock, Trash2 } from "lucide-react-native";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -65,22 +65,22 @@ export default function LogsScreen() {
 
         {/* Summary stats */}
         <View style={styles.statsRow}>
-          <View style={styles.statCard}>
-            <View style={styles.statHighlight} />
-            <Text style={styles.statLabel}>Total Logs</Text>
-            <Text style={styles.statValue}>{manualLogs.length}</Text>
+          <View style={[styles.statCard, { borderColor: theme.cardBorder }]}>
+            <View style={[styles.statHighlight, { backgroundColor: theme.cardHighlight }]} />
+            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Total Logs</Text>
+            <Text style={[styles.statValue, { color: theme.text }]}>{manualLogs.length}</Text>
           </View>
-          <View style={styles.statCard}>
-            <View style={styles.statHighlight} />
-            <Text style={styles.statLabel}>Meter 1 Reading</Text>
-            <Text style={styles.statValue}>{formatReading(meters.meter1.reading)}</Text>
-            <Text style={styles.statUnit}>units</Text>
+          <View style={[styles.statCard, { borderColor: theme.cardBorder }]}>
+            <View style={[styles.statHighlight, { backgroundColor: theme.cardHighlight }]} />
+            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Meter 1 Reading</Text>
+            <Text style={[styles.statValue, { color: theme.text }]}>{formatReading(meters.meter1.reading)}</Text>
+            <Text style={[styles.statUnit, { color: theme.textMuted }]}>units</Text>
           </View>
-          <View style={styles.statCard}>
-            <View style={styles.statHighlight} />
-            <Text style={styles.statLabel}>Meter 2 Reading</Text>
-            <Text style={styles.statValue}>{formatReading(meters.meter2.reading)}</Text>
-            <Text style={styles.statUnit}>units</Text>
+          <View style={[styles.statCard, { borderColor: theme.cardBorder }]}>
+            <View style={[styles.statHighlight, { backgroundColor: theme.cardHighlight }]} />
+            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Meter 2 Reading</Text>
+            <Text style={[styles.statValue, { color: theme.text }]}>{formatReading(meters.meter2.reading)}</Text>
+            <Text style={[styles.statUnit, { color: theme.textMuted }]}>units</Text>
           </View>
         </View>
 
@@ -88,14 +88,14 @@ export default function LogsScreen() {
         <View style={styles.sectionHeader}>
           <View style={styles.sectionTitleRow}>
             <Activity size={14} color="#8862ED" />
-            <Text style={styles.sectionTitle}>Recent Readings</Text>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>Recent Readings</Text>
           </View>
-          <Text style={styles.sectionCount}>{recentLogs.length} of {manualLogs.length}</Text>
+          <Text style={[styles.sectionCount, { color: theme.textMuted }]}>{recentLogs.length} of {manualLogs.length}</Text>
         </View>
 
         {recentLogs.length > 0 ? (
           <View style={[styles.logCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-            <View style={styles.cardHighlight} />
+            <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
             {recentLogs.map((log, idx) => {
               const prevLog = recentLogs[idx + 1];
               const delta = prevLog ? log.reading - prevLog.reading : 0;
@@ -103,7 +103,7 @@ export default function LogsScreen() {
               const meterColor = isMeter1 ? '#32E56B' : '#548EFF';
               const meterLabel = isMeter1 ? 'Meter 1' : 'Meter 2';
               return (
-                <View key={log.id} style={[styles.logRow, idx === recentLogs.length - 1 && { borderBottomWidth: 0 }]}>
+                <View key={log.id} style={[styles.logRow, { borderBottomColor: theme.border }, idx === recentLogs.length - 1 && { borderBottomWidth: 0 }]}>
                   {/* Left: timestamp + meter badge */}
                   <View style={styles.logLeft}>
                     <View style={[styles.meterBadge, { backgroundColor: isMeter1 ? 'rgba(50,229,107,0.12)' : 'rgba(84,142,255,0.12)', borderColor: `${meterColor}40` }]}>
@@ -129,7 +129,7 @@ export default function LogsScreen() {
 
                   {/* Right: notes + delete */}
                   <View style={styles.logRight}>
-                    {log.notes ? <Text style={styles.logNote} numberOfLines={1}>{log.notes}</Text> : null}
+                    {log.notes ? <Text style={[styles.logNote, { color: theme.textMuted }]} numberOfLines={1}>{log.notes}</Text> : null}
                     <Pressable
                       style={styles.deleteBtn}
                       hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -143,12 +143,12 @@ export default function LogsScreen() {
             })}
           </View>
         ) : (
-          <View style={styles.emptyCard}>
-            <View style={styles.cardHighlight} />
+          <View style={[styles.emptyCard, { borderColor: theme.cardBorder }]}>
+            <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
             <View style={styles.emptyState}>
-              <Clock size={28} color="#3A4658" />
+              <Clock size={28} color={isLight ? "#94A3B8" : "#3A4658"} />
               <Text style={[styles.emptyTitle, { color: theme.text }]}>No readings yet</Text>
-              <Text style={styles.emptySub}>Manual readings logged from Settings will appear here.</Text>
+              <Text style={[styles.emptySub, { color: theme.textSecondary }]}>Manual readings logged from Settings will appear here.</Text>
             </View>
           </View>
         )}

@@ -108,11 +108,11 @@ export default function HistoryScreen() {
         {/* Header */}
         <View style={styles.header}>
           <Text style={[styles.title, { color: theme.text }]}>Summary</Text>
-          <Text style={styles.subtitle}>Complete device telemetry & usage analytics</Text>
+          <Text style={[styles.subtitle, { color: theme.textSecondary }]}>Complete device telemetry & usage analytics</Text>
         </View>
 
         {/* Tab Selector */}
-        <View style={styles.tabBar}>
+        <View style={[styles.tabBar, { borderColor: theme.cardBorder }]}>
           {tabs.map((t) => {
             const Icon = t.icon;
             const isActive = tab === t.key;
@@ -160,10 +160,11 @@ function UsageTab() {
 /* ─────────────────── Fronus (Inverter) Tab ─────────────────── */
 
 function FronusTab({ inverter }: { inverter: any }) {
-  const { ...theme } = useTheme();
+  const { isLight, ...theme } = useTheme();
   const isLive = inverter?.isLive;
-  const statusColor = isLive ? "#32E56B" : "#EF4C4C";
-  const statusText = isLive ? "LIVE" : "OFFLINE";
+  const isOnline = inverter?.isOnline !== false;
+  const statusColor = isLive && isOnline ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
+  const statusText = isLive && isOnline ? "LIVE" : isOnline ? "STALE" : "OFFLINE";
   const fetchedAt = inverter?.fetchedAt
     ? new Date(inverter.fetchedAt).toLocaleString()
     : "Never";
@@ -172,11 +173,11 @@ function FronusTab({ inverter }: { inverter: any }) {
     <View style={styles.tabContent}>
       {/* Fronus Header Card */}
       <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-        <View style={styles.cardHighlight} />
+        <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
         <View style={styles.deviceHeader}>
           <View style={styles.deviceHeaderLeft}>
             {/* Placeholder for Fronus image — replace with actual image when available */}
-            <View style={styles.deviceLogoPlaceholder}>
+            <View style={[styles.deviceLogoPlaceholder, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
               <Sun size={24} color="#F8C653" />
             </View>
             <View>
@@ -192,8 +193,8 @@ function FronusTab({ inverter }: { inverter: any }) {
 
         {/* Last fetched */}
         <View style={styles.fetchedRow}>
-          <Clock size={10} color="#5C6C7E" />
-          <Text style={styles.fetchedText}>Last fetched: {fetchedAt}</Text>
+          <Clock size={10} color={isLight ? "#94A3B8" : "#5C6C7E"} />
+          <Text style={[styles.fetchedText, { color: theme.textMuted }]}>Last fetched: {fetchedAt}</Text>
         </View>
 
         {/* Solar Section */}
@@ -246,7 +247,7 @@ function FronusTab({ inverter }: { inverter: any }) {
         <View style={styles.dataGrid}>
           <DataTile label="Rated Output" value={inverter?.ratedOutputW ? `${inverter.ratedOutputW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#8862ED" />} />
           <DataTile label="Signal" value={inverter?.signal != null ? `${inverter.signal}%` : "-- %"} icon={<Radio size={10} color="#8862ED" />} />
-          <DataTile label="Data Status" value={isLive ? "Live" : "Stale"} icon={<Activity size={10} color={isLive ? "#32E56B" : "#EF4C4C"} />} />
+          <DataTile label="Data Status" value={isLive && isOnline ? "Live" : isOnline ? "Stale" : "Offline"} icon={<Activity size={10} color={isLive && isOnline ? "#32E56B" : "#EF4C4C"} />} />
         </View>
       </View>
     </View>
@@ -270,7 +271,7 @@ function TomznTab({
   refreshing: boolean;
   spinStyle: any;
 }) {
-  const { ...theme } = useTheme();
+  const { isLight, ...theme } = useTheme();
   const isLive = tomznLive?.isLive;
   const isOnline = tomznLive?.isOnline;
   const statusColor = isLive ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
@@ -286,11 +287,11 @@ function TomznTab({
     <View style={styles.tabContent}>
       {/* Tomzn Header Card */}
       <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-        <View style={styles.cardHighlight} />
+        <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
         <View style={styles.deviceHeader}>
           <View style={styles.deviceHeaderLeft}>
             {/* Placeholder for Tomzn image — replace with actual image when available */}
-            <View style={styles.deviceLogoPlaceholder}>
+            <View style={[styles.deviceLogoPlaceholder, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
               <Cpu size={24} color="#548EFF" />
             </View>
             <View>
@@ -306,8 +307,8 @@ function TomznTab({
 
         {/* Refresh button + last fetched */}
         <View style={styles.fetchedRow}>
-          <Clock size={10} color="#5C6C7E" />
-          <Text style={styles.fetchedText}>Last fetched: {fetchedAt}</Text>
+          <Clock size={10} color={isLight ? "#94A3B8" : "#5C6C7E"} />
+          <Text style={[styles.fetchedText, { color: theme.textMuted }]}>Last fetched: {fetchedAt}</Text>
           <Pressable onPress={onRefresh} style={styles.refreshBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Animated.View style={spinStyle}>
               <RefreshCw size={13} color="#548EFF" />
@@ -351,7 +352,7 @@ function TomznTab({
                   <AlertCircle size={11} color="#32E56B" />
                   <Text style={[styles.faultTitle, { color: "#32E56B" }]}>No Faults</Text>
                 </View>
-                <Text style={styles.faultReason}>System is operating normally. No fault flags are active.</Text>
+                <Text style={[styles.faultReason, { color: theme.textSecondary }]}>System is operating normally. No fault flags are active.</Text>
               </View>
             );
           }
@@ -364,7 +365,7 @@ function TomznTab({
                   <Text style={[styles.faultBadgeText, { color: SEVERITY_COLOR[f.severity] }]}>Code {f.bit}</Text>
                 </View>
               </View>
-              <Text style={styles.faultReason}>{f.reason}</Text>
+              <Text style={[styles.faultReason, { color: theme.textSecondary }]}>{f.reason}</Text>
             </View>
           ));
         })()}
@@ -380,13 +381,13 @@ function TomznTab({
 
       {/* 24-Hour Usage Chart */}
       <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-        <View style={styles.cardHighlight} />
+        <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
         <View style={styles.cardHeader}>
           <View style={styles.headerLeft}>
             <TrendingUp size={12} color="#548EFF" />
             <Text style={[styles.cardTitle, { color: theme.text }]}>24-Hour Usage</Text>
           </View>
-          <Text style={styles.cardSubtitle}>Hourly consumption</Text>
+          <Text style={[styles.cardSubtitle, { color: theme.textMuted }]}>Hourly consumption</Text>
         </View>
         {hourlyUsage.length > 0 ? (
           <View style={styles.hourlyChart}>
@@ -410,26 +411,26 @@ function TomznTab({
 
       {/* Tomzn History (recent 10) */}
       <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-        <View style={styles.cardHighlight} />
+        <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
         <View style={styles.cardHeader}>
           <View style={styles.headerLeft}>
             <Clock size={12} color="#548EFF" />
             <Text style={[styles.cardTitle, { color: theme.text }]}>History (Recent 10)</Text>
           </View>
-          <Text style={styles.cardSubtitle}>{tomznHistory.length} total records</Text>
+          <Text style={[styles.cardSubtitle, { color: theme.textMuted }]}>{tomznHistory.length} total records</Text>
         </View>
         {tomznHistory.length > 0 ? (
           tomznHistory.slice(-10).reverse().map((row: any, idx: number) => (
-            <View key={idx} style={styles.historyRow}>
+            <View key={idx} style={[styles.historyRow, { borderBottomColor: theme.border }]}>
               <View style={styles.historyLeft}>
-                <Clock size={10} color="#5C6C7E" />
-                <Text style={styles.historyTime}>
+                <Clock size={10} color={isLight ? "#94A3B8" : "#5C6C7E"} />
+                <Text style={[styles.historyTime, { color: theme.textMuted }]}>
                   {row.timestamp ? new Date(row.timestamp).toLocaleString() : "--"}
                 </Text>
               </View>
               <View style={styles.historyRight}>
-                <Text style={styles.historyPower}>{row.powerW || 0} W</Text>
-                <Text style={styles.historyEnergy}>{(row.energyKwh || 0).toFixed(2)} kWh</Text>
+                <Text style={[styles.historyPower, { color: theme.text }]}>{row.powerW || 0} W</Text>
+                <Text style={[styles.historyEnergy, { color: theme.textSecondary }]}>{(row.energyKwh || 0).toFixed(2)} kWh</Text>
               </View>
             </View>
           ))
@@ -454,13 +455,14 @@ function SectionHeader({ icon, title, color }: { icon: React.ReactNode; title: s
 }
 
 function DataTile({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  const { ...theme } = useTheme();
   return (
-    <View style={styles.dataTile}>
+    <View style={[styles.dataTile, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
       <View style={styles.dataTileHeader}>
         {icon}
-        <Text style={styles.dataTileLabel}>{label}</Text>
+        <Text style={[styles.dataTileLabel, { color: theme.textSecondary }]}>{label}</Text>
       </View>
-      <Text style={styles.dataTileValue}>{value}</Text>
+      <Text style={[styles.dataTileValue, { color: theme.text }]}>{value}</Text>
     </View>
   );
 }

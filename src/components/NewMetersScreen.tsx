@@ -2,19 +2,19 @@ import { useEnergy } from '@/context/EnergyContext';
 import type { MeterId, MeterState } from '@/context/energy-types';
 import { useTheme } from "@/hooks/use-theme";
 import {
-    ArrowDown,
-    ArrowLeft,
-    ArrowUp,
-    CheckCircle2,
-    ChevronDown,
-    Clock,
-    Gauge,
-    LineChart,
-    RefreshCw, Repeat,
-    Sparkles,
-    TrendingUp,
-    Trophy,
-    Zap
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
+  CheckCircle2,
+  ChevronDown,
+  Clock,
+  Gauge,
+  LineChart,
+  RefreshCw, Repeat,
+  Sparkles,
+  TrendingUp,
+  Trophy,
+  Zap
 } from 'lucide-react-native';
 import React, { useMemo, useState } from 'react';
 import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -207,7 +207,7 @@ export function NewMetersScreen() {
           </View>
           <Pressable style={[s.changeoverBtn, { backgroundColor: theme.overlayBg }]} onPress={() => setShowChangeoverModal(true)}>
             <Repeat size={14} color="#84A2F0" />
-            <Text style={s.changeoverText}>Changeover</Text>
+            <Text style={[s.changeoverText, { color: isLight ? '#4A85FF' : '#84A2F0' }]}>Changeover</Text>
           </Pressable>
         </View>
 
@@ -236,7 +236,7 @@ export function NewMetersScreen() {
         </View>
 
         {/* ── Usage Comparison ── */}
-        <View style={[s.wideCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+        <View style={[s.wideCard, { backgroundColor: theme.card, borderColor: theme.cardBorder, shadowOpacity: isLight ? 0.12 : 0.35, shadowRadius: isLight ? 6 : 10 }]}>
           <View style={s.wideCardHeader}>
             <View style={s.wideCardTitleRow}>
               <TrendingUp size={16} color="#548EFF" />
@@ -333,7 +333,7 @@ export function NewMetersScreen() {
         {/* ── Bottom Section: Smart Tips ── */}
         <View style={s.bottomRow}>
           {/* Smart Tips */}
-          <View style={[s.tipsCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+          <View style={[s.tipsCard, { backgroundColor: theme.card, borderColor: theme.cardBorder, shadowOpacity: isLight ? 0.12 : 0.35, shadowRadius: isLight ? 6 : 10 }]}>
             <View style={s.wideCardTitleRow}>
               <LineChart size={16} color="#B69AFF" />
               <Text style={[s.wideCardTitle, { color: '#B69AFF' }]}>Smart Tips</Text>
@@ -370,7 +370,7 @@ export function NewMetersScreen() {
                 <Text style={[s.modalCancelText, { color: theme.textSecondary }]}>Cancel</Text>
               </Pressable>
               <Pressable style={s.modalSwitchBtn} onPress={handleChangeover}>
-                <Text style={s.modalSwitchText}>Switch</Text>
+                <Text style={[s.modalSwitchText, { color: isLight ? '#4A85FF' : '#84A2F0' }]}>Switch</Text>
               </Pressable>
             </View>
           </View>
@@ -404,7 +404,7 @@ function MeterCard({ meter, isActive, accentColor, typeLabel, typePillStyle, typ
   const todayUsage = meter.todayUsage || 0;
 
   return (
-    <View style={[s.meterCard, { backgroundColor: cardBg, borderColor: isActive ? `${accentColor}40` : cardBorder }]}>
+    <View style={[s.meterCard, { backgroundColor: cardBg, borderColor: isActive ? `${accentColor}40` : cardBorder, shadowOpacity: isLight ? 0.12 : 0.35, shadowRadius: isLight ? 6 : 10 }]}>
       <View style={[s.cardHighlight, { backgroundColor: isLight ? 'rgba(15,23,42,0.03)' : 'rgba(255,255,255,0.08)' }]} />
 
       {/* Header */}
@@ -674,4 +674,5 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(84,142,255,0.3)',
   },
   modalSwitchText: { color: '#84A2F0', fontFamily: 'Outfit', fontSize: 12, fontWeight: '700' },
+  // Note: modalSwitchText color overridden inline for light mode contrast
 });

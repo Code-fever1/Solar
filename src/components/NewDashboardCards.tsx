@@ -164,7 +164,7 @@ export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liv
       {/* Live load — with V·A context and colored zone gauge */}
       <View style={s.liveBlock}>
         <View style={s.liveLeft}>
-          <Text style={s.liveLabel}>● Live Load</Text>
+          <Text style={[s.liveLabel, { color: t.textSecondary }]}>● Live Load</Text>
           <Text style={s.liveValue}>{Math.round(liveLoadW)}<Text style={s.liveUnit}> W</Text></Text>
         </View>
 
@@ -333,7 +333,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
           <Sparkles size={12} color="#8862ED" />
           <Text style={[s.cardTitle, { color: t.textSecondary }]}>AI Forecast & Budget</Text>
           <View style={s.confidenceBadge}>
-            <Text style={s.confidenceText}>{confidence}% Confidence</Text>
+            <Text style={[s.confidenceText, { color: '#8862ED' }]}>{confidence}% Confidence</Text>
           </View>
         </View>
         <View style={s.headerRight}>
@@ -385,7 +385,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
                 </View>
                 <View style={s.vsLastMonthCol}>
                   <Text style={[s.vsLastMonthLabel, { color: t.textMuted }]}>Last month</Text>
-                  <Text style={[s.vsLastMonthValue, !hasLastMonth && { color: t.textMuted, fontSize: 10 }]}>
+                  <Text style={[s.vsLastMonthValue, { color: t.textPrimary }, !hasLastMonth && { color: t.textMuted, fontSize: 10 }]}>
                     {hasLastMonth ? Math.round(lastMonthTotal) : 'Set in settings'}
                   </Text>
                 </View>
@@ -586,11 +586,12 @@ const s = StyleSheet.create({
     gap: 5,
     marginBottom: 8,
   },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 5, flex: 1, flexShrink: 1 },
   cardTitle: {
     fontSize: 10,
     fontFamily: 'Outfit',
     fontWeight: '600',
+    flexShrink: 1,
     letterSpacing: 0.3,
     flex: 1,
   },
@@ -832,6 +833,7 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    flexShrink: 0,
   },
   confidenceBadge: {
     backgroundColor: 'rgba(136,98,237,0.15)',
