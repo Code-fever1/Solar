@@ -45,6 +45,7 @@ export default function RootLayout() {
           <EnergyProvider>
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="(tabs)" />
+              <Stack.Screen name="overlay-editor" />
               <Stack.Screen name="+not-found" />
             </Stack>
           </EnergyProvider>

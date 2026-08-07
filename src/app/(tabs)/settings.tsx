@@ -1,6 +1,7 @@
 import { useEnergy } from "@/context/EnergyContext";
 import { useTheme } from "@/hooks/use-theme";
 import { Activity, ArrowLeft, BarChart2, CalendarDays, Edit3, History, RefreshCw, Save, Sparkles } from "lucide-react-native";
+import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -354,6 +355,24 @@ export default function SettingsScreen() {
             </View>
           </View>
         </View>
+
+        {__DEV__ && (
+          <View style={s.section}>
+            <View style={s.sectionHeader}>
+              <Edit3 size={14} color="#7DD3FC" />
+              <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>DEVELOPER</Text>
+            </View>
+            <Pressable
+              style={[s.card, { borderColor: theme.cardBorder, backgroundColor: theme.card }]}
+              onPress={() => router.push("/overlay-editor")}
+            >
+              <Text style={[s.cardLabelText, { color: theme.text }]}>Hero Overlay Editor</Text>
+              <Text style={[s.cardLabelText, { color: theme.textSecondary, marginTop: 4 }]}>
+                Visually tune SVG wiring paths per weather background
+              </Text>
+            </Pressable>
+          </View>
+        )}
       </ScrollView>
     </View>
   );

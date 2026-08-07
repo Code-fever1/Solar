@@ -1,6 +1,6 @@
 {
   "name": "voltix",
-  "main": "expo-router/entry",
+  "main": "index",
   "version": "1.0.0",
   "dependencies": {
     "@expo-google-fonts/outfit": "^0.4.3",

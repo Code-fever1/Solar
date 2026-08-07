@@ -89,6 +89,7 @@ type EnergyContextValue = {
   manualBaselines: Record<MeterId, ManualBaseline | null>;
   tomznHistory: any[];
   meta?: { billingEnd?: number; todayStart?: number; [key: string]: unknown };
+  ups: { active: boolean; label: string } | null;
   summary: ReturnType<typeof summarizeHistory>;
   period: "day" | "week" | "month" | "year";
   loading: boolean;
@@ -106,11 +107,14 @@ type EnergyContextValue = {
   clearAlerts: () => void;
   resetAllLogs: () => Promise<void>;
   refreshTomzn: () => Promise<void>;
+  refreshAll: () => Promise<void>;
+  refreshTomznForce: () => Promise<void>;
+  refreshInverterForce: () => Promise<void>;
 };
 
 const API_URL = "http://104.43.56.204:3001/api/solar";
 const POLL_FOREGROUND_MS = 5_000;
-const POLL_BACKGROUND_MS = 60_000;
+const POLL_BACKGROUND_MS = 5_000;
 const DASHBOARD_CACHE_KEY = "voltx.solar.dashboard.v1";
 const PENDING_OPERATIONS_KEY = "voltx.solar.pending-operations.v1";
 const LAST_MONTH_TOTAL_KEY = "voltx.solar.last-month-total.v1";
@@ -146,7 +150,10 @@ function emptyMeter(id: MeterId): MeterState {
 const EMPTY_METERS: Record<MeterId, MeterState> = { meter1: emptyMeter("meter1"), meter2: emptyMeter("meter2") };
 const EMPTY_LIVE: LiveTelemetry = { gridKw: 0, solarKw: 0, homeKw: 0, currentAmp: 0, voltage: 0, frequency: 50, powerFactor: 0 };
 const EMPTY_INVERTER: InverterTelemetry = { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, sourceTime: null, fetchedAt: "", isLive: false };
-const EMPTY_WEATHER: WeatherState = { code: 0, isDay: true, cloudCover: 0, precipitation: 0, temperatureC: 0, sunrise: null, sunset: null, fetchedAt: "", isLive: false };
+// isDay is derived from the device's local hour so the empty fallback doesn't
+// report daytime at night (which would force daytime hero scenes/labels before
+// the backend has responded). Pakistan users' local hour matches the site TZ.
+const EMPTY_WEATHER: WeatherState = { code: 0, isDay: new Date().getHours() >= 5 && new Date().getHours() < 19, cloudCover: 0, precipitation: 0, temperatureC: 0, sunrise: null, sunset: null, fetchedAt: "", isLive: false };
 const EMPTY_ENERGY_TODAY: EnergyToday = { solarKwh: 0, homeKwh: 0, gridKwh: 0 };
 
 const EnergyContext = createContext<EnergyContextValue | null>(null);
@@ -201,17 +208,22 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       }
     }
     // Merge active meter override so swaps survive polling refreshes
-    if (activeMeterOverrideRef.current && next.activeMeter !== activeMeterOverrideRef.current.meterId) {
+    if (activeMeterOverrideRef.current) {
       const override = activeMeterOverrideRef.current;
-      const otherMeter: MeterId = override.meterId === "meter1" ? "meter2" : "meter1";
-      next.activeMeter = override.meterId;
-      next.changeover = { activeMeter: override.meterId, lastSwitchedAt: override.timestamp };
-      if (next.meters) {
-        next.meters = {
-          ...next.meters,
-          [override.meterId]: { ...next.meters[override.meterId], queueStatus: "ACTIVE" },
-          [otherMeter]: { ...next.meters[otherMeter], queueStatus: "NEXT" },
-        };
+      if (next.changeover && next.changeover.lastSwitchedAt >= override.timestamp) {
+        activeMeterOverrideRef.current = null;
+        void AsyncStorage.removeItem(ACTIVE_METER_OVERRIDE_KEY).catch(() => undefined);
+      } else if (next.activeMeter !== override.meterId) {
+        const otherMeter: MeterId = override.meterId === "meter1" ? "meter2" : "meter1";
+        next.activeMeter = override.meterId;
+        next.changeover = { activeMeter: override.meterId, lastSwitchedAt: override.timestamp };
+        if (next.meters) {
+          next.meters = {
+            ...next.meters,
+            [override.meterId]: { ...next.meters[override.meterId], queueStatus: "ACTIVE" },
+            [otherMeter]: { ...next.meters[otherMeter], queueStatus: "NEXT" },
+          };
+        }
       }
     }
     // Merge manual reading overrides so latest readings survive polling refreshes
@@ -220,19 +232,26 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         const override = manualReadingOverrideRef.current[meterId];
         if (override && next.meters[meterId]) {
           const meter = next.meters[meterId];
-          const baselineReading = meter.reading - (meter.cycleUsage || 0);
-          const cycleUsage = Math.max(0, override.reading - baselineReading);
-          next.meters = {
-            ...next.meters,
-            [meterId]: {
-              ...meter,
-              reading: override.reading,
-              cycleUsage,
-              remainingUnits: Math.max(0, meter.targetUnits - cycleUsage),
-              lastLoggedAt: override.timestamp,
-              lastLoggedReading: override.reading,
-            },
-          };
+          // If we have received an update from the server that includes our manual log
+          // (or a newer one), we can safely drop the local override.
+          if (meter.lastLoggedAt && (meter.lastLoggedAt >= override.timestamp || meter.lastLoggedReading === override.reading)) {
+            manualReadingOverrideRef.current[meterId] = null;
+            void AsyncStorage.setItem(MANUAL_READINGS_OVERRIDE_KEY, JSON.stringify(manualReadingOverrideRef.current)).catch(() => undefined);
+          } else {
+            const baselineReading = meter.reading - (meter.cycleUsage || 0);
+            const cycleUsage = Math.max(0, override.reading - baselineReading);
+            next.meters = {
+              ...next.meters,
+              [meterId]: {
+                ...meter,
+                reading: override.reading,
+                cycleUsage,
+                remainingUnits: Math.max(0, meter.targetUnits - cycleUsage),
+                lastLoggedAt: override.timestamp,
+                lastLoggedReading: override.reading,
+              },
+            };
+          }
         }
       }
     }
@@ -366,14 +385,15 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         // A bad cache must never prevent the fresh server engine from loading.
       }
       if (!disposed) {
-        void loadDashboard(true);
-        void loadHistory();
+        // Cold start: force-refresh both TOMZN and inverter immediately (bypasses
+        // backend 5s max-age guards) so the user sees fresh data right away.
+        void refreshAll();
         void loadFlowHistory();
       }
     };
     void bootstrap();
 
-    // Adaptive polling: 5s when app is foregrounded, 60s when backgrounded.
+    // Adaptive polling: 5s when app is foregrounded, 5s when backgrounded.
     let interval: ReturnType<typeof setInterval> | null = null;
     const startPolling = (ms: number) => {
       if (interval) clearInterval(interval);
@@ -381,12 +401,13 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     };
     const onAppStateChange = (state: AppStateStatus) => {
       if (state === "active") {
-        // App came to foreground — immediately refresh and switch to 5s polling.
-        void loadDashboard(true);
+        // App came to foreground — force-refresh both TOMZN and inverter immediately
+        // (bypasses backend 5s max-age guards), then switch to 5s polling.
+        void refreshAll();
         void loadFlowHistory();
         startPolling(POLL_FOREGROUND_MS);
       } else {
-        // App went to background — slow down to 60s.
+        // App went to background — keep polling at 5s.
         startPolling(POLL_BACKGROUND_MS);
       }
     };
@@ -535,15 +556,60 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     await loadHistory();
   };
 
+  // Force-refresh both TOMZN and inverter (bypasses backend 5s max-age guards).
+  // Used on app open, manual sync button press.
+  const refreshAll = async () => {
+    try {
+      const data = await request("/refresh?force=true", { method: "POST" });
+      applySnapshot(data.dashboard);
+      await loadHistory();
+    } catch (cause) {
+      showOfflineEstimate(cause);
+      console.warn("[Solar Engine] force refresh failed", cause);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Force-refresh only TOMZN (bypasses live-cache guard).
+  const refreshTomznForce = async () => {
+    try {
+      const data = await request("/refresh/tomzn?force=true", { method: "POST" });
+      applySnapshot(data.dashboard);
+      await loadHistory();
+    } catch (cause) {
+      showOfflineEstimate(cause);
+      console.warn("[Solar Engine] tomzn force refresh failed", cause);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Force-refresh only the inverter (bypasses max-age guard).
+  const refreshInverterForce = async () => {
+    try {
+      const data = await request("/refresh/inverter?force=true", { method: "POST" });
+      applySnapshot(data.dashboard);
+    } catch (cause) {
+      showOfflineEstimate(cause);
+      console.warn("[Solar Engine] inverter force refresh failed", cause);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const value: EnergyContextValue = {
     live, tomznLive, inverter, weather, energyToday, flowHistory, home, meters, activeMeter, changeover, recommendations, alerts,
-    history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, summary,
+    history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, ups: snapshot?.ups ?? null, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     calibrateMeter: (meterId, reading) => { void addManualLog(meterId, reading, Date.now(), "Manual calibration"); },
     setManualBaseline, setLastMonthTotal, addManualLog, editManualLog, deleteManualLog,
     clearAlerts: () => undefined,
     resetAllLogs: async () => { await loadDashboard(false); },
     refreshTomzn,
+    refreshAll,
+    refreshTomznForce,
+    refreshInverterForce,
   };
 
   return <EnergyContext.Provider value={value}>{children}</EnergyContext.Provider>;

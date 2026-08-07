@@ -1,0 +1,132 @@
+{
+  "id": "night",
+  "background": "z-night.jpeg",
+  "viewBox": {
+    "width": 1015,
+    "height": 810
+  },
+  "solarPath": [
+    {
+      "x": 590,
+      "y": 304
+    },
+    {
+      "x": 590,
+      "y": 435
+    },
+    {
+      "x": 370,
+      "y": 430
+    },
+    {
+      "x": 370,
+      "y": 550
+    },
+    {
+      "x": 390,
+      "y": 550
+    }
+  ],
+  "gridPath": [
+    {
+      "x": 930,
+      "y": 318
+    },
+    {
+      "x": 930,
+      "y": 448
+    },
+    {
+      "x": 465,
+      "y": 448
+    },
+    {
+      "x": 465,
+      "y": 550
+    },
+    {
+      "x": 440,
+      "y": 550
+    }
+  ],
+  "gridBypassPath": [
+    {
+      "x": 930,
+      "y": 318
+    },
+    {
+      "x": 930,
+      "y": 450
+    },
+    {
+      "x": 535,
+      "y": 450
+    },
+    {
+      "x": 535,
+      "y": 462
+    }
+  ],
+  "inverterOutputPath": [
+    {
+      "x": 410,
+      "y": 570
+    },
+    {
+      "x": 410,
+      "y": 590
+    },
+    {
+      "x": 535,
+      "y": 588
+    },
+    {
+      "x": 535,
+      "y": 572
+    }
+  ],
+  "solarLabelPosition": {
+    "x": 335,
+    "y": 335,
+    "anchor": "left"
+  },
+  "gridLabelPosition": {
+    "x": 960,
+    "y": 350,
+    "anchor": "right"
+  },
+  "homeLabelPosition": {
+    "x": 485,
+    "y": 610,
+    "anchor": "center"
+  },
+  "inverterPosition": {
+    "x": 378,
+    "y": 448
+  },
+  "dbBoxPosition": {
+    "x": 455,
+    "y": 450
+  },
+  "wireStyles": {
+    "solar": {
+      "particleCount": 5,
+      "minDurationMs": 2200,
+      "maxDurationMs": 8200,
+      "dashArray": "11 18",
+      "glowDashArray": "19 15"
+    },
+    "grid": {
+      "particleCount": 3,
+      "minDurationMs": 9000,
+      "maxDurationMs": 9800,
+      "dashArray": "8 18",
+      "glowDashArray": "15 16"
+    },
+    "inverterOutput": {
+      "particleCount": 2,
+      "minDurationMs": 1700,
+      "maxDurationMs": 8600
+    }
+  }
+}

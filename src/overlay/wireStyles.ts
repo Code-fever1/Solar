@@ -1,0 +1,71 @@
+import type { HeroOverlayConfig, OverlayWireStyle, WireKind } from "./types";
+
+export const DEFAULT_WIRE_STYLES: Record<WireKind, OverlayWireStyle> = {
+  solar: {
+    conduitColor: "rgba(86, 67, 20, 0.58)",
+    conduitOpacity: 0.8,
+    conduitWidth: 7,
+    strokeWidth: 2.6,
+    glowWidth: 5.6,
+    dashArray: "10 16",
+    glowDashArray: "18 14",
+    dashTravel: 64,
+    particleCount: 4,
+    minDurationMs: 1900,
+    maxDurationMs: 7600,
+    powerCeilingW: 6500,
+    minParticleRadius: 2.2,
+    maxParticleRadius: 3.4,
+    activeOpacityFloor: 0.42,
+    activeOpacityCeiling: 0.96,
+    idleOpacity: 0.14,
+  },
+  grid: {
+    conduitColor: "rgba(42, 64, 103, 0.62)",
+    conduitOpacity: 0.82,
+    conduitWidth: 7.5,
+    strokeWidth: 2.8,
+    glowWidth: 5.8,
+    dashArray: "9 15",
+    glowDashArray: "16 14",
+    dashTravel: 60,
+    particleCount: 3,
+    minDurationMs: 1700,
+    maxDurationMs: 9000,
+    powerCeilingW: 7000,
+    minParticleRadius: 2.1,
+    maxParticleRadius: 3.3,
+    activeOpacityFloor: 0.38,
+    activeOpacityCeiling: 0.94,
+    idleOpacity: 0.14,
+  },
+  inverterOutput: {
+    conduitColor: "rgba(20, 81, 48, 0.56)",
+    conduitOpacity: 0.8,
+    conduitWidth: 6.4,
+    strokeWidth: 2.2,
+    glowWidth: 4.9,
+    dashArray: "7 17",
+    glowDashArray: "14 16",
+    dashTravel: 52,
+    particleCount: 2,
+    minDurationMs: 1500,
+    maxDurationMs: 5200,
+    powerCeilingW: 8000,
+    minParticleRadius: 1.9,
+    maxParticleRadius: 3,
+    activeOpacityFloor: 0.42,
+    activeOpacityCeiling: 0.95,
+    idleOpacity: 0.12,
+  },
+};
+
+export function getOverlayWireStyle(
+  config: HeroOverlayConfig,
+  kind: WireKind,
+): OverlayWireStyle {
+  return {
+    ...DEFAULT_WIRE_STYLES[kind],
+    ...(config.wireStyles?.[kind] ?? {}),
+  };
+}

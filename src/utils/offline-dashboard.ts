@@ -30,6 +30,7 @@ export type CachedDashboardSnapshot = {
   meters: Record<MeterId, MeterState>;
   manualLogs: ManualLog[];
   meta?: { billingEnd?: number; [key: string]: unknown };
+  ups?: { active: boolean; label: string } | null;
 };
 
 const DAY_MS = 86_400_000;

@@ -21,8 +21,38 @@ const TOMZN_LIVE_MAX_AGE_MS = 5_000;
 // Snapshots are persisted to the database at most once per minute to avoid
 // excessive storage growth (previously every ~5-10s).
 const TOMZN_PERSIST_MIN_INTERVAL_MS = 60_000;
-const WEATHER_POLL_MAX_AGE_MS = 3 * 60 * 60_000;
+const WEATHER_POLL_MAX_AGE_MS = 30 * 60_000;
 const BHAKKAR_COORDINATES = { latitude: 31.6269, longitude: 71.0657 };
+const HOME_PUBLIC_IP = "113.203.197.44";
+
+// Check if the home router is alive via TCP connect to port 7547 (TR-069/CWMP
+// management port, which is open on the router). ICMP ping is blocked from the
+// Azure VM, and ports 80/443/22 are filtered, but 7547 responds. If the TCP
+// connection succeeds or gets ECONNREFUSED (host up, port closed), the router
+// is powered → UPS backup is working. Timeout = power loss.
+const HOME_PING_PORT = 7547;
+function pingHome() {
+  return new Promise((resolve) => {
+    const net = require("net");
+    const socket = new net.Socket();
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(3000);
+    socket.once("connect", () => done(true));
+    socket.once("error", (err) => {
+      // ECONNREFUSED means the host is up (it actively rejected the port) — UPS is working
+      if (err.code === "ECONNREFUSED") done(true);
+      else done(false);
+    });
+    socket.once("timeout", () => done(false));
+    socket.connect(HOME_PING_PORT, HOME_PUBLIC_IP);
+  });
+}
 
 const DEFAULT_METERS = {
   meter1: { label: "Meter 1 (Analog)", type: "ANALOG", cycleBaselineReading: 59546, tomznToMeterRatio: 1, calibrationTomznUnits: 0, calibrationMeterUnits: 0, ratioObservationCount: 0 },
@@ -265,9 +295,11 @@ function learnMeterRatio(meter, tomznUnits, actualMeterUnits, timestamp = Date.n
 
 function clientActionTimestamp(value, now = Date.now()) {
   const requested = finiteNumber(value);
-  // Offline actions may be delivered later, but never allow an accidental or
-  // malicious timestamp to rewrite an entire billing history.
-  if (requested != null && requested <= now + 5 * 60_000 && requested >= now - 30 * 86_400_000) return Math.round(requested);
+  // Offline actions may be delivered later, but never allow a future timestamp
+  // to rewrite billing history or cause negative queries.
+  if (requested != null && requested >= now - 30 * 86_400_000) {
+    return Math.round(Math.min(requested, now));
+  }
   return now;
 }
 
@@ -636,11 +668,14 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   ]);
   const latestInverter = latestInverterSnapshot || inverterHistory[inverterHistory.length - 1] || null;
   // Staleness check: inverter is live only if the server fetched data recently
-  // AND the inverter's own realTime (sourceTime) is not more than 1 min behind.
-  let inverterLive = Boolean(latestInverter && now - latestInverter.timestamp < 2 * 60_000);
+  // AND the inverter's own realTime (sourceTime) is not more than 3 min behind.
+  // The 3-min threshold matches the poll-time check (line 101) — the inverter
+  // updates its hardware clock every 1-2 min, so a tighter threshold (e.g. 60s)
+  // causes false "offline" flickering for 2-5 seconds between inverter updates.
+  let inverterLive = Boolean(latestInverter && now - latestInverter.timestamp < 3 * 60_000);
   if (inverterLive && latestInverter?.sourceTime) {
     const parsed = parseInverterRealTime(latestInverter.sourceTime);
-    if (parsed !== null && now - parsed > 60 * 1000) {
+    if (parsed !== null && now - parsed > 3 * 60 * 1000) {
       inverterLive = false;
     }
   }
@@ -1008,16 +1043,28 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     : null;
 
 
+  const unallocatedDelta = (tomznSource && state.lastTomzn && tomznSource.energyKwh >= state.lastTomzn.energyKwh)
+    ? round(tomznSource.energyKwh - state.lastTomzn.energyKwh, 3)
+    : 0;
+
   const readings = {};
   let maxErrorPenalty = 0;
   for (const meterId of METER_IDS) {
     const config = state.meters[meterId];
-    const rawAfterAnchor = await meterUsageSince(allocations, meterId, Math.max(config.anchorAt || cycleStart, cycleStart), now);
+    let rawAfterAnchor = await meterUsageSince(allocations, meterId, Math.max(config.anchorAt || cycleStart, cycleStart), now);
+    let meterTodayUncalibrated = todayUsage[meterId] || 0;
+    
+    if (meterId === state.activeMeter && unallocatedDelta > 0) {
+      // Add the live unallocated consumption to the active meter so readings update in real time
+      rawAfterAnchor += unallocatedDelta;
+      meterTodayUncalibrated += unallocatedDelta;
+    }
+
     const afterAnchor = calibratedUnits(config, rawAfterAnchor);
     const reading = round((config.anchorReading ?? config.cycleBaselineReading) + afterAnchor, 2);
     const cycleUsageValue = Math.max(0, round(reading - config.cycleBaselineReading, 2));
     const remainingUnits = Math.max(0, round(state.slabTargetUnits - cycleUsageValue, 2));
-    const meterToday = calibratedUnits(config, todayUsage[meterId] || 0);
+    const meterToday = calibratedUnits(config, meterTodayUncalibrated);
     const calibrationEvidence = clamp(finiteNumber(config.calibrationTomznUnits, 0), 0, 100);
     
     // Penalize confidence if the last manual reading was far off the prediction
@@ -1096,6 +1143,19 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   const paceStatus = forecastRatio > 1.05 ? "CRITICAL" : forecastRatio > 1.0 ? "AVERAGE" : forecastRatio >= 0.93 ? "ON PACE" : forecastRatio >= 0.8 ? "GOOD" : "EXCELLENT";
   const outerRingScore = Math.round(Array.from(METER_IDS).reduce((sum, meterId) => sum + readings[meterId].consumptionSpeedScore, 0) / METER_IDS.size);
 
+  // UPS backup check: only ping the home IP when BOTH solar inverter is offline
+  // AND grid is unavailable/cutoff — meaning no power source is active. If the
+  // ping succeeds, the router is still on (UPS backup). If it fails, power loss.
+  const tomznFault = tomznSource?.faultCode || 0;
+  const gridCutoffOrUnavailable = !tomznSource?.isOnline || tomznFault === 2048 || tomznFault === 8192;
+  const inverterOffline = !inverterOnline || inverter.inverterMode === "S" ||
+    (inverter.gridV === 0 && inverter.solarW === 0 && inverter.gridW === 0 && inverter.loadW === 0);
+  let ups = null;
+  if (inverterOffline && gridCutoffOrUnavailable) {
+    const reachable = await pingHome();
+    ups = { active: reachable, label: reachable ? "UPS Backup" : "Power Loss" };
+  }
+
   return {
     version: state.version,
     generatedAt: new Date(now).toISOString(),
@@ -1106,6 +1166,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     weather,
     energyToday,
     flowHistory,
+    ups,
     live: {
       gridKw: (inverterLive && inverterOnline) ? round(inverter.gridW / 1000, 3) : currentDrawKw,
       solarKw: (inverterLive && inverterOnline) ? round(inverter.solarW / 1000, 3) : 0,
@@ -1195,10 +1256,11 @@ function registerUnifiedSolarRoutes(app, db) {
   const liveTomznRef = { value: null };
 
   const context = { stateCollection, snapshots, allocations, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef };
-  const pollTomzn = async ({ forcePersist = false } = {}) => {
+  const pollTomzn = async ({ forcePersist = false, force = false } = {}) => {
     const now = Date.now();
-    // Serve from in-memory live cache if fresh enough (avoids hitting Tuya on every 5s request)
-    if (!forcePersist && liveTomznRef.value && now - liveTomznRef.value.timestamp < TOMZN_LIVE_MAX_AGE_MS) {
+    // Serve from in-memory live cache if fresh enough (avoids hitting Tuya on every 5s request).
+    // `force` bypasses the cache so manual refresh / app-open always hits the device.
+    if (!force && !forcePersist && liveTomznRef.value && now - liveTomznRef.value.timestamp < TOMZN_LIVE_MAX_AGE_MS) {
       return { record: liveTomznRef.value, allocatedDelta: 0 };
     }
     if (pollInFlight) return pollInFlight;
@@ -1224,9 +1286,10 @@ function registerUnifiedSolarRoutes(app, db) {
     })();
     try { return await pollInFlight; } finally { pollInFlight = null; }
   };
-  const pollInverter = async () => {
+  const pollInverter = async ({ force = false } = {}) => {
     const latest = await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
-    if (!process.env.INVERTERZONE_DEVICE_ID || (latest && Date.now() - latest.timestamp < INVERTER_POLL_MAX_AGE_MS)) return latest;
+    // `force` bypasses the 5s max-age guard so manual refresh / app-open always hits InverterZone.
+    if (!process.env.INVERTERZONE_DEVICE_ID || (!force && latest && Date.now() - latest.timestamp < INVERTER_POLL_MAX_AGE_MS)) return latest;
     if (inverterPollInFlight) return inverterPollInFlight;
     inverterPollInFlight = requestInverterZone()
       .then(async (snapshot) => {
@@ -1279,10 +1342,29 @@ function registerUnifiedSolarRoutes(app, db) {
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
-  app.post("/api/solar/refresh", async (_req, res) => {
+  app.post("/api/solar/refresh", async (req, res) => {
     try {
-      const [recorded] = await Promise.all([pollTomzn(), pollInverter(), pollWeather()]);
+      const force = req.query.force === "true";
+      const [recorded] = await Promise.all([pollTomzn({ force }), pollInverter({ force }), pollWeather()]);
       res.json({ allocatedDelta: recorded.allocatedDelta, dashboard: await buildDashboard(context) });
+    } catch (error) { res.status(502).json({ error: error.message }); }
+  });
+
+  // Force-refresh only TOMZN (bypasses 5s live-cache guard).
+  app.post("/api/solar/refresh/tomzn", async (req, res) => {
+    try {
+      const force = req.query.force === "true";
+      await pollTomzn({ force });
+      res.json({ dashboard: await buildDashboard(context) });
+    } catch (error) { res.status(502).json({ error: error.message }); }
+  });
+
+  // Force-refresh only the inverter (bypasses 5s max-age guard).
+  app.post("/api/solar/refresh/inverter", async (req, res) => {
+    try {
+      const force = req.query.force === "true";
+      await pollInverter({ force });
+      res.json({ dashboard: await buildDashboard(context) });
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 

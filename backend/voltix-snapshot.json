@@ -1,9 +1,9 @@
 {
-  "fetchedAt": "2026-08-06T11:55:26.436Z",
-  "tick": 4026,
-  "homeKw": 1.723,
-  "solarKw": 1.961,
-  "gridKw": 0.169,
+  "fetchedAt": "2026-08-06T16:44:19.202Z",
+  "tick": 9758,
+  "homeKw": 1.232,
+  "solarKw": 0,
+  "gridKw": 1.273,
   "gridDirection": "import",
   "batteryKw": 0.4,
   "batteryPercent": 72,
@@ -219,8 +219,8 @@
       "homeKw": 0.9
     }
   ],
-  "weather": "clear-day",
-  "isDay": true,
+  "weather": "clear-night",
+  "isDay": false,
   "temperatureC": 24,
   "cloudCover": 0.2
 }
