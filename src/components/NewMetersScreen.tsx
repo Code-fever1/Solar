@@ -424,30 +424,30 @@ function MeterCard({ meter, isActive, accentColor, typeLabel, typePillStyle, typ
         </View>
       </View>
 
-      {/* Today's Usage — compact */}
-      <View style={s.todayRow}>
-        <View>
-          <Text style={[s.todayLabel, { color: textSecondary }]}>Today's Usage</Text>
-          <Text style={[s.todayValue, { color: accentColor }]}>{todayUsage.toFixed(2)}<Text style={[s.todayUnit, { color: textMuted }]}> units</Text></Text>
+      {/* Current Reading — HERO: the meter's primary identity number */}
+      <View style={s.readingHero}>
+        <View style={s.readingHeroLabelRow}>
+          <View style={[s.readingHeroDot, { backgroundColor: accentColor }]} />
+          <Text style={[s.readingHeroLabel, { color: textSecondary }]}>Current Reading</Text>
         </View>
-        <View style={[s.trendBadge, { backgroundColor: overlayBg }]}>
-          {isLower ? <ArrowDown size={10} color="#32E56B" /> : <ArrowUp size={10} color="#EF4C4C" />}
-          <Text style={[s.trendBadgeText, { color: isLower ? '#32E56B' : '#EF4C4C' }]}>{Math.abs(vsYesterday)}%</Text>
-        </View>
+        <Text style={[s.readingHeroValue, { color: textPrimary }]} numberOfLines={1} adjustsFontSizeToFit={false}>{formatReading(meter.reading)}<Text style={[s.readingHeroUnit, { color: textMuted }]}> kWh</Text></Text>
+        {lastReading !== undefined && (
+          <Text style={[s.readingHeroSub, { color: textMuted }]}>
+            Last <Text style={{ color: textSecondary }}>{formatReading(lastReading)}</Text> · {formatTimeAgo(meter.lastLoggedAt || 0)}
+          </Text>
+        )}
       </View>
 
-      {/* Readings */}
-      <View style={[s.readingsBox, { backgroundColor: overlayBg }]}>
-        <Text style={[s.readingLabel, { color: textMuted }]}>Current Reading</Text>
-        <Text style={[s.readingValue, { color: textPrimary }]}>{formatReading(meter.reading)} <Text style={[s.readingUnit, { color: textMuted }]}>kWh</Text></Text>
-        {lastReading !== undefined && (
-          <>
-            <Text style={[s.lastReadingLabel, { color: textMuted }]}>
-              Last: <Text style={{ color: textSecondary }}>{formatReading(lastReading)}</Text>
-            </Text>
-            <Text style={[s.lastReadingTime, { color: textMuted }]}>{formatTimeAgo(meter.lastLoggedAt || 0)}</Text>
-          </>
-        )}
+      {/* Today's Usage — compact secondary stat */}
+      <View style={[s.todayRow, { backgroundColor: overlayBg }]}>
+        <Text style={[s.todayLabel, { color: textSecondary }]}>Today</Text>
+        <View style={s.todayRight}>
+          <Text style={[s.todayValue, { color: accentColor }]}>{todayUsage.toFixed(2)}<Text style={[s.todayUnit, { color: textMuted }]}> u</Text></Text>
+          <View style={[s.trendBadge, { backgroundColor: isLight ? 'rgba(15,23,42,0.06)' : 'rgba(255,255,255,0.06)' }]}>
+            {isLower ? <ArrowDown size={9} color="#32E56B" /> : <ArrowUp size={9} color="#EF4C4C" />}
+            <Text style={[s.trendBadgeText, { color: isLower ? '#32E56B' : '#EF4C4C' }]}>{Math.abs(vsYesterday)}%</Text>
+          </View>
+        </View>
       </View>
 
       {/* Remaining Budget — horizontal bar */}
@@ -561,21 +561,23 @@ const s = StyleSheet.create({
   },
   typePillDigitalText: { color: '#548EFF', fontFamily: 'Outfit', fontSize: 8, fontWeight: '600' },
 
-  // Today's usage
-  todayRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  todayLabel: { color: undefined, fontFamily: 'Outfit', fontSize: 8, marginBottom: 2 },
-  todayValue: { fontFamily: 'Outfit', fontSize: 18, fontWeight: '700' },
-  todayUnit: { fontSize: 10, color: undefined },
-  trendBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'transparent', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6 },
-  trendBadgeText: { fontFamily: 'Outfit', fontSize: 9, fontWeight: '700' },
+  // Current Reading — HERO (the meter's primary identity number)
+  readingHero: { marginBottom: 10 },
+  readingHeroLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 3 },
+  readingHeroDot: { width: 5, height: 5, borderRadius: 2.5 },
+  readingHeroLabel: { fontFamily: 'Outfit', fontSize: 8, fontWeight: '600', letterSpacing: 0.3, textTransform: 'uppercase' },
+  readingHeroValue: { fontFamily: 'Outfit', fontSize: 26, fontWeight: '700', letterSpacing: -0.5, lineHeight: 30 },
+  readingHeroUnit: { fontSize: 12, fontWeight: '500' },
+  readingHeroSub: { fontFamily: 'Outfit', fontSize: 8, marginTop: 3 },
 
-  // Readings
-  readingsBox: { marginBottom: 10 },
-  readingLabel: { color: undefined, fontFamily: 'Outfit', fontSize: 8, marginBottom: 2 },
-  readingValue: { color: undefined, fontFamily: 'Outfit', fontSize: 16, fontWeight: '700' },
-  readingUnit: { color: undefined, fontSize: 9 },
-  lastReadingLabel: { color: undefined, fontFamily: 'Outfit', fontSize: 9, marginTop: 4 },
-  lastReadingTime: { color: undefined, fontFamily: 'Outfit', fontSize: 8, marginTop: 1 },
+  // Today's usage — compact secondary stat
+  todayRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6, marginBottom: 10 },
+  todayLabel: { color: undefined, fontFamily: 'Outfit', fontSize: 8 },
+  todayRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  todayValue: { fontFamily: 'Outfit', fontSize: 13, fontWeight: '700' },
+  todayUnit: { fontSize: 8, color: undefined },
+  trendBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5 },
+  trendBadgeText: { fontFamily: 'Outfit', fontSize: 8, fontWeight: '700' },
 
   // Budget
   budgetBox: { marginBottom: 10 },

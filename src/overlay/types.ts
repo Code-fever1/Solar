@@ -71,4 +71,6 @@ export type WireFlowState = {
   color: string;
   glowColor: string;
   idleOpacity?: number;
+  /** When true, particles and dash animation flow backward (end → start). */
+  reverse?: boolean;
 };

@@ -116,7 +116,7 @@ function WireStream({
 
     dashOffset.value = 0;
     dashOffset.value = withRepeat(
-      withTiming(-dashTravel, { duration, easing: Easing.linear }),
+      withTiming(flow.reverse ? dashTravel : -dashTravel, { duration, easing: Easing.linear }),
       -1,
       false,
     );
@@ -149,6 +149,7 @@ function WireStream({
     duration,
     flow.active,
     flow.power,
+    flow.reverse,
     idleOpacity,
     isVisible,
     powerCeilingW,
@@ -242,6 +243,7 @@ function WireStream({
           opacity={targetOpacity}
           isVisible={isVisible}
           wireStyle={wireStyle}
+          reverse={flow.reverse}
         />
       ))}
     </>
@@ -261,6 +263,7 @@ function WireParticle({
   opacity,
   isVisible,
   wireStyle,
+  reverse,
 }: {
   points: HeroOverlayConfig["solarPath"];
   viewBox: HeroOverlayConfig["viewBox"];
@@ -274,6 +277,7 @@ function WireParticle({
   opacity: SharedValue<number>;
   isVisible: boolean;
   wireStyle: OverlayWireStyle;
+  reverse?: boolean;
 }) {
   const progress = useSharedValue(0);
 
@@ -301,22 +305,26 @@ function WireParticle({
     (maxRadius - minRadius) * powerRatio;
 
   const cx = useDerivedValue(() => {
-    const t = (progress.value + offset) % 1;
+    const raw = (progress.value + offset) % 1;
+    const t = reverse ? 1 - raw : raw;
     return getPointOnPath(points, t, viewBox, width, height).x;
   });
   const cy = useDerivedValue(() => {
-    const t = (progress.value + offset) % 1;
+    const raw = (progress.value + offset) % 1;
+    const t = reverse ? 1 - raw : raw;
     return getPointOnPath(points, t, viewBox, width, height).y;
   });
   const glowOpacity = useDerivedValue(() => {
-    const t = (progress.value + offset) % 1;
+    const raw = (progress.value + offset) % 1;
+    const t = reverse ? 1 - raw : raw;
     let alpha = opacity.value * (active ? 0.85 : 0.35);
     if (t < 0.08) alpha *= t / 0.08;
     else if (t > 0.9) alpha *= (1 - t) / 0.1;
     return alpha;
   });
   const coreOpacity = useDerivedValue(() => {
-    const t = (progress.value + offset) % 1;
+    const raw = (progress.value + offset) % 1;
+    const t = reverse ? 1 - raw : raw;
     let alpha = opacity.value * (active ? 1 : 0.45);
     if (t < 0.08) alpha *= t / 0.08;
     else if (t > 0.9) alpha *= (1 - t) / 0.1;

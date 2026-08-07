@@ -208,7 +208,7 @@ function FronusTab({ inverter }: { inverter: any }) {
         {/* Grid Section */}
         <SectionHeader icon={<Zap size={12} color="#548EFF" />} title="Grid" color="#548EFF" />
         <View style={styles.dataGrid}>
-          <DataTile label="Power" value={inverter?.gridW ? `${inverter.gridW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#548EFF" />} />
+          <DataTile label="Power" value={(inverter?.isOnline !== false && inverter?.gridWRaw != null) ? `${inverter.gridWRaw.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#548EFF" />} />
           <DataTile label="Voltage" value={inverter?.gridV ? `${inverter.gridV.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#548EFF" />} />
           <DataTile label="Frequency" value={inverter?.gridHz ? `${inverter.gridHz.toFixed(2)} Hz` : "-- Hz"} icon={<Activity size={10} color="#548EFF" />} />
         </View>

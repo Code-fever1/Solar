@@ -139,8 +139,16 @@ async function requestInverterZone() {
   // force it to 0 so the graph doesn't show phantom grid import during solar-only mode.
   // Also zero out readings < 200W that appear even when gridV is non-zero but relay is off
   // (the inverter reports tiny phantom grid feed during high solar production).
-  const rawGridW = Math.max(0, finiteNumber(data.gridW, 0));
+  // rawGridW: the raw grid power reading from InverterZone, preserving the sign
+  // (negative = exporting to grid, positive = importing from grid).
+  // gridW (sanitized) clamps to >= 0 and filters phantom readings for the dashboard.
+  const rawGridW = finiteNumber(data.gridW, 0);
   const gridW = (gridV > 0 && rawGridW >= 200) ? rawGridW : 0;
+  // gridWRaw: the unfiltered, signed grid power reading straight from the
+  // InverterZone API. Kept separate from `gridW` (which is zeroed for phantom
+  // readings) so the Fronus summary tab can display the actual reported value
+  // (including negative export values) while the dashboard/graph still use the
+  // sanitized `gridW`.
   return {
     timestamp,
     isOnline: true,
@@ -148,6 +156,7 @@ async function requestInverterZone() {
     solarV: Math.max(0, finiteNumber(data.solarV, 0)),
     solarA: Math.max(0, finiteNumber(data.solarA, 0)),
     gridW,
+    gridWRaw: rawGridW,
     gridV,
     gridHz: Math.max(0, finiteNumber(data.gridHz, 0)),
     gridConnected: Boolean(data.grid),
@@ -177,6 +186,7 @@ function makeOfflineInverterSnapshot() {
     solarV: 0,
     solarA: 0,
     gridW: 0,
+    gridWRaw: 0,
     gridV: 0,
     gridHz: 0,
     gridConnected: false,
@@ -244,7 +254,10 @@ function clamp(value, min, max) {
 // from confirmed manual readings. Bounds reject a mistyped reading without
 // allowing it to poison future forecasts.
 function meterRatio(meter) {
-  return clamp(finiteNumber(meter?.tomznToMeterRatio, 1), 0.5, 1.5);
+  // Clamp tightly to reduce accumulated error in meter projections.
+  // Most Pakistani digital meters run 0.85-1.15 vs TOMZN; wider ranges
+  // cause large swings in projected days left during offline estimation.
+  return clamp(finiteNumber(meter?.tomznToMeterRatio, 1), 0.7, 1.3);
 }
 
 function calibratedUnits(meter, tomznUnits) {
@@ -432,7 +445,7 @@ async function ensureState(stateCollection) {
   return state;
 }
 
-async function recordTomzn({ stateCollection, snapshots, allocations, snapshot }) {
+async function recordTomzn({ stateCollection, snapshots, allocations, inverterSnapshots, snapshot }) {
   const now = Date.now();
   let state = await ensureState(stateCollection);
   state = await rolloverBillingCycle({ stateCollection, allocations }, state, now);
@@ -443,24 +456,51 @@ async function recordTomzn({ stateCollection, snapshots, allocations, snapshot }
   const record = { ...snapshot, timestamp: now, energyKwh, activeMeter: state.activeMeter };
   await snapshots.insertOne(record);
 
+  // Check if the inverter is currently exporting to the grid (gridWRaw < 0).
+  // TOMZN can't distinguish import vs export — its cumulative counter increases
+  // in both directions. When exporting, pause all meter allocations and energy
+  // accumulation so meter readings and energy used don't increase.
+  const latestInverter = await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
+  const isExporting = latestInverter && latestInverter.isOnline !== false && (latestInverter.gridWRaw ?? 0) < 0;
+
+  // lastImportEnergyKwh: the TOMZN cumulative reading at the last non-export
+  // persist. Frozen during export so the next import-period delta excludes the
+  // export-period counter increase. Falls back to lastTomzn.energyKwh for
+  // backward compatibility with states that don't have this field yet.
+  const lastImportEnergyKwh = state.lastImportEnergyKwh ?? previous?.energyKwh ?? energyKwh;
+
   let allocatedDelta = 0;
-  if (previous && energyKwh >= previous.energyKwh) {
-    const delta = round(energyKwh - previous.energyKwh);
-    // Deltas larger than 50 units in one poll are a counter replacement/reset issue,
-    // not household consumption. Keep the snapshot but wait for a manual reconciliation.
-    if (delta > 0 && delta <= 50) {
-      allocatedDelta = delta;
-      await allocations.insertOne({
-        timestamp: now,
-        fromTimestamp: previous.timestamp,
-        meterId: state.activeMeter,
-        delta,
-        startEnergyKwh: previous.energyKwh,
-        endEnergyKwh: energyKwh,
-        source: "TOMZN",
-      });
+  if (!isExporting) {
+    // Counter reset detection: if energyKwh dropped below lastImportEnergyKwh,
+    // the TOMZN meter was reset (e.g. factory reset, firmware update). Start
+    // fresh from the new value — don't create a negative delta. Old readings
+    // are preserved in the allocations + snapshots collections.
+    if (energyKwh >= lastImportEnergyKwh) {
+      const delta = round(energyKwh - lastImportEnergyKwh);
+      // Deltas larger than 50 units in one poll are a counter replacement/reset issue,
+      // not household consumption. Keep the snapshot but wait for a manual reconciliation.
+      if (delta > 0 && delta <= 50) {
+        allocatedDelta = delta;
+        await allocations.insertOne({
+          timestamp: now,
+          fromTimestamp: previous?.timestamp || now,
+          meterId: state.activeMeter,
+          delta,
+          startEnergyKwh: lastImportEnergyKwh,
+          endEnergyKwh: energyKwh,
+          source: "TOMZN",
+        });
+      }
     }
+    // Update lastImportEnergyKwh to current reading (only when not exporting).
+    // This is the base for the next import-period delta calculation.
+    state.lastImportEnergyKwh = energyKwh;
   }
+  // When exporting: don't create allocation, don't update lastImportEnergyKwh.
+  // The TOMZN counter still increases during export, but we exclude that increase
+  // by keeping lastImportEnergyKwh frozen at the pre-export value. When export
+  // ends, the delta = energyKwh - lastImportEnergyKwh only counts the actual
+  // import increase since the pre-export reading.
 
   const newState = { ...state, lastTomzn: record, updatedAt: now };
   await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, newState, { upsert: true });
@@ -687,6 +727,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     solarV: latestInverter.solarV,
     solarA: latestInverter.solarA,
     gridW: latestInverter.gridW,
+    gridWRaw: latestInverter.gridWRaw ?? 0,
     gridV: latestInverter.gridV,
     gridHz: latestInverter.gridHz,
     gridConnected: latestInverter.gridConnected,
@@ -705,7 +746,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     fetchedAt: new Date(latestInverter.timestamp).toISOString(),
     isLive: inverterLive,
     isOnline: inverterOnline,
-  } : { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, sourceTime: null, fetchedAt: "", isLive: false, isOnline: false };
+  } : { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridWRaw: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, sourceTime: null, fetchedAt: "", isLive: false, isOnline: false };
   const weather = latestWeather ? {
     code: latestWeather.code,
     isDay: latestWeather.isDay,
@@ -729,15 +770,30 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       gridW: (s.gridV > 0 && s.gridW >= 200) ? s.gridW : 0,
     }));
   const todaySanitized = sanitizedInverterHistory.filter((sample) => sample.timestamp >= todayStart - 5 * 60_000);
+  // Build a set of 5-minute buckets where the inverter was exporting (gridWRaw < 0).
+  // TOMZN can't distinguish import vs export — its powerW increases in both directions.
+  // During export periods, zero out TOMZN powerW so energy received/used don't increase.
+  const FLOW_BUCKET_MS = 5 * 60_000;
+  const exportBuckets = new Set();
+  for (const sample of sanitizedInverterHistory) {
+    if ((sample.gridWRaw ?? 0) < 0) {
+      exportBuckets.add(Math.floor(sample.timestamp / FLOW_BUCKET_MS));
+    }
+  }
   // TOMZN snapshots supplement energy and flow data when the inverter is off.
   // TOMZN powerW sees ALL power flowing to the home (from grid or solar), so
   // it fills gaps when the inverter is off (bypass mode) or offline.
+  // Zero out TOMZN powerW during export periods to pause energy accumulation.
   const todayTomzn = (todayTomznSnapshots || [])
     .filter((s) => s.powerW != null && s.powerW >= 0)
-    .map((s) => ({ timestamp: s.timestamp, powerW: Math.max(0, s.powerW || 0) }));
+    .map((s) => ({
+      timestamp: s.timestamp,
+      powerW: exportBuckets.has(Math.floor(s.timestamp / FLOW_BUCKET_MS))
+        ? 0
+        : Math.max(0, s.powerW || 0),
+    }));
   // Build a set of 5-minute buckets covered by inverter data so we know which
   // buckets need TOMZN supplementation.
-  const FLOW_BUCKET_MS = 5 * 60_000;
   const inverterBuckets = new Set();
   for (const sample of todaySanitized) {
     inverterBuckets.add(Math.floor(sample.timestamp / FLOW_BUCKET_MS));
@@ -768,17 +824,24 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       flowBuckets.set(bucket, sample);
     }
   }
-  // Fill flow history gaps with TOMZN data for buckets where inverter was off.
-  // TOMZN powerW = grid import = home usage when inverter is off (bypass mode).
+  // Merge TOMZN data into flow buckets.
+  // TOMZN powerW = grid import, which is always the authoritative grid value.
+  // For buckets with inverter data, attach _tomznPowerW so gridKw always uses TOMZN.
+  // For buckets without inverter data (inverter off / bypass), create a bucket
+  // with TOMZN as the sole source for both grid and home consumption.
   for (const sample of todayTomzn) {
     const bucket = Math.floor(sample.timestamp / FLOW_BUCKET_MS) * FLOW_BUCKET_MS;
-    if (!flowBuckets.has(bucket)) {
+    const existing = flowBuckets.get(bucket);
+    if (existing) {
+      // Inverter data exists — attach TOMZN powerW for the grid line.
+      existing._tomznPowerW = sample.powerW;
+    } else {
       flowBuckets.set(bucket, {
         timestamp: sample.timestamp,
         solarW: 0,
-        gridW: 0, // inverter gridW — 0 because inverter was off
-        loadW: 0, // inverter loadW — 0 because inverter was off
-        _tomznPowerW: sample.powerW, // TOMZN grid import for this bucket
+        gridW: 0,
+        loadW: 0,
+        _tomznPowerW: sample.powerW,
       });
     }
   }
@@ -786,13 +849,12 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     .sort((a, b) => a.timestamp - b.timestamp)
     .map((sample) => ({
       timestamp: sample.timestamp,
+      // Solar always from the inverter.
       solarKw: round(sample.solarW / 1000, 3),
-      // Use inverter gridW when available; fall back to TOMZN powerW for buckets
-      // where the inverter was off (bypass mode).
-      gridKw: (sample.gridV > 0 && sample.gridW >= 200)
-        ? round(sample.gridW / 1000, 3)
-        : round((sample._tomznPowerW || 0) / 1000, 3),
-      // Use inverter loadW when available; fall back to TOMZN powerW.
+      // Grid always from TOMZN (the meter sees all grid import regardless of inverter state).
+      gridKw: round((sample._tomznPowerW || 0) / 1000, 3),
+      // Home consumption from inverter loadW when inverter is on;
+      // in bypass mode (inverter off) use TOMZN grid import as home consumption.
       loadKw: sample.loadW > 0
         ? round(sample.loadW / 1000, 3)
         : round((sample._tomznPowerW || 0) / 1000, 3),
@@ -1043,8 +1105,12 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     : null;
 
 
-  const unallocatedDelta = (tomznSource && state.lastTomzn && tomznSource.energyKwh >= state.lastTomzn.energyKwh)
-    ? round(tomznSource.energyKwh - state.lastTomzn.energyKwh, 3)
+  // Unallocated delta: live TOMZN reading minus the last import-period reading.
+  // Uses lastImportEnergyKwh (frozen during export) so export-period counter
+  // increases aren't counted as unallocated usage.
+  const lastImportKwh = state.lastImportEnergyKwh ?? state.lastTomzn?.energyKwh ?? tomznSource?.energyKwh ?? 0;
+  const unallocatedDelta = (tomznSource && tomznSource.energyKwh >= lastImportKwh)
+    ? round(tomznSource.energyKwh - lastImportKwh, 3)
     : 0;
 
   const readings = {};
@@ -1061,9 +1127,9 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     }
 
     const afterAnchor = calibratedUnits(config, rawAfterAnchor);
-    const reading = round((config.anchorReading ?? config.cycleBaselineReading) + afterAnchor, 2);
-    const cycleUsageValue = Math.max(0, round(reading - config.cycleBaselineReading, 2));
-    const remainingUnits = Math.max(0, round(state.slabTargetUnits - cycleUsageValue, 2));
+    const reading = round((config.anchorReading ?? config.cycleBaselineReading) + afterAnchor, 3);
+    const cycleUsageValue = Math.max(0, round(reading - config.cycleBaselineReading, 3));
+    const remainingUnits = Math.max(0, round(state.slabTargetUnits - cycleUsageValue, 3));
     const meterToday = calibratedUnits(config, meterTodayUncalibrated);
     const calibrationEvidence = clamp(finiteNumber(config.calibrationTomznUnits, 0), 0, 100);
     
@@ -1168,9 +1234,11 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     flowHistory,
     ups,
     live: {
-      gridKw: (inverterLive && inverterOnline) ? round(inverter.gridW / 1000, 3) : currentDrawKw,
+      // Grid always from TOMZN (the meter sees all grid import regardless of inverter state).
+      gridKw: round((tomznSource?.powerW || 0) / 1000, 3),
       solarKw: (inverterLive && inverterOnline) ? round(inverter.solarW / 1000, 3) : 0,
-      homeKw: (inverterLive && inverterOnline) ? round(inverter.loadW / 1000, 3) : currentDrawKw,
+      // Home from inverter when on; TOMZN powerW when in bypass mode.
+      homeKw: (inverterLive && inverterOnline) ? round(inverter.loadW / 1000, 3) : round((tomznSource?.powerW || 0) / 1000, 3),
       currentAmp: (inverterLive && inverterOnline) ? inverter.solarA : (tomznSource?.currentA || 0),
       voltage: (inverterLive && inverterOnline) ? inverter.gridV : (tomznSource?.voltageV || 0),
       frequency: (inverterLive && inverterOnline) ? inverter.gridHz : (tomznSource?.frequencyHz || 50),
@@ -1550,6 +1618,14 @@ function registerUnifiedSolarRoutes(app, db) {
         snapshots.find({ timestamp: { $gte: todayStart, $lte: now } }).sort({ timestamp: 1 }).limit(5_000).toArray(),
       ]);
       const FLOW_BUCKET_MS = 5 * 60_000;
+      // Build a set of export buckets (inverter gridWRaw < 0) to zero out TOMZN
+      // powerW during export periods — TOMZN can't distinguish import vs export.
+      const exportBuckets = new Set();
+      for (const sample of invHistory.filter((s) => s.isOnline !== false)) {
+        if ((sample.gridWRaw ?? 0) < 0) {
+          exportBuckets.add(Math.floor(sample.timestamp / FLOW_BUCKET_MS));
+        }
+      }
       const flowBuckets = new Map();
       // Inverter data — primary source
       for (const sample of invHistory.filter((s) => s.isOnline !== false)) {
@@ -1559,16 +1635,23 @@ function registerUnifiedSolarRoutes(app, db) {
           flowBuckets.set(bucket, sample);
         }
       }
-      // TOMZN supplement — fill buckets where inverter was off
+      // Merge TOMZN data into flow buckets — TOMZN powerW is always the
+      // authoritative grid import value, regardless of inverter state.
+      // Zero out during export periods to pause energy accumulation.
       for (const sample of tomznHistory) {
         const bucket = Math.floor(sample.timestamp / FLOW_BUCKET_MS) * FLOW_BUCKET_MS;
-        if (!flowBuckets.has(bucket)) {
+        const isExport = exportBuckets.has(Math.floor(sample.timestamp / FLOW_BUCKET_MS));
+        const tomznPowerW = isExport ? 0 : Math.max(0, sample.powerW || 0);
+        const existing = flowBuckets.get(bucket);
+        if (existing) {
+          existing._tomznPowerW = tomznPowerW;
+        } else {
           flowBuckets.set(bucket, {
             timestamp: sample.timestamp,
             solarW: 0,
             gridW: 0,
             loadW: 0,
-            _tomznPowerW: Math.max(0, sample.powerW || 0),
+            _tomznPowerW: tomznPowerW,
           });
         }
       }
@@ -1576,10 +1659,11 @@ function registerUnifiedSolarRoutes(app, db) {
         .sort((a, b) => a.timestamp - b.timestamp)
         .map((sample) => ({
           timestamp: sample.timestamp,
+          // Solar always from the inverter.
           solarKw: round(sample.solarW / 1000, 3),
-          gridKw: (sample.gridV > 0 && sample.gridW >= 200)
-            ? round(sample.gridW / 1000, 3)
-            : round((sample._tomznPowerW || 0) / 1000, 3),
+          // Grid always from TOMZN (the meter sees all grid import).
+          gridKw: round((sample._tomznPowerW || 0) / 1000, 3),
+          // Home consumption from inverter loadW when on; TOMZN when in bypass mode.
           loadKw: sample.loadW > 0
             ? round(sample.loadW / 1000, 3)
             : round((sample._tomznPowerW || 0) / 1000, 3),

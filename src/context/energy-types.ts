@@ -15,6 +15,7 @@ export type InverterTelemetry = {
   solarV: number;
   solarA: number;
   gridW: number;
+  gridWRaw: number;
   gridV: number;
   gridHz: number;
   gridConnected: boolean;

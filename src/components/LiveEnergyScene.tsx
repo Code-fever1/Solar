@@ -116,7 +116,8 @@ function labelPositionStyle(
 }
 
 function formatPowerShort(watts: number) {
-  if (watts >= 1000) return { value: (watts / 1000).toFixed(2), unit: "kW" };
+  const abs = Math.abs(watts);
+  if (abs >= 1000) return { value: (watts / 1000).toFixed(2), unit: "kW" };
   return { value: String(Math.round(watts)), unit: "W" };
 }
 
@@ -345,19 +346,22 @@ function InverterHub({ solarActive, gridActive, homeActive }: { solarActive: boo
   );
 }
 
-function SkiaParticle({ ctrl, color, offset, progress, size, activeOpacity }: { ctrl: CtrlArray; color: string; offset: number; progress: SharedValue<number>; size: number; activeOpacity: SharedValue<number> }) {
+function SkiaParticle({ ctrl, color, offset, progress, size, activeOpacity, reverse }: { ctrl: CtrlArray; color: string; offset: number; progress: SharedValue<number>; size: number; activeOpacity: SharedValue<number>; reverse?: boolean }) {
   const cx = useDerivedValue(() => {
-    const t = (progress.value + offset) % 1;
+    const raw = (progress.value + offset) % 1;
+    const t = reverse ? 1 - raw : raw;
     const u = 1 - t;
     return u * u * u * ctrl[0].x + 3 * u * u * t * ctrl[1].x + 3 * u * t * t * ctrl[2].x + t * t * t * ctrl[3].x;
   });
   const cy = useDerivedValue(() => {
-    const t = (progress.value + offset) % 1;
+    const raw = (progress.value + offset) % 1;
+    const t = reverse ? 1 - raw : raw;
     const u = 1 - t;
     return u * u * u * ctrl[0].y + 3 * u * u * t * ctrl[1].y + 3 * u * t * t * ctrl[2].y + t * t * t * ctrl[3].y;
   });
   const opacity = useDerivedValue(() => {
-    const t = (progress.value + offset) % 1;
+    const raw = (progress.value + offset) % 1;
+    const t = reverse ? 1 - raw : raw;
     if (t < 0.08) return activeOpacity.value * t / 0.08;
     if (t > 0.88) return activeOpacity.value * (1 - t) / 0.12;
     return activeOpacity.value;
@@ -402,7 +406,7 @@ function SkiaBubbleParticle({ ctrl, color, offset, progress, size, activeOpacity
   );
 }
 
-function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gradientColors, active, power, particleColor, strokeWidth = 1.5, isVisible }: { ctrl: CtrlArray; path: string; glowColor: string; gradientStart: CtrlPoint; gradientEnd: CtrlPoint; gradientColors: string[]; active: boolean; power: number; particleColor: string; strokeWidth?: number; isVisible: boolean }) {
+function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gradientColors, active, power, particleColor, strokeWidth = 1.5, isVisible, reverse }: { ctrl: CtrlArray; path: string; glowColor: string; gradientStart: CtrlPoint; gradientEnd: CtrlPoint; gradientColors: string[]; active: boolean; power: number; particleColor: string; strokeWidth?: number; isVisible: boolean; reverse?: boolean }) {
   const activeOpacity = useSharedValue(active ? 1 : 0);
   const pulse = useSharedValue(0.85);
   const progress = useSharedValue(0);
@@ -445,7 +449,7 @@ function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gr
         <SkiaLinearGradient start={vec(gradientStart.x, gradientStart.y)} end={vec(gradientEnd.x, gradientEnd.y)} colors={gradientColors} />
       </SkiaPath>
       {Array.from({ length: particleCount }).map((_, index) => (
-        <SkiaParticle key={`skia-p-${particleCount}-${index}`} ctrl={ctrl} color={particleColor} offset={index / particleCount} progress={progress} size={particleSize} activeOpacity={activeOpacity} />
+        <SkiaParticle key={`skia-p-${particleCount}-${index}`} ctrl={ctrl} color={particleColor} offset={index / particleCount} progress={progress} size={particleSize} activeOpacity={activeOpacity} reverse={reverse} />
       ))}
     </>
   );
@@ -479,7 +483,7 @@ function SkiaInverterHub({ hubX, hubY, solarActive, gridActive, homeActive, isVi
   );
 }
 
-function EnergyCanvas({ solarOnline, gridImporting, homeActive, solarPower, gridPower, homePower, gridArcColor, width, height, isVisible, variant = 'card' }: { solarOnline: boolean; gridImporting: boolean; homeActive: boolean; solarPower: number; gridPower: number; homePower: number; gridArcColor: string; width: number; height: number; isVisible: boolean; variant?: 'card' | 'hero' }) {
+function EnergyCanvas({ solarOnline, gridImporting, homeActive, solarPower, gridPower, homePower, gridArcColor, width, height, isVisible, variant = 'card', gridReverse = false }: { solarOnline: boolean; gridImporting: boolean; homeActive: boolean; solarPower: number; gridPower: number; homePower: number; gridArcColor: string; width: number; height: number; isVisible: boolean; variant?: 'card' | 'hero'; gridReverse?: boolean }) {
   if (width <= 0 || height <= 0) return null;
 
   let scale = 1, offsetX = 0, offsetY = 0;
@@ -524,7 +528,7 @@ function EnergyCanvas({ solarOnline, gridImporting, homeActive, solarPower, grid
   return (
     <Canvas style={styles.svg} pointerEvents="none">
       <Group transform={variant === 'card' ? [{ translateX: offsetX }, { translateY: offsetY }, { scale }] : undefined}>
-        <SkiaStreamLayer ctrl={gCtrl} path={gPathD} glowColor={gridArcColor} gradientStart={gCtrl[0]} gradientEnd={gCtrl[3]} gradientColors={[gridArcColor, gridArcColor]} active={gridImporting} power={gridPower} particleColor={gridArcColor} strokeWidth={3.5} isVisible={isVisible} />
+        <SkiaStreamLayer ctrl={gCtrl} path={gPathD} glowColor={gridArcColor} gradientStart={gCtrl[0]} gradientEnd={gCtrl[3]} gradientColors={[gridArcColor, gridArcColor]} active={gridImporting} power={gridPower} particleColor={gridArcColor} strokeWidth={3.5} isVisible={isVisible} reverse={gridReverse} />
         <SkiaStreamLayer ctrl={hCtrl} path={hPathD} glowColor="#45E376" gradientStart={hCtrl[0]} gradientEnd={hCtrl[3]} gradientColors={["#45E376", "#2DD66B"]} active={homeActive} power={homePower} particleColor="#5EE87E" strokeWidth={2} isVisible={isVisible} />
         <SkiaInverterHub hubX={hubX} hubY={hubY} solarActive={solarOnline} gridActive={gridImporting} homeActive={homeActive} isVisible={isVisible} />
       </Group>
@@ -800,6 +804,13 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   const gridImporting = !offline && tomznLive.isOnline && tomznLive.powerW >= 10 && !wapdaCutOff && !wapdaStandby;
   const gridPowerW = gridImporting ? Math.max(0, tomznLive.powerW) : 0;
   const gridColor = gridImporting ? "#6E9BFF" : wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : "#8A8A8A";
+  // Export detection: TOMZN can't distinguish import vs export on its own, so we
+  // use the Fronus inverter's gridWRaw sign to determine direction. When Fronus
+  // reports gridWRaw < 0, the home is exporting to the grid — display TOMZN's
+  // powerW as negative. This is DISPLAY-ONLY: meter readings, energy units, and
+  // accumulation are unaffected (they always count as positive import).
+  const isExporting = !offline && !inverterOff && inverter?.isOnline !== false && (inverter?.gridWRaw ?? 0) < 0;
+  const gridDisplayW = isExporting ? -Math.max(0, tomznLive.powerW || 0) : gridPowerW;
 
   // Pace algorithm — uses TOMZN powerW (total home draw) for BOTH label and color.
   // TOMZN sees all power flowing to the home whether from solar or grid, so the
@@ -855,7 +866,9 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   // Show pace whenever TOMZN is online and drawing power, not just when grid imports.
   // When hybrid idle (relay on, solar producing, but 0W from grid), show "Idle".
   const tomznDrawing = tomznLive.isOnline && (tomznLive.powerW || 0) > 0;
-  const paceLabel = relayOnIdle && solarProducing
+  const paceLabel = isExporting
+    ? "Exporting"
+    : relayOnIdle && solarProducing
     ? "Idle"
     : !tomznDrawing
     ? "No draw"
@@ -869,6 +882,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     if (ups) return { modeLabel: ups.active ? "UPS" : "Power Down", modeColor: ups.active ? "#F8C653" : "#EF4C4C" };
     if (wapdaCutOff) return { modeLabel: "Wapda Cut Off", modeColor: "#EF4C4C" };
     if (inverterOff && gridImporting) return { modeLabel: "Bypass Mode", modeColor: "#F8C653" };
+    if (isExporting) return { modeLabel: "Exporting", modeColor: "#6E9BFF" };
     if (solarProducing && gridImporting) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
     // Solar producing, relay ON but no power flowing → still "Hybrid" mode,
     // but pace label will show "Idle" instead of High/Low/On Pace.
@@ -931,7 +945,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
 
   const solarP = formatPowerShort(offline ? 0 : inverter.solarW);
   const homeP = formatPowerShort(homeW);
-  const gridP = formatPowerShort(offline ? 0 : gridPowerW);
+  const gridP = formatPowerShort(offline ? 0 : gridDisplayW);
   // Bypass mode: inverter is off, so grid feeds the home directly via the
   // bypass path (grid → DB). This applies whether wapda is actively importing
   // or idle — the physical routing doesn't change just because power stops flowing.
@@ -965,11 +979,12 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
               idleOpacity: 0.16,
             }}
             gridFlow={{
-              active: gridImporting,
-              power: gridPowerW,
-              color: gridArcColor,
-              glowColor: gridImporting ? gridArcColor : gridColor,
+              active: gridImporting || isExporting,
+              power: isExporting ? Math.max(0, tomznLive.powerW || 0) : gridPowerW,
+              color: isExporting ? "#6E9BFF" : gridArcColor,
+              glowColor: isExporting ? "#6E9BFF" : (gridImporting ? gridArcColor : gridColor),
               idleOpacity: 0.16,
+              reverse: isExporting,
             }}
             inverterOutputFlow={{
               active: homeActive && !bypassMode,
@@ -979,7 +994,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
               idleOpacity: 0.14,
             }}
             solarHidden={inverterOff || offline}
-            gridHidden={wapdaCutOff || (solarProducing && !gridImporting)}
+            gridHidden={wapdaCutOff || (solarProducing && !gridImporting && !isExporting)}
             inverterOutputHidden={inverterOff || offline}
           />
         )}
@@ -1031,8 +1046,8 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
           {!wapdaCutOff && (
             <>
               <View style={styles.powerRow}>
-                <Text style={[styles.powerValue, { color: gridImporting ? gridArcColor : gridColor }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.value}</Text>
-                <Text style={[styles.powerUnit, { color: gridImporting ? gridArcColor : gridColor }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.unit}</Text>
+                <Text style={[styles.powerValue, { color: isExporting ? "#6E9BFF" : (gridImporting ? gridArcColor : gridColor) }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.value}</Text>
+                <Text style={[styles.powerUnit, { color: isExporting ? "#6E9BFF" : (gridImporting ? gridArcColor : gridColor) }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.unit}</Text>
               </View>
               <Text style={[styles.vaText, styles.vaOutline]}>{tomznV.toFixed(0)}V · {tomznA.toFixed(1)}A</Text>
             </>
@@ -1052,7 +1067,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
           <View style={styles.footerPill}>
             <View style={[styles.footerDot, { backgroundColor: modeColor }]} />
             <Text style={[styles.footerText, { color: modeColor }]}>{modeLabel}</Text>
-            {(tomznDrawing || (relayOnIdle && solarProducing)) && (
+            {!isExporting && (tomznDrawing || (relayOnIdle && solarProducing)) && (
               <Text style={[styles.footerText, { color: paceColor, fontWeight: '700', marginLeft: 4 }]}>
                 · {paceLabel}
               </Text>
