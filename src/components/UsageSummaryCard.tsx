@@ -2,6 +2,7 @@ import { Activity } from "lucide-react-native";
 import { StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, G, Path } from "react-native-svg";
 
+import { GlassCard } from "@/components/GlassCard";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
 import { withAlpha } from "@/utils/ColorInterpolation";
@@ -26,10 +27,10 @@ export function UsageSummaryCard() {
   // --- Trend: % change, recent 3 days vs earlier days of the week (server-side split algo) ---
   const trendPct = home.usageTrendPercent;
   const trendColor =
-    trendPct == null ? "#8A94A6"
-    : trendPct > 0   ? "#EF4444"
+    trendPct == null ? theme.textMuted
+    : trendPct > 0   ? "#FF5252"
     : trendPct < 0   ? "#10B981"
-    :                  "#F8FAFC";
+    :                  theme.text;
   const trendText =
     trendPct == null
       ? "Trend learning"
@@ -56,7 +57,8 @@ export function UsageSummaryCard() {
     return `rgb(${Math.round(r1 + (r2 - r1) * t_)},${Math.round(g1 + (g2 - g1) * t_)},${Math.round(b1 + (b2 - b1) * t_)})`;
   };
 
-  const WHITE: [number, number, number] = [168, 184, 202]; // theme.textSecondary tone
+  // Bar "neutral" color adapts to scene — dark grey on light scenes, light grey on dark.
+  const NEUTRAL: [number, number, number] = theme.isLight ? [74, 88, 104] : [168, 184, 202];
   const RED:   [number, number, number] = [239, 68,  68];
   const GREEN: [number, number, number] = [16,  185, 129];
 
@@ -68,11 +70,11 @@ export function UsageSummaryCard() {
     const delta = val / avgBarVal - 1;   // 0 = exactly avg
     const t = Math.min(1, Math.abs(delta) * 3); // full intensity at ~33% off avg
 
-    if (Math.abs(delta) < 0.05) return `rgba(168, 184, 202, 0.80)`; // avg — uses theme textSecondary tone
-    // Blend from WHITE toward RED or GREEN — the closer to avg, the whiter
+    if (Math.abs(delta) < 0.05) return `rgba(${NEUTRAL[0]},${NEUTRAL[1]},${NEUTRAL[2]},0.80)`; // avg
+    // Blend from NEUTRAL toward RED or GREEN — the closer to avg, the more neutral
     return delta > 0
-      ? lerpRgb(WHITE, RED,   t)  // above avg → redder
-      : lerpRgb(WHITE, GREEN, t); // below avg → greener
+      ? lerpRgb(NEUTRAL, RED,   t)  // above avg → redder
+      : lerpRgb(NEUTRAL, GREEN, t); // below avg → greener
   };
 
   const periods = [
@@ -113,9 +115,7 @@ export function UsageSummaryCard() {
   });
 
   return (
-    <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder, shadowColor: theme.cardShadow }]}>
-      {/* Faint top highlight — glass effect */}
-      <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
+    <GlassCard style={styles.card}>
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.titleRow}>
@@ -138,7 +138,7 @@ export function UsageSummaryCard() {
             <Text style={[styles.avgValue, { color: theme.text }]}>{home.averageDaily.toFixed(2)}</Text>
             <Text style={[styles.avgUnit, { color: theme.textSecondary }]}>units / day</Text>
             <View style={styles.spacer} />
-            <View style={[styles.trendBadge, { backgroundColor: withAlpha(trendColor, 0.15) }]}>
+            <View style={[styles.trendBadge, { backgroundColor: withAlpha(trendColor, 0.22) }]}>
               <Text style={[styles.trendText, { color: trendColor }]}>{trendText}</Text>
             </View>
           </View>
@@ -178,12 +178,12 @@ export function UsageSummaryCard() {
                       key={slice.label}
                       d={slice.pathD}
                       fill={slice.color}
-                      stroke={theme.card}
+                      stroke={theme.isLight ? "rgba(255,255,255,0.85)" : "rgba(11,15,26,0.85)"}
                       strokeWidth={3.5}
                       strokeLinejoin="round"
                     />
                   ))}
-                  <Circle cx={cx} cy={cy} r={R * 0.65} fill={theme.card} />
+                  <Circle cx={cx} cy={cy} r={R * 0.65} fill={theme.isLight ? "rgba(255,255,255,0.85)" : "rgba(11,15,26,0.85)"} />
                 </G>
               </Svg>
             </View>
@@ -205,7 +205,7 @@ export function UsageSummaryCard() {
           </View>
         </View>
       </View>
-    </View>
+    </GlassCard>
   );
 }
 
@@ -213,20 +213,8 @@ const styles = StyleSheet.create({
   card: {
     borderRadius: 14,
     padding: 14,
-    borderWidth: 1,
     overflow: "hidden",
     position: "relative",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 4,
-  },
-  cardHighlight: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 1,
   },
   header: {
     flexDirection: "row",

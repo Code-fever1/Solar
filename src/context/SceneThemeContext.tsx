@@ -21,38 +21,59 @@ export type SceneTheme = CardTheme & {
   inputBorder: string;
   pillBg: string;
   backgroundElement: string;
+  isLightScene: boolean;
 };
 
 // Build a full scene-tinted theme from the active wallpaper's seam color.
 // Card bg = seam × 0.42 (dark enough for light text on all 6 scenes).
 // Screen bg = seam × 0.22 (darker than cards, gives depth).
-// Text colors are brightened to guarantee WCAG AA contrast on all scenes.
+// Text colors adapt based on seam luminance — light scenes (fog, morning-cloud)
+// use darker text so it's readable through glassmorphism cards; dark scenes
+// (night) keep bright text.
 function makeSceneTheme(seam: [number, number, number]): SceneTheme {
   const d42 = (v: number) => Math.round(v * 0.42);
   const d22 = (v: number) => Math.round(v * 0.22);
   const [r, g, b] = seam;
+
+  // Compute relative luminance — determines if the scene is "light" or "dark".
+  // Glass cards blur the background, so on light scenes the blurred surface
+  // is lighter and needs darker text for contrast.
+  const luminance = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+  const isLightScene = luminance > 0.4; // fog (0.48), morning-cloud (0.56)
+
+  // Text colors: darker for light scenes, lighter for dark scenes.
+  // On glassmorphism, the effective background is a blend of the blurred
+  // wallpaper + seam wash, so we need sufficient contrast.
+  const textPrimary = isLightScene ? "#1A2332" : "#F4F8FC";
+  const textSecondary = isLightScene ? "#4A5868" : "#A8B8CA";
+  const textMuted = isLightScene ? "#6B7888" : "#8A9BAE";
+
+  // Element colors: use dark overlays on light scenes, light overlays on dark.
+  const overlayBase = isLightScene ? "0,0,0" : "255,255,255";
+
   return {
     // CardTheme keys
     cardBg: `rgb(${d42(r)},${d42(g)},${d42(b)})`,
-    cardBorder: "rgba(255,255,255,0.08)",
-    cardHighlight: "rgba(255,255,255,0.06)",
+    cardBorder: `rgba(${overlayBase},0.08)`,
+    cardHighlight: `rgba(${overlayBase},0.06)`,
     cardShadow: "rgba(0,0,0,0.5)",
-    textPrimary: "#F4F8FC",
-    textSecondary: "#A8B8CA",
-    textMuted: "#8A9BAE",
-    trackBg: "rgba(255,255,255,0.05)",
-    overlayBg: "rgba(255,255,255,0.04)",
-    overlayBorder: "rgba(255,255,255,0.06)",
-    svgGridLine: "rgba(255,255,255,0.04)",
-    svgTrack: "rgba(255,255,255,0.06)",
+    textPrimary,
+    textSecondary,
+    textMuted,
+    trackBg: `rgba(${overlayBase},0.05)`,
+    overlayBg: `rgba(${overlayBase},0.04)`,
+    overlayBorder: `rgba(${overlayBase},0.06)`,
+    svgGridLine: `rgba(${overlayBase},${isLightScene ? 0.12 : 0.04})`,
+    svgTrack: `rgba(${overlayBase},0.06)`,
     // Screen-level keys
     screenBg: `rgb(${d22(r)},${d22(g)},${d22(b)})`,
-    border: "rgba(255,255,255,0.06)",
-    borderStrong: "rgba(255,255,255,0.12)",
-    inputBg: "rgba(255,255,255,0.05)",
-    inputBorder: "rgba(255,255,255,0.1)",
-    pillBg: "rgba(255,255,255,0.06)",
-    backgroundElement: "rgba(255,255,255,0.03)",
+    border: `rgba(${overlayBase},0.06)`,
+    borderStrong: `rgba(${overlayBase},0.12)`,
+    inputBg: `rgba(${overlayBase},0.05)`,
+    inputBorder: `rgba(${overlayBase},0.1)`,
+    pillBg: `rgba(${overlayBase},0.06)`,
+    backgroundElement: `rgba(${overlayBase},0.03)`,
+    isLightScene,
   };
 }
 
@@ -224,7 +245,7 @@ export function SceneThemeProvider({ children }: { children: ReactNode }) {
     sheetGradient,
     manualSceneIndex,
     cycleScene,
-    isLight: false,
+    isLight: theme.isLightScene,
   }), [theme, heroScene, sheetColors, sheetGradient, manualSceneIndex]);
 
   return <SceneThemeContext.Provider value={value}>{children}</SceneThemeContext.Provider>;

@@ -1,4 +1,5 @@
 import { useSceneTheme } from "@/context/SceneThemeContext";
+import { setPendingSlideDirection, setSwipeNavigateFn } from "@/components/TabSlideWrapper";
 import { Tabs } from "expo-router";
 import { BlurView } from "expo-blur";
 import { Activity, CalendarDays, House, Settings as SettingsIcon, Zap } from "lucide-react-native";
@@ -30,27 +31,44 @@ function brighten([r, g, b]: [number, number, number], amount: number): [number,
   ];
 }
 
+// Darken a color toward black so it stays readable on light backgrounds.
+// `amount` = 0 returns original, 1 returns black.
+function darken([r, g, b]: [number, number, number], amount: number): [number, number, number] {
+  return [
+    Math.round(r * (1 - amount)),
+    Math.round(g * (1 - amount)),
+    Math.round(b * (1 - amount)),
+  ];
+}
+
 function TabBar({ state, navigation }: any) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const containerWidth = Math.min(width - 20, 480);
 
-  const { sheetColors, textSecondary } = useSceneTheme();
+  // Expose navigation state for swipe gestures (TabSlideWrapper reads this).
+  (globalThis as any).__tabNavState = {
+    index: state.index,
+    routes: state.routes.map((r: any) => r.name),
+    navigate: navigation.navigate.bind(navigation),
+  };
+
+  const { sheetColors, textSecondary, isLight } = useSceneTheme();
   const { seam, sky } = sheetColors;
 
   // Brighten the sky color for the accent so the selected tab's icon/text
   // are always clearly readable, even on dark scenes like night (sky [6,21,45]).
-  // 0.55 lifts it well above the bar background while preserving the scene's hue.
-  const accentRgb = brighten(sky, 0.55);
+  // On light scenes (fog, morning), darken instead so it reads on a light bar.
+  const accentRgb = isLight ? darken(sky, 0.45) : brighten(sky, 0.55);
 
   // Glassmorphism navbar:
   //  - BlurView (expo-blur) gives real backdrop blur on iOS.
   //  - On Android (blurMethod='none'), BlurView renders semi-transparent —
   //    we layer a scene-tinted wash on top to simulate the frosted look.
   //  - The seam color ties the bar to the scene's dominant tone.
-  //  - The brightened sky color is the active accent (the scene's light source).
+  //  - The accent color is the active tab highlight (scene's light source).
   const accent = rgba(accentRgb, 1);
-  const inactiveColor = textSecondary;
+  const inactiveColor = isLight ? "rgba(15,23,42,0.5)" : textSecondary;
 
   // Scene-tinted wash layered over the blur — this is what makes the glass
   // feel like it belongs to the current wallpaper, not a generic overlay.
@@ -94,8 +112,8 @@ function TabBar({ state, navigation }: any) {
       <View style={[styles.barContainer, { width: containerWidth }]}>
         {/* Real backdrop blur (iOS) / semi-transparent fallback (Android) */}
         <BlurView
-          intensity={60}
-          tint="dark"
+          intensity={isLight ? 45 : 60}
+          tint={isLight ? "light" : "dark"}
           style={StyleSheet.absoluteFill}
           blurMethod={Platform.OS === "android" ? "none" : undefined}
         />
@@ -103,8 +121,8 @@ function TabBar({ state, navigation }: any) {
         <View style={[StyleSheet.absoluteFill, { backgroundColor: tintWash }]} />
         {/* Top inner glow — light catching the glass edge */}
         <View style={[styles.topGlow, { borderTopColor: topGlowColor }]} />
-        {/* Outer border — subtle white rim defines the glass */}
-        <View style={[styles.glassRim]} />
+        {/* Outer border — subtle rim defines the glass */}
+        <View style={[styles.glassRim, { borderColor: isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)" }]} />
 
         {/* Sliding active pill — compact bubble that animates between tabs */}
         <Animated.View style={[styles.pillContainer, { width: pillWidth }, pillStyle]}>
@@ -127,6 +145,9 @@ function TabBar({ state, navigation }: any) {
               canPreventDefault: true,
             });
             if (!isFocused && !event.defaultPrevented) {
+              // Set slide direction BEFORE navigating so the incoming screen
+              // knows which direction to slide from (no flash).
+              setPendingSlideDirection(index > state.index ? 1 : -1);
               navigation.navigate(route.name);
             }
           };
@@ -168,12 +189,33 @@ function TabBar({ state, navigation }: any) {
 }
 
 export default function TabsLayout() {
+  const tabNames = ["index", "meters", "history", "logs", "settings"];
+
+  // Register swipe navigation handler so TabSlideWrapper can trigger
+  // tab switches from swipe gestures. Direction: -1 = back, 1 = forward.
+  useEffect(() => {
+    setSwipeNavigateFn((direction: number) => {
+      // Use the router to navigate — we need the current index from the DOM state.
+      // This is set via the tab bar's navigation state.
+      const nav = (globalThis as any).__tabNavState;
+      if (!nav) return;
+      const { index, routes, navigate } = nav;
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= routes.length) return;
+      setPendingSlideDirection(direction);
+      navigate(routes[targetIndex]);
+    });
+    return () => { setSwipeNavigateFn((() => {}) as any); };
+  }, []);
+
   return (
     <Tabs
       initialRouteName="index"
+      detachInactiveScreens={false}
       tabBar={(props) => <TabBar {...props} />}
       screenOptions={{
         headerShown: false,
+        freezeOnBlur: false,
       }}
     >
       <Tabs.Screen name="index" options={{ title: "Home" }} />

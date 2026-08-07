@@ -62,7 +62,6 @@ function WireStream({
   isVisible,
   hidden = false,
 }: WireStreamProps) {
-  if (hidden) return null;
   const pathD = useMemo(
     () => pointsToPathD(points, viewBox, width, height),
     [points, viewBox, width, height],
@@ -168,6 +167,8 @@ function WireStream({
   );
 
   const trackOpacity = flow.active ? 0.28 : idleOpacity;
+
+  if (hidden) return null;
 
   return (
     <>

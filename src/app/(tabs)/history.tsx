@@ -1,3 +1,4 @@
+import { GlassCard } from "@/components/GlassCard";
 import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { UsageSummaryCard } from "@/components/UsageSummaryCard";
 import { useEnergy } from "@/context/EnergyContext";
@@ -17,18 +18,21 @@ import {
     TrendingUp,
     Zap
 } from "lucide-react-native";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
     Text,
     View,
+    useWindowDimensions,
 } from "react-native";
 import Animated, {
     useAnimatedStyle,
     useSharedValue,
     withSequence,
+    withSpring,
     withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -98,6 +102,28 @@ export default function HistoryScreen() {
     { key: "tomzn", label: "Tomzn", icon: Cpu },
   ];
 
+  // Sliding pill animation for the sub-tab selector
+  const tabIndex = tabs.findIndex((t) => t.key === tab);
+  const { width: screenWidth } = useWindowDimensions();
+  const containerWidth = Math.min(screenWidth - 32, 480);
+  const tabCount = tabs.length;
+  const tabSlotWidth = (containerWidth - 8) / tabCount; // 8 = padding (4 each side)
+  const pillWidth = tabSlotWidth - 8;
+  const pillOffset = 4 + tabIndex * tabSlotWidth + 4;
+  const pillTranslateX = useSharedValue(pillOffset);
+
+  useEffect(() => {
+    pillTranslateX.value = withSpring(pillOffset, {
+      damping: 22,
+      stiffness: 260,
+      mass: 0.9,
+    });
+  }, [pillOffset, pillTranslateX]);
+
+  const pillAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: pillTranslateX.value }],
+  }));
+
   return (
     <TabSlideWrapper index={2}>
     <View style={styles.screen}>
@@ -115,8 +141,17 @@ export default function HistoryScreen() {
           <Text style={[styles.subtitle, { color: theme.textSecondary }]}>Complete device telemetry & usage analytics</Text>
         </View>
 
-        {/* Tab Selector */}
-        <View style={[styles.tabBar, { borderColor: theme.cardBorder }]}>
+        {/* Tab Selector — glass bar with sliding pill */}
+        <View style={[styles.tabBar, { width: containerWidth }]}>
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255,255,255,0.06)" }]} />
+          <View style={styles.tabBarRim} />
+
+          {/* Sliding active pill */}
+          <Animated.View style={[styles.tabPillContainer, { width: pillWidth }, pillAnimStyle]}>
+            <View style={styles.tabPillAccent} />
+            <View style={styles.tabPillBorder} />
+          </Animated.View>
+
           {tabs.map((t) => {
             const Icon = t.icon;
             const isActive = tab === t.key;
@@ -124,9 +159,9 @@ export default function HistoryScreen() {
               <Pressable
                 key={t.key}
                 onPress={() => setTab(t.key)}
-                style={[styles.tab, isActive && styles.tabActive]}
+                style={styles.tab}
               >
-                <Icon size={14} color={isActive ? "#35E378" : "#7E91A6"} />
+                <Icon size={14} color={isActive ? "#35E378" : theme.textSecondary} />
                 <Text style={[styles.tabText, isActive && styles.tabTextActive, { color: isActive ? undefined : theme.textSecondary }]}>{t.label}</Text>
               </Pressable>
             );
@@ -177,8 +212,7 @@ function FronusTab({ inverter }: { inverter: any }) {
   return (
     <View style={styles.tabContent}>
       {/* Fronus Header Card */}
-      <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-        <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
+      <GlassCard style={styles.card}>
         <View style={styles.deviceHeader}>
           <View style={styles.deviceHeaderLeft}>
             {/* Placeholder for Fronus image — replace with actual image when available */}
@@ -198,8 +232,8 @@ function FronusTab({ inverter }: { inverter: any }) {
 
         {/* Last fetched */}
         <View style={styles.fetchedRow}>
-          <Clock size={10} color={isLight ? "#94A3B8" : "#7A8499"} />
-          <Text style={[styles.fetchedText, { color: theme.textMuted }]}>Last fetched: {fetchedAt}</Text>
+          <Clock size={10} color={theme.textMuted} />
+          <Text style={[styles.fetchedText, { color: theme.textSecondary }]}>Last fetched: {fetchedAt}</Text>
         </View>
 
         {/* Solar Section */}
@@ -246,7 +280,7 @@ function FronusTab({ inverter }: { inverter: any }) {
         <SectionHeader icon={<Cpu size={12} color="#8862ED" />} title="Inverter Status" color="#8862ED" />
         <View style={styles.dataGrid}>
           <DataTile label="Mode" value={inverter?.inverterMode || "--"} icon={<Cpu size={10} color="#8862ED" />} />
-          <DataTile label="Fault" value={inverter?.inverterFault || "--"} icon={<AlertCircle size={10} color={inverter?.inverterFault && inverter.inverterFault !== "OK" && inverter.inverterFault !== "UNKNOWN" ? "#EF4C4C" : "#7A8499"} />} />
+          <DataTile label="Fault" value={inverter?.inverterFault || "--"} icon={<AlertCircle size={10} color={inverter?.inverterFault && inverter.inverterFault !== "OK" && inverter.inverterFault !== "UNKNOWN" ? "#FF5252" : theme.textMuted} />} />
           <DataTile label="Temperature" value={inverter?.temperatureC ? `${inverter.temperatureC.toFixed(1)}°C` : "-- °C"} icon={<Thermometer size={10} color="#8862ED" />} />
         </View>
         <View style={styles.dataGrid}>
@@ -254,7 +288,7 @@ function FronusTab({ inverter }: { inverter: any }) {
           <DataTile label="Signal" value={inverter?.signal != null ? `${inverter.signal}%` : "-- %"} icon={<Radio size={10} color="#8862ED" />} />
           <DataTile label="Data Status" value={isLive && isOnline ? "Live" : isOnline ? "Stale" : "Offline"} icon={<Activity size={10} color={isLive && isOnline ? "#32E56B" : "#EF4C4C"} />} />
         </View>
-      </View>
+      </GlassCard>
     </View>
   );
 }
@@ -291,8 +325,7 @@ function TomznTab({
   return (
     <View style={styles.tabContent}>
       {/* Tomzn Header Card */}
-      <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-        <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
+      <GlassCard style={styles.card}>
         <View style={styles.deviceHeader}>
           <View style={styles.deviceHeaderLeft}>
             {/* Placeholder for Tomzn image — replace with actual image when available */}
@@ -312,8 +345,8 @@ function TomznTab({
 
         {/* Refresh button + last fetched */}
         <View style={styles.fetchedRow}>
-          <Clock size={10} color={isLight ? "#94A3B8" : "#7A8499"} />
-          <Text style={[styles.fetchedText, { color: theme.textMuted }]}>Last fetched: {fetchedAt}</Text>
+          <Clock size={10} color={theme.textMuted} />
+          <Text style={[styles.fetchedText, { color: theme.textSecondary }]}>Last fetched: {fetchedAt}</Text>
           <Pressable onPress={onRefresh} style={styles.refreshBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Animated.View style={spinStyle}>
               <RefreshCw size={13} color="#548EFF" />
@@ -382,17 +415,16 @@ function TomznTab({
           <DataTile label="Timestamp" value={tomznLive?.timestamp ? new Date(tomznLive.timestamp).toLocaleTimeString() : "--"} icon={<Clock size={10} color="#8862ED" />} />
           <DataTile label="Today Usage" value={home?.todayUsage ? `${home.todayUsage.toFixed(2)} kWh` : "-- kWh"} icon={<Zap size={10} color="#8862ED" />} />
         </View>
-      </View>
+      </GlassCard>
 
       {/* 24-Hour Usage Chart */}
-      <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-        <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
+      <GlassCard style={styles.card}>
         <View style={styles.cardHeader}>
           <View style={styles.headerLeft}>
             <TrendingUp size={12} color="#548EFF" />
             <Text style={[styles.cardTitle, { color: theme.text }]}>24-Hour Usage</Text>
           </View>
-          <Text style={[styles.cardSubtitle, { color: theme.textMuted }]}>Hourly consumption</Text>
+          <Text style={[styles.cardSubtitle, { color: theme.textSecondary }]}>Hourly consumption</Text>
         </View>
         {hourlyUsage.length > 0 ? (
           <View style={styles.hourlyChart}>
@@ -410,26 +442,25 @@ function TomznTab({
             })}
           </View>
         ) : (
-          <Text style={[styles.emptyText, { color: theme.textMuted }]}>No hourly data available</Text>
+          <Text style={[styles.emptyText, { color: theme.textSecondary }]}>No hourly data available</Text>
         )}
-      </View>
+      </GlassCard>
 
       {/* Tomzn History (recent 10) */}
-      <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-        <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
+      <GlassCard style={styles.card}>
         <View style={styles.cardHeader}>
           <View style={styles.headerLeft}>
             <Clock size={12} color="#548EFF" />
             <Text style={[styles.cardTitle, { color: theme.text }]}>History (Recent 10)</Text>
           </View>
-          <Text style={[styles.cardSubtitle, { color: theme.textMuted }]}>{tomznHistory.length} total records</Text>
+          <Text style={[styles.cardSubtitle, { color: theme.textSecondary }]}>{tomznHistory.length} total records</Text>
         </View>
         {tomznHistory.length > 0 ? (
           tomznHistory.slice(-10).reverse().map((row: any, idx: number) => (
             <View key={idx} style={[styles.historyRow, { borderBottomColor: theme.border }]}>
               <View style={styles.historyLeft}>
-                <Clock size={10} color={isLight ? "#94A3B8" : "#7A8499"} />
-                <Text style={[styles.historyTime, { color: theme.textMuted }]}>
+                <Clock size={10} color={theme.textSecondary} />
+                <Text style={[styles.historyTime, { color: theme.textSecondary }]}>
                   {row.timestamp ? new Date(row.timestamp).toLocaleString() : "--"}
                 </Text>
               </View>
@@ -440,9 +471,9 @@ function TomznTab({
             </View>
           ))
         ) : (
-          <Text style={[styles.emptyText, { color: theme.textMuted }]}>No history records available</Text>
+          <Text style={[styles.emptyText, { color: theme.textSecondary }]}>No history records available</Text>
         )}
-      </View>
+      </GlassCard>
     </View>
   );
 }
@@ -484,6 +515,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   header: {
+    alignItems: "center",
     marginBottom: 4,
   },
   title: {
@@ -497,17 +529,42 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: "Outfit",
     marginTop: 3,
+    textAlign: "center",
   },
 
-  // Tab bar
+  // Tab bar — glass bar with sliding pill
   tabBar: {
     flexDirection: "row",
-    backgroundColor: 'transparent',
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 4,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
     gap: 4,
+    overflow: "hidden",
+    position: "relative",
+    alignItems: "center",
+  },
+  tabBarRim: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  tabPillContainer: {
+    position: "absolute",
+    top: 4,
+    bottom: 4,
+    left: 0,
+    zIndex: 0,
+  },
+  tabPillAccent: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 10,
+    backgroundColor: "rgba(53,227,120,0.10)",
+  },
+  tabPillBorder: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(53,227,120,0.25)",
   },
   tab: {
     flex: 1,
@@ -516,10 +573,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 5,
     paddingVertical: 10,
-    borderRadius: 9,
-  },
-  tabActive: {
-    backgroundColor: "rgba(53,227,120,0.08)",
+    borderRadius: 10,
+    zIndex: 1,
   },
   tabText: {
     color: undefined,
@@ -539,21 +594,10 @@ const styles = StyleSheet.create({
 
   // Card
   card: {
-    backgroundColor: 'transparent',
     borderRadius: 14,
     padding: 14,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
     overflow: "hidden",
     position: "relative",
-  },
-  cardHighlight: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.08)",
   },
   cardHeader: {
     flexDirection: "row",
@@ -692,7 +736,7 @@ const styles = StyleSheet.create({
   },
   dataTileLabel: {
     color: undefined,
-    fontSize: 8,
+    fontSize: 10,
     fontFamily: "Outfit",
     fontWeight: "600",
   },
@@ -774,7 +818,7 @@ const styles = StyleSheet.create({
   },
   historyTime: {
     color: undefined,
-    fontSize: 9,
+    fontSize: 11,
     fontFamily: "Outfit",
   },
   historyRight: {
@@ -784,13 +828,13 @@ const styles = StyleSheet.create({
   },
   historyPower: {
     color: undefined,
-    fontSize: 10,
+    fontSize: 12,
     fontFamily: "Outfit",
     fontWeight: "600",
   },
   historyEnergy: {
     color: undefined,
-    fontSize: 9,
+    fontSize: 11,
     fontFamily: "Outfit",
   },
 

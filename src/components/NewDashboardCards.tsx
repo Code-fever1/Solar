@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, Home, Sparkles, SunMedium, TowerControl, Zap } from
 import { memo } from 'react';
 import { Dimensions, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
+import { GlassCard } from "@/components/GlassCard";
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -64,19 +65,24 @@ function useCardTheme(isLight: boolean): CardTheme {
 export function makeSceneCardTheme(seam: [number, number, number]): CardTheme {
   const d = (v: number) => Math.round(v * 0.42);
   const [r, g, b] = seam;
+  // Adapt text/overlay colors for light scenes (fog, morning-cloud) where
+  // glassmorphism lets more light through — use dark text on light scenes.
+  const luminance = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+  const isLightScene = luminance > 0.4;
+  const overlayBase = isLightScene ? "0,0,0" : "255,255,255";
   return {
     cardBg: `rgb(${d(r)},${d(g)},${d(b)})`,
-    cardBorder: 'rgba(255,255,255,0.08)',
-    cardHighlight: 'rgba(255,255,255,0.06)',
+    cardBorder: `rgba(${overlayBase},0.08)`,
+    cardHighlight: `rgba(${overlayBase},0.06)`,
     cardShadow: 'rgba(0,0,0,0.5)',
-    textPrimary: '#F4F8FC',
-    textSecondary: '#A8B8CA',
-    textMuted: '#8A9BAE',
-    trackBg: 'rgba(255,255,255,0.05)',
-    overlayBg: 'rgba(255,255,255,0.04)',
-    overlayBorder: 'rgba(255,255,255,0.06)',
-    svgGridLine: 'rgba(255,255,255,0.04)',
-    svgTrack: 'rgba(255,255,255,0.06)',
+    textPrimary: isLightScene ? '#1A2332' : '#F4F8FC',
+    textSecondary: isLightScene ? '#4A5868' : '#A8B8CA',
+    textMuted: isLightScene ? '#6B7888' : '#8A9BAE',
+    trackBg: `rgba(${overlayBase},0.05)`,
+    overlayBg: `rgba(${overlayBase},0.04)`,
+    overlayBorder: `rgba(${overlayBase},0.06)`,
+    svgGridLine: `rgba(${overlayBase},${isLightScene ? 0.12 : 0.06})`,
+    svgTrack: `rgba(${overlayBase},0.06)`,
   };
 }
 
@@ -110,16 +116,15 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
   const dominant = solarShare >= gridShare ? 'solar' : 'grid';
 
   return (
-    <View style={[s.card, { backgroundColor: t.cardBg, borderColor: t.cardBorder, shadowColor: t.cardShadow }]}>
-      <View style={[s.cardHighlight, { backgroundColor: t.cardHighlight }]} />
+    <GlassCard style={s.card}>
       <View style={s.cardHeader}>
         <Zap size={11} color="#F5C42E" />
         <Text style={[s.cardTitle, { color: t.textSecondary }]}>Energy Received</Text>
-        <Text style={[s.cardTitleRight, { color: t.textMuted }]}>Today</Text>
+        <Text style={[s.cardTitleRight, { color: t.textSecondary }]}>Today</Text>
       </View>
 
       {/* Hero — total value */}
-      <Text style={[s.heroValue, { color: t.textPrimary }]}>{totalEnergy.toFixed(2)}<Text style={[s.heroUnit, { color: t.textMuted }]}> units</Text></Text>
+      <Text style={[s.heroValue, { color: t.textPrimary }]}>{totalEnergy.toFixed(2)}<Text style={[s.heroUnit, { color: t.textSecondary }]}> units</Text></Text>
 
       {/* Source bars — numbers dominate, donut is secondary */}
       <View style={s.sourceBars}>
@@ -132,7 +137,7 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
           <View style={[s.sourceBarTrack, { backgroundColor: t.trackBg }]}>
             <View style={[s.sourceBarFill, { backgroundColor: '#F5C42E', width: `${solarShare}%` }]} />
           </View>
-          <Text style={[s.sourceBarPct, { color: t.textMuted }]}>{solarShare}%</Text>
+          <Text style={[s.sourceBarPct, { color: t.textSecondary }]}>{solarShare}%</Text>
         </View>
 
         <View style={s.sourceBarRow}>
@@ -144,7 +149,7 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
           <View style={[s.sourceBarTrack, { backgroundColor: t.trackBg }]}>
             <View style={[s.sourceBarFill, { backgroundColor: '#548EFF', width: `${gridShare}%` }]} />
           </View>
-          <Text style={[s.sourceBarPct, { color: t.textMuted }]}>{gridShare}%</Text>
+          <Text style={[s.sourceBarPct, { color: t.textSecondary }]}>{gridShare}%</Text>
         </View>
       </View>
 
@@ -158,7 +163,7 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
           </Text>
         </View>
       </View>
-    </View>
+    </GlassCard>
   );
 });
 
@@ -175,16 +180,15 @@ export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liv
   const loadPct = Math.min(100, (liveLoadW / 2500) * 100);
 
   return (
-    <View style={[s.card, { backgroundColor: t.cardBg, borderColor: t.cardBorder, shadowColor: t.cardShadow }]}>
-      <View style={[s.cardHighlight, { backgroundColor: t.cardHighlight }]} />
+    <GlassCard style={s.card}>
       <View style={s.cardHeader}>
         <Home size={11} color="#32E56B" />
         <Text style={[s.cardTitle, { color: t.textSecondary }]}>Energy Used</Text>
-        <Text style={[s.cardTitleRight, { color: t.textMuted }]}>Today</Text>
+        <Text style={[s.cardTitleRight, { color: t.textSecondary }]}>Today</Text>
       </View>
 
       {/* Hero — total usage */}
-      <Text style={[s.heroValue, { color: t.textPrimary }]}>{totalHomeUsage.toFixed(2)}<Text style={[s.heroUnit, { color: t.textMuted }]}> units</Text></Text>
+      <Text style={[s.heroValue, { color: t.textPrimary }]}>{totalHomeUsage.toFixed(2)}<Text style={[s.heroUnit, { color: t.textSecondary }]}> units</Text></Text>
 
       {/* Live load — with V·A context and colored zone gauge */}
       <View style={s.liveBlock}>
@@ -203,9 +207,9 @@ export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liv
             <View style={[s.loadGaugeMarker, { left: `${loadPct}%`, backgroundColor: t.textPrimary }]} />
           </View>
           <View style={s.loadGaugeLabels}>
-            <Text style={[s.gaugeScaleText, { color: t.textMuted }]}>0</Text>
-            <Text style={[s.gaugeScaleText, { color: t.textMuted }]}>1kW</Text>
-            <Text style={[s.gaugeScaleText, { color: t.textMuted }]}>2.5kW</Text>
+            <Text style={[s.gaugeScaleText, { color: t.textSecondary }]}>0</Text>
+            <Text style={[s.gaugeScaleText, { color: t.textSecondary }]}>1kW</Text>
+            <Text style={[s.gaugeScaleText, { color: t.textSecondary }]}>2.5kW</Text>
           </View>
           <Text style={[s.loadStatusText, { color: statusColor }]}>● {loadStatus} Load</Text>
         </View>
@@ -214,23 +218,23 @@ export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liv
       {/* Stats — peak + vs yesterday */}
       <View style={[s.statRow, { backgroundColor: t.overlayBg }]}>
         <View style={s.statItem}>
-          <Text style={[s.statLabel, { color: t.textMuted }]}>Peak Today</Text>
+          <Text style={[s.statLabel, { color: t.textSecondary }]}>Peak Today</Text>
           <Text style={[s.statValue, { color: t.textPrimary }]}>{Math.round(peakLoadW)}W</Text>
         </View>
         <View style={[s.statSep, { backgroundColor: t.overlayBorder }]} />
         <View style={s.statItem}>
-          <Text style={[s.statLabel, { color: t.textMuted }]}>vs Yesterday</Text>
+          <Text style={[s.statLabel, { color: t.textSecondary }]}>vs Yesterday</Text>
           {hasTrend ? (
             <View style={s.vsRow}>
               {isLower ? <ArrowDown size={10} color="#32E56B" /> : <ArrowUp size={10} color="#EF4C4C" />}
               <Text style={[s.vsValue, { color: isLower ? '#32E56B' : '#EF4C4C' }]}>{Math.abs(vsYesterdayPercent as number)}%</Text>
             </View>
           ) : (
-            <Text style={[s.vsValue, { color: t.textMuted }]}>Building…</Text>
+            <Text style={[s.vsValue, { color: t.textSecondary }]}>Building…</Text>
           )}
         </View>
       </View>
-    </View>
+    </GlassCard>
   );
 });
 
@@ -313,12 +317,14 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
 
   const actualDays = actualCumulative.length;
   const lastActualCumulative = actualCumulative.length > 0 ? actualCumulative[actualCumulative.length - 1] : 0;
-  const yMax = Math.max(100, Math.ceil(Math.max(expectedUnits, lastActualCumulative) / 100) * 100);
+  // Hardcode yMax to 400 units so the forecast line scales accordingly
+  const yMax = 400;
 
   const forecastPoints: Array<{ x: number; y: number }> = [];
   const actualPoints: Array<{ x: number; y: number }> = [];
   const totalPoints = totalCycleDays;
 
+  // Actual line: from day 0 to the last actual data point
   for (let i = 0; i <= elapsedDays && i <= actualDays; i++) {
     const x = (i / totalPoints) * chW;
     const val = actualCumulative[i] || (i === 0 ? 0 : lastActualCumulative);
@@ -326,12 +332,17 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
     actualPoints.push({ x, y });
   }
 
-  for (let i = elapsedDays; i <= totalCycleDays; i++) {
+  // Forecast line: starts at the actual's last point for smooth continuity,
+  // then linearly interpolates to expectedUnits by end of cycle.
+  // No wave — clean straight line from current to projected end.
+  const forecastStartX = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].x : 0;
+  const forecastStartY = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].y : chH;
+  forecastPoints.push({ x: forecastStartX, y: forecastStartY });
+
+  for (let i = elapsedDays + 1; i <= totalCycleDays; i++) {
     const x = (i / totalPoints) * chW;
     const progress = (i - elapsedDays) / Math.max(1, totalCycleDays - elapsedDays);
-    const baseVal = lastActualCumulative + (expectedUnits - lastActualCumulative) * progress;
-    const wave = Math.sin(progress * Math.PI * 3) * (expectedUnits * 0.015);
-    const val = Math.max(0, baseVal + wave);
+    const val = lastActualCumulative + (expectedUnits - lastActualCumulative) * progress;
     const y = chH - Math.min(1, val / yMax) * chH;
     forecastPoints.push({ x, y });
   }
@@ -350,15 +361,14 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   const q3Month = MONTHS[(endMonthIdx + 11) % 12];
 
   return (
-    <View style={[s.wideCard, { backgroundColor: t.cardBg, borderColor: t.cardBorder, shadowColor: t.cardShadow }]}>
-      <View style={[s.cardHighlight, { backgroundColor: t.cardHighlight }]} />
+    <GlassCard style={s.wideCard}>
       {/* Header */}
       <View style={s.cardHeader}>
         <View style={s.headerLeft}>
           <Sparkles size={12} color="#8862ED" />
           <Text style={[s.cardTitle, { color: t.textSecondary }]}>AI Forecast & Budget</Text>
           <View style={s.confidenceBadge}>
-            <Text style={[s.confidenceText, { color: '#8862ED' }]}>{confidence}% Confidence</Text>
+            <Text style={[s.confidenceText, { color: '#A78BFA' }]}>{confidence}% Confidence</Text>
           </View>
         </View>
         <View style={s.headerRight}>
@@ -371,7 +381,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
             </View>
           ) : (
             <View style={[s.trendChip, { backgroundColor: t.overlayBg }]}>
-              <Text style={[s.trendText, { color: t.textMuted }]}>
+              <Text style={[s.trendText, { color: t.textSecondary }]}>
                 Set last month total in settings
               </Text>
             </View>
@@ -382,7 +392,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
       <View style={s.contentRow}>
         <View style={s.leftCol}>
           <Text style={[s.forecastHeroValue, { color: t.textPrimary }]}>{Math.round(expectedUnits)}</Text>
-          <Text style={[s.forecastHeroUnit, { color: t.textMuted }]}>units predicted by {endMonthLabel} {billingDay}</Text>
+          <Text style={[s.forecastHeroUnit, { color: t.textSecondary }]}>units predicted by {endMonthLabel} {billingDay}</Text>
           <Text style={[s.forecastOverUnder, { color: isOver ? '#EF4C4C' : '#32E56B' }]}>
             {isOver ? `+${overBudget} units saved` : overBudget === 0 ? 'On budget' : `${Math.abs(overBudget)} units saved`}
           </Text>
@@ -395,7 +405,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
             return (
               <View style={[s.vsLastMonthRow, { backgroundColor: t.overlayBg }]}>
                 <View style={s.vsLastMonthCol}>
-                  <Text style={[s.vsLastMonthLabel, { color: t.textMuted }]}>This month</Text>
+                  <Text style={[s.vsLastMonthLabel, { color: t.textSecondary }]}>This month</Text>
                   <Text style={[s.vsLastMonthValue, { color: t.textPrimary }]}>{Math.round(expectedUnits)}</Text>
                 </View>
                 <View style={s.vsLastMonthArrow}>
@@ -404,13 +414,13 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
                   ) : (
                     <Text style={[s.vsLastMonthEqual, { color: t.textPrimary }]}>—</Text>
                   )}
-                  <Text style={[s.vsLastMonthGap, { color: hasLastMonth ? gapColor : t.textMuted }]}>
+                  <Text style={[s.vsLastMonthGap, { color: hasLastMonth ? gapColor : t.textSecondary }]}>
                     {hasLastMonth ? `${unitGap > 0 ? '+' : ''}${unitGap}` : 'N/A'}
                   </Text>
                 </View>
                 <View style={s.vsLastMonthCol}>
-                  <Text style={[s.vsLastMonthLabel, { color: t.textMuted }]}>Last month</Text>
-                  <Text style={[s.vsLastMonthValue, { color: t.textPrimary }, !hasLastMonth && { color: t.textMuted, fontSize: 10 }]}>
+                  <Text style={[s.vsLastMonthLabel, { color: t.textSecondary }]}>Last month</Text>
+                  <Text style={[s.vsLastMonthValue, { color: t.textPrimary }, !hasLastMonth && { color: t.textSecondary, fontSize: 10 }]}>
                     {hasLastMonth ? Math.round(lastMonthTotal) : 'Set in settings'}
                   </Text>
                 </View>
@@ -426,26 +436,26 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
 
         <View style={s.rightCol}>
           <View style={s.chartHeader}>
-            <Text style={[s.colLabel, { color: t.textMuted }]}>Cumulative Usage (units)</Text>
+            <Text style={[s.colLabel, { color: t.textSecondary }]}>Cumulative Usage (units)</Text>
             <View style={s.legendRow}>
-              <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: '#32E56B' }]} /><Text style={[s.legendText, { color: t.textMuted }]}>Actual</Text></View>
-              <View style={s.legendItem}><View style={[s.legendDash, { backgroundColor: '#8862ED' }]} /><Text style={[s.legendText, { color: t.textMuted }]}>Forecast</Text></View>
+              <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: '#32E56B' }]} /><Text style={[s.legendText, { color: t.textSecondary }]}>Actual</Text></View>
+              <View style={s.legendItem}><View style={[s.legendDash, { backgroundColor: '#F8C653' }]} /><Text style={[s.legendText, { color: t.textSecondary }]}>Forecast</Text></View>
             </View>
           </View>
           
           <View style={s.chartArea}>
             <View style={s.yAxisCol}>
-              <Text style={[s.axisText, { color: t.textMuted }]}>{yMax}</Text>
-              <Text style={[s.axisText, { color: t.textMuted }]}>{Math.round(yMax * 0.66)}</Text>
-              <Text style={[s.axisText, { color: t.textMuted }]}>{Math.round(yMax * 0.33)}</Text>
-              <Text style={[s.axisText, { color: t.textMuted }]}>0</Text>
+              <Text style={[s.axisText, { color: t.textSecondary }]}>{yMax}</Text>
+              <Text style={[s.axisText, { color: t.textSecondary }]}>{Math.round(yMax * 0.66)}</Text>
+              <Text style={[s.axisText, { color: t.textSecondary }]}>{Math.round(yMax * 0.33)}</Text>
+              <Text style={[s.axisText, { color: t.textSecondary }]}>0</Text>
             </View>
             <View style={[s.chartPlot, { borderColor: t.svgGridLine }]}>
               <Svg width="100%" height={chH} viewBox={`0 0 ${chW} ${chH}`} preserveAspectRatio="none">
                 <Line x1="0" y1={chH * 0.25} x2={chW} y2={chH * 0.25} stroke={t.svgGridLine} strokeWidth="0.5" />
                 <Line x1="0" y1={chH * 0.5} x2={chW} y2={chH * 0.5} stroke={t.svgGridLine} strokeWidth="0.5" />
                 <Line x1="0" y1={chH * 0.75} x2={chW} y2={chH * 0.75} stroke={t.svgGridLine} strokeWidth="0.5" />
-                {forecastPath && <Path d={forecastPath} stroke="#8862ED" strokeWidth="1.5" fill="none" strokeDasharray="3 3" />}
+                {forecastPath && <Path d={forecastPath} stroke="#F8C653" strokeWidth="1.5" fill="none" strokeDasharray="3 3" />}
                 {actualPath && <Path d={actualPath} stroke="#32E56B" strokeWidth="2" fill="none" />}
                 <Circle cx={currentX} cy={currentY} r="3.5" fill="#32E56B" />
                 <Circle cx={currentX} cy={currentY} r="6" fill="#32E56B" opacity="0.2" />
@@ -453,11 +463,11 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
             </View>
           </View>
           <View style={s.xAxisRow}>
-            <Text style={[s.axisText, { color: t.textMuted }]}>{startMonthLabel} 28</Text>
-            <Text style={[s.axisText, { color: t.textMuted }]}>{q1Month} 5</Text>
-            <Text style={[s.axisText, { color: t.textMuted }]}>{midMonth} 12</Text>
-            <Text style={[s.axisText, { color: t.textMuted }]}>{q3Month} 20</Text>
-            <Text style={[s.axisText, { color: t.textMuted }]}>{endMonthLabel} 28</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{startMonthLabel} 28</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{q1Month} 5</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{midMonth} 12</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{q3Month} 20</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{endMonthLabel} 28</Text>
           </View>
         </View>
       </View>
@@ -478,15 +488,15 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
             </Svg>
             <View style={s.meterGaugeInner}>
               <Text style={[s.meterGaugeValue, { color: t.textPrimary }]}>{Math.round(meter1Left)}</Text>
-              <Text style={[s.meterGaugeUnit, { color: t.textMuted }]}>units left</Text>
+              <Text style={[s.meterGaugeUnit, { color: t.textSecondary }]}>units left</Text>
             </View>
           </View>
           <View style={s.meterStatsCol}>
-            <Text style={[s.meterStatTotalLabel, { color: t.textMuted }]}>Total Used</Text>
-            <Text style={[s.meterStatTotalValue, { color: t.textPrimary }]}>{meter1Used.toFixed(2)} <Text style={[s.meterStatUnit, { color: t.textMuted }]}>units</Text></Text>
+            <Text style={[s.meterStatTotalLabel, { color: t.textSecondary }]}>Total Used</Text>
+            <Text style={[s.meterStatTotalValue, { color: t.textPrimary }]}>{meter1Used.toFixed(2)} <Text style={[s.meterStatUnit, { color: t.textSecondary }]}>units</Text></Text>
             <View style={[s.meterStatSep, { backgroundColor: t.overlayBorder }]} />
             <View style={[s.meterTodayPill, { backgroundColor: t.overlayBg }]}>
-              <Text style={[s.meterTodayLabel, { color: t.textMuted }]}>Today</Text>
+              <Text style={[s.meterTodayLabel, { color: t.textSecondary }]}>Today</Text>
               <Text style={[s.meterTodayValue, { color: t.textPrimary }]}>{meter1Today.toFixed(2)} units</Text>
             </View>
           </View>
@@ -496,7 +506,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
 
         {/* Middle — Total Remaining ring */}
         <View style={s.meterDetailsMiddle}>
-          <Text style={[s.middleTitle, { color: t.textMuted }]}>TOTAL REMAINING</Text>
+          <Text style={[s.middleTitle, { color: t.textSecondary }]}>TOTAL REMAINING</Text>
           <View style={s.middleRingWrap}>
             <Svg width={110} height={110} viewBox="0 0 140 140">
               <Circle cx="70" cy="70" r="60" stroke={isLight ? "rgba(136,98,237,0.12)" : "rgba(136,98,237,0.15)"} strokeWidth="12" fill="none" strokeDasharray="282.7 377" strokeLinecap="round" transform="rotate(135 70 70)" />
@@ -504,13 +514,13 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
             </Svg>
             <View style={s.middleRingInner}>
               <Text style={[s.middleRingValue, { color: t.textPrimary }]}>{Math.round(totalRemaining)}</Text>
-              <Text style={[s.middleRingUnit, { color: t.textMuted }]}>units left</Text>
+              <Text style={[s.middleRingUnit, { color: t.textSecondary }]}>units left</Text>
             </View>
           </View>
-          <Text style={[s.middleRemainingDays, { color: t.textMuted }]}>≈ {estDaysLeft} days remaining</Text>
+          <Text style={[s.middleRemainingDays, { color: t.textSecondary }]}>≈ {estDaysLeft} days remaining</Text>
           <View style={s.meterStatsCol}>
-            <Text style={[s.meterStatTotalLabel, { color: t.textMuted }]}>Total Used</Text>
-            <Text style={[s.meterStatTotalValue, { color: t.textPrimary }]}>{totalUsed.toFixed(2)} <Text style={[s.meterStatUnit, { color: t.textMuted }]}>units</Text></Text>
+            <Text style={[s.meterStatTotalLabel, { color: t.textSecondary }]}>Total Used</Text>
+            <Text style={[s.meterStatTotalValue, { color: t.textPrimary }]}>{totalUsed.toFixed(2)} <Text style={[s.meterStatUnit, { color: t.textSecondary }]}>units</Text></Text>
           </View>
         </View>
 
@@ -526,22 +536,22 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
             </Svg>
             <View style={s.meterGaugeInner}>
               <Text style={[s.meterGaugeValue, { color: t.textPrimary }]}>{Math.round(meter2Left)}</Text>
-              <Text style={[s.meterGaugeUnit, { color: t.textMuted }]}>units left</Text>
+              <Text style={[s.meterGaugeUnit, { color: t.textSecondary }]}>units left</Text>
             </View>
           </View>
           <View style={s.meterStatsCol}>
-            <Text style={[s.meterStatTotalLabel, { color: t.textMuted }]}>Total Used</Text>
-            <Text style={[s.meterStatTotalValue, { color: t.textPrimary }]}>{meter2Used.toFixed(2)} <Text style={[s.meterStatUnit, { color: t.textMuted }]}>units</Text></Text>
+            <Text style={[s.meterStatTotalLabel, { color: t.textSecondary }]}>Total Used</Text>
+            <Text style={[s.meterStatTotalValue, { color: t.textPrimary }]}>{meter2Used.toFixed(2)} <Text style={[s.meterStatUnit, { color: t.textSecondary }]}>units</Text></Text>
             <View style={[s.meterStatSep, { backgroundColor: t.overlayBorder }]} />
             <View style={[s.meterTodayPill, { backgroundColor: t.overlayBg }]}>
-              <Text style={[s.meterTodayLabel, { color: t.textMuted }]}>Today</Text>
+              <Text style={[s.meterTodayLabel, { color: t.textSecondary }]}>Today</Text>
               <Text style={[s.meterTodayValue, { color: t.textPrimary }]}>{meter2Today.toFixed(2)} units</Text>
             </View>
           </View>
         </View>
 
       </View>
-    </View>
+    </GlassCard>
   );
 });
 
@@ -577,23 +587,19 @@ const s = StyleSheet.create({
     width: cardWidth,
     borderRadius: 14,
     padding: 12,
-    borderWidth: 1,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
     elevation: 4,
-    overflow: 'hidden',
   },
   wideCard: {
     width: '100%',
     borderRadius: 14,
     padding: 14,
-    borderWidth: 1,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
     elevation: 4,
-    overflow: 'hidden',
   },
   // Faint top highlight — glass effect
   cardHighlight: {
@@ -861,18 +867,18 @@ const s = StyleSheet.create({
     flexShrink: 0,
   },
   confidenceBadge: {
-    backgroundColor: 'rgba(136,98,237,0.15)',
+    backgroundColor: 'rgba(136,98,237,0.25)',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(136,98,237,0.2)',
+    borderColor: 'rgba(136,98,237,0.40)',
   },
   confidenceText: {
 
-    fontSize: 9,
+    fontSize: 10,
     fontFamily: 'Outfit',
-    fontWeight: '600',
+    fontWeight: '700',
   },
   forecastHeroValue: {
 

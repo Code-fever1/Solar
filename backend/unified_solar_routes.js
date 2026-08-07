@@ -1108,10 +1108,16 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   // Unallocated delta: live TOMZN reading minus the last import-period reading.
   // Uses lastImportEnergyKwh (frozen during export) so export-period counter
   // increases aren't counted as unallocated usage.
+  // Additionally, when the inverter is currently exporting, zero out the delta
+  // entirely — TOMZN's cumulative counter increases during export too, and that
+  // increase must not be added to the active meter's reading in real-time.
   const lastImportKwh = state.lastImportEnergyKwh ?? state.lastTomzn?.energyKwh ?? tomznSource?.energyKwh ?? 0;
-  const unallocatedDelta = (tomznSource && tomznSource.energyKwh >= lastImportKwh)
-    ? round(tomznSource.energyKwh - lastImportKwh, 3)
-    : 0;
+  const dashboardExporting = latestInverter && latestInverter.isOnline !== false && (latestInverter.gridWRaw ?? 0) < 0;
+  const unallocatedDelta = dashboardExporting
+    ? 0
+    : (tomznSource && tomznSource.energyKwh >= lastImportKwh)
+      ? round(tomznSource.energyKwh - lastImportKwh, 3)
+      : 0;
 
   const readings = {};
   let maxErrorPenalty = 0;

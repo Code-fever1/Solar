@@ -8,6 +8,7 @@ import {
   vec,
 } from "@shopify/react-native-skia";
 import { RefreshCw } from "lucide-react-native";
+import { BlurView } from "expo-blur";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import Animated, {
@@ -23,23 +24,11 @@ import Animated, {
   withTiming,
   type SharedValue,
 } from "react-native-reanimated";
-import Svg, {
-  Circle,
-  Defs,
-  FeGaussianBlur,
-  Filter,
-  LinearGradient,
-  Path,
-  Stop,
-} from "react-native-svg";
-
 import type { InverterTelemetry, WeatherState } from "@/context/energy-types";
 import type { TomznLive } from "@/context/EnergyContext";
 import { HeroOverlayEngine } from "@/overlay/HeroOverlayEngine";
 import type { HeroOverlayConfig, OverlayLabelPosition } from "@/overlay/types";
 
-const AnimatedPath = Animated.createAnimatedComponent(Path);
-const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 const AnimatedView = Animated.createAnimatedComponent(View);
 
 // Fixed aspect ratio for the card so day/night backgrounds never change sizing.
@@ -121,230 +110,12 @@ function formatPowerShort(watts: number) {
   return { value: String(Math.round(watts)), unit: "W" };
 }
 
-// ── Layer 4 — Moving Energy Particles ───────────────────────────────────
-// Animated circles travelling along the Bézier curve. NOT stroke-dasharray.
-// Each particle fades in at the source and fades out as it merges into the hub.
-function Particle({
-  ctrl,
-  color,
-  offset,
-  duration,
-  size,
-  activeOpacity,
-}: {
-  ctrl: CtrlArray;
-  color: string;
-  offset: number;
-  duration: number;
-  size: number;
-  activeOpacity: SharedValue<number>;
-}) {
-  const progress = useSharedValue(0);
-
-  useEffect(() => {
-    progress.value = 0;
-    progress.value = withRepeat(withTiming(1, { duration, easing: Easing.linear }), -1, false);
-  }, [duration, progress]);
-
-  const animatedProps = useAnimatedProps(() => {
-    const t = (progress.value + offset) % 1;
-    const u = 1 - t;
-    const x = u * u * u * ctrl[0].x + 3 * u * u * t * ctrl[1].x + 3 * u * t * t * ctrl[2].x + t * t * t * ctrl[3].x;
-    const y = u * u * u * ctrl[0].y + 3 * u * u * t * ctrl[1].y + 3 * u * t * t * ctrl[2].y + t * t * t * ctrl[3].y;
-    let opacity = activeOpacity.value;
-    if (t < 0.08) opacity *= t / 0.08;
-    else if (t > 0.88) opacity *= (1 - t) / 0.12;
-    return { cx: x, cy: y, opacity };
-  });
-
-  return (
-    <>
-      {/* Soft glow halo */}
-      <AnimatedCircle animatedProps={animatedProps} r={size * 1.8} fill={color} filter="url(#particleGlow)" />
-      {/* Water droplet core */}
-      <AnimatedCircle animatedProps={animatedProps} r={size * 0.55} fill={color} />
-    </>
-  );
-}
-
-// ── Layer 4b — Bubble Energy Particles (Home stream only) ────────────────
-// Particles stay fixed at the stream's start point and expand like a bubble:
-// grow from original size to 4x while fading out, then restart.
-function BubbleParticle({
-  ctrl,
-  color,
-  offset,
-  duration,
-  size,
-  activeOpacity,
-}: {
-  ctrl: CtrlArray;
-  color: string;
-  offset: number;
-  duration: number;
-  size: number;
-  activeOpacity: SharedValue<number>;
-}) {
-  const progress = useSharedValue(0);
-
-  useEffect(() => {
-    progress.value = 0;
-    progress.value = withRepeat(withTiming(1, { duration, easing: Easing.linear }), -1, false);
-  }, [duration, progress]);
-
-  const startX = ctrl[0].x;
-  const startY = ctrl[0].y;
-
-  const glowProps = useAnimatedProps(() => {
-    const t = (progress.value + offset) % 1;
-    const scale = 1 + t * 3;
-    const opacity = activeOpacity.value * (1 - t);
-    return { cx: startX, cy: startY, r: size * 2.8 * scale, opacity };
-  });
-
-  const coreProps = useAnimatedProps(() => {
-    const t = (progress.value + offset) % 1;
-    const scale = 1 + t * 3;
-    const opacity = activeOpacity.value * (1 - t);
-    return { cx: startX, cy: startY, r: size * 0.7 * scale, opacity };
-  });
-
-  return (
-    <>
-      <AnimatedCircle animatedProps={glowProps} fill={color} filter="url(#particleGlow)" />
-      <AnimatedCircle animatedProps={coreProps} fill={color} />
-    </>
-  );
-}
-
-// ── Layers 2 + 3 + 4 — Full Stream ──────────────────────────────────────
-function StreamLayer({
-  ctrl,
-  pathD,
-  glowColor,
-  streamId,
-  active,
-  power,
-  particleColor,
-  strokeWidth = 1.5,
-}: {
-  ctrl: CtrlArray;
-  pathD: string;
-  glowColor: string;
-  streamId: string;
-  active: boolean;
-  power: number;
-  particleColor: string;
-  strokeWidth?: number;
-}) {
-  const activeOpacity = useSharedValue(active ? 1 : 0);
-  const pulse = useSharedValue(0.85);
-
-  useEffect(() => {
-    activeOpacity.value = withTiming(active ? 1 : 0, { duration: 500 });
-  }, [active, activeOpacity]);
-
-  useEffect(() => {
-    if (active) {
-      pulse.value = 0.85;
-      pulse.value = withRepeat(
-        withSequence(withTiming(1, { duration: 1000 }), withTiming(0.7, { duration: 1000 })),
-        -1,
-        false,
-      );
-    }
-  }, [active, pulse]);
-
-  // Particle count scales with power: 0W→0, 500W→1, 1500W→2, 4000W→4, 8000W→8
-  const particleCount = active ? Math.min(8, Math.max(1, Math.round(power / 1000))) : 0;
-  // Duration: 6s at low power → 2s at high power
-  const duration = Math.max(2000, 6000 - (power / 8000) * 4000);
-  // Particle size: 2px at low power → 3px at high power (slim water droplets)
-  const particleSize = 2 + Math.min(1, power / 4000);
-
-  const glowProps = useAnimatedProps(() => ({ opacity: activeOpacity.value * 0.15 }));
-  const streamProps = useAnimatedProps(() => ({ opacity: activeOpacity.value * pulse.value }));
-
-  return (
-    <>
-      {/* Layer 2 — Base Glow (slim ambient halo) */}
-      <AnimatedPath
-        d={pathD}
-        stroke={glowColor}
-        strokeWidth={strokeWidth + 2}
-        fill="none"
-        strokeLinecap="round"
-        animatedProps={glowProps}
-        filter="url(#streamGlow)"
-      />
-      {/* Layer 3 — Main Stream (gradient, pulsing) */}
-      <AnimatedPath
-        d={pathD}
-        stroke={`url(#${streamId})`}
-        strokeWidth={strokeWidth}
-        fill="none"
-        strokeLinecap="round"
-        animatedProps={streamProps}
-      />
-      {/* Layer 4 — Water-flow particles travelling smoothly along the path */}
-      {Array.from({ length: particleCount }).map((_, i) => (
-        <Particle
-          key={`p-${particleCount}-${i}`}
-          ctrl={ctrl}
-          color={particleColor}
-          offset={i / particleCount}
-          duration={duration}
-          size={particleSize}
-          activeOpacity={activeOpacity}
-        />
-      ))}
-    </>
-  );
-}
-
-// ── Inverter Hub — central junction node where all energy converges ────
-function InverterHub({ solarActive, gridActive, homeActive }: { solarActive: boolean; gridActive: boolean; homeActive: boolean }) {
-  const breath = useSharedValue(0.3);
-  const anyActive = solarActive || gridActive || homeActive;
-
-  useEffect(() => {
-    breath.value = 0.3;
-    breath.value = withRepeat(
-      withSequence(
-        withTiming(anyActive ? 0.8 : 0.4, { duration: 1000 }),
-        withTiming(anyActive ? 0.3 : 0.2, { duration: 1000 }),
-      ),
-      -1,
-      false,
-    );
-  }, [anyActive, breath]);
-
-  const glowProps = useAnimatedProps(() => ({
-    r: 10 + breath.value * 12,
-    opacity: breath.value * 0.35,
-  }));
-
-  const coreProps = useAnimatedProps(() => ({
-    r: 4 + breath.value * 3,
-    opacity: breath.value * 0.7,
-  }));
-
-  const ringProps = useAnimatedProps(() => ({
-    r: 8 + breath.value * 2,
-    opacity: anyActive ? 0.5 : 0.2,
-  }));
-
-  return (
-    <>
-      {/* Outer glow */}
-      <AnimatedCircle cx={HUB_X} cy={HUB_Y} animatedProps={glowProps} fill="#5EE6FF" filter="url(#hubGlow)" />
-      {/* Static ring */}
-      <AnimatedCircle cx={HUB_X} cy={HUB_Y} animatedProps={ringProps} fill="none" stroke="#5EE6FF" strokeWidth={1.5} />
-      {/* Bright core */}
-      <AnimatedCircle cx={HUB_X} cy={HUB_Y} animatedProps={coreProps} fill="#E0F8FF" />
-    </>
-  );
-}
+// ── Layer 4 — Moving Energy Particles (Skia) ────────────────────────────
+// NOTE: Old SVG-based Particle/BubbleParticle/StreamLayer/InverterHub
+// components were removed — they used AnimatedCircle/AnimatedPath with
+// infinite withRepeat animations and no cleanup. The Skia versions below
+// (SkiaParticle, SkiaBubbleParticle, SkiaStreamLayer, SkiaInverterHub)
+// are used instead with proper cancelAnimation cleanup.
 
 function SkiaParticle({ ctrl, color, offset, progress, size, activeOpacity, reverse }: { ctrl: CtrlArray; color: string; offset: number; progress: SharedValue<number>; size: number; activeOpacity: SharedValue<number>; reverse?: boolean }) {
   const cx = useDerivedValue(() => {
@@ -1061,17 +832,37 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
             disabled={!onSyncPress}
             style={({ pressed }) => [styles.footerPill, onSyncPress && pressed && { opacity: 0.6 }]}
           >
-            <RefreshCw size={9} color="#DCE7F2" />
-            <Text style={styles.footerText}>{updatedLabel}</Text>
+            <BlurView
+              intensity={40}
+              tint="dark"
+              style={StyleSheet.absoluteFill}
+              blurMethod={Platform.OS === "android" ? "none" : undefined}
+            />
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255,255,255,0.05)" }]} />
+            <View style={styles.footerPillRim} />
+            <View style={styles.footerPillContent}>
+              <RefreshCw size={9} color="#DCE7F2" />
+              <Text style={styles.footerText}>{updatedLabel}</Text>
+            </View>
           </Pressable>
           <View style={styles.footerPill}>
-            <View style={[styles.footerDot, { backgroundColor: modeColor }]} />
-            <Text style={[styles.footerText, { color: modeColor }]}>{modeLabel}</Text>
-            {!isExporting && (tomznDrawing || (relayOnIdle && solarProducing)) && (
-              <Text style={[styles.footerText, { color: paceColor, fontWeight: '700', marginLeft: 4 }]}>
-                · {paceLabel}
-              </Text>
-            )}
+            <BlurView
+              intensity={40}
+              tint="dark"
+              style={StyleSheet.absoluteFill}
+              blurMethod={Platform.OS === "android" ? "none" : undefined}
+            />
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255,255,255,0.05)" }]} />
+            <View style={styles.footerPillRim} />
+            <View style={styles.footerPillContent}>
+              <View style={[styles.footerDot, { backgroundColor: modeColor }]} />
+              <Text style={[styles.footerText, { color: modeColor }]}>{modeLabel}</Text>
+              {!isExporting && (tomznDrawing || (relayOnIdle && solarProducing)) && (
+                <Text style={[styles.footerText, { color: paceColor, fontWeight: '700', marginLeft: 4 }]}>
+                  · {paceLabel}
+                </Text>
+              )}
+            </View>
           </View>
         </View>
       </View>
@@ -1357,13 +1148,23 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   footerPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    backgroundColor: "rgba(10,18,28,0.55)",
     borderRadius: 12,
     paddingHorizontal: 9,
     paddingVertical: 5,
+    overflow: "hidden",
+    position: "relative",
+  },
+  footerPillRim: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+  },
+  footerPillContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    zIndex: 1,
   },
   footerDot: { width: 6, height: 6, borderRadius: 3 },
   footerText: { color: "#E4EDF6", fontFamily: "Outfit", fontSize: 9 },

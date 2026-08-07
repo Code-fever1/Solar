@@ -1,3 +1,4 @@
+import { GlassCard } from "@/components/GlassCard";
 import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
@@ -24,10 +25,16 @@ function formatReading(reading: number): string {
 
 export default function LogsScreen() {
   const insets = useSafeAreaInsets();
-  const { isLight, ...theme } = useSceneTheme();
+  const theme = useSceneTheme();
   const { manualLogs, deleteManualLog, meters } = useEnergy();
 
   const recentLogs = [...manualLogs].sort((a, b) => b.timestamp - a.timestamp).slice(0, 10);
+
+  // Delta between current live reading and the last logged manual reading per meter.
+  const lastLogged1 = manualLogs.filter(l => l.meterId === 'meter1').sort((a, b) => b.timestamp - a.timestamp)[0];
+  const lastLogged2 = manualLogs.filter(l => l.meterId === 'meter2').sort((a, b) => b.timestamp - a.timestamp)[0];
+  const delta1 = lastLogged1 ? meters.meter1.reading - lastLogged1.reading : 0;
+  const delta2 = lastLogged2 ? meters.meter2.reading - lastLogged2.reading : 0;
 
   const handleDelete = (logId: string, logMeter: string, logReading: number) => {
     Alert.alert(
@@ -61,31 +68,42 @@ export default function LogsScreen() {
         ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
+        {/* Header — centered */}
         <View style={styles.header}>
           <Text style={[styles.title, { color: theme.text }]}>Readings Log</Text>
           <Text style={[styles.subtitle, { color: theme.textSecondary }]}>Manual meter readings history & calibration logs</Text>
         </View>
 
-        {/* Summary stats */}
+        {/* Summary stats — glass morphism cards */}
         <View style={styles.statsRow}>
-          <View style={[styles.statCard, { borderColor: theme.cardBorder }]}>
-            <View style={[styles.statHighlight, { backgroundColor: theme.cardHighlight }]} />
-            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Total Logs</Text>
+          <GlassCard style={styles.statCard}>
+            <Text style={[styles.statLabel, { color: theme.text }]}>Total Logs</Text>
             <Text style={[styles.statValue, { color: theme.text }]}>{manualLogs.length}</Text>
-          </View>
-          <View style={[styles.statCard, { borderColor: theme.cardBorder }]}>
-            <View style={[styles.statHighlight, { backgroundColor: theme.cardHighlight }]} />
-            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Meter 1 Reading</Text>
+          </GlassCard>
+          <GlassCard style={styles.statCard}>
+            <Text style={[styles.statLabel, { color: theme.text }]}>Meter 1</Text>
             <Text style={[styles.statValue, { color: theme.text }]}>{formatReading(meters.meter1.reading)}</Text>
-            <Text style={[styles.statUnit, { color: theme.textMuted }]}>units</Text>
-          </View>
-          <View style={[styles.statCard, { borderColor: theme.cardBorder }]}>
-            <View style={[styles.statHighlight, { backgroundColor: theme.cardHighlight }]} />
-            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Meter 2 Reading</Text>
+            <View style={styles.statBottomRow}>
+              <Text style={[styles.statUnit, { color: theme.textSecondary }]}>units</Text>
+              {delta1 > 0.05 && (
+                <View style={[styles.deltaTag, { backgroundColor: 'rgba(50,229,107,0.12)' }]}>
+                  <Text style={[styles.deltaTagText, { color: '#32E56B' }]}>+{delta1.toFixed(1)}</Text>
+                </View>
+              )}
+            </View>
+          </GlassCard>
+          <GlassCard style={styles.statCard}>
+            <Text style={[styles.statLabel, { color: theme.text }]}>Meter 2</Text>
             <Text style={[styles.statValue, { color: theme.text }]}>{formatReading(meters.meter2.reading)}</Text>
-            <Text style={[styles.statUnit, { color: theme.textMuted }]}>units</Text>
-          </View>
+            <View style={styles.statBottomRow}>
+              <Text style={[styles.statUnit, { color: theme.textSecondary }]}>units</Text>
+              {delta2 > 0.05 && (
+                <View style={[styles.deltaTag, { backgroundColor: 'rgba(84,142,255,0.12)' }]}>
+                  <Text style={[styles.deltaTagText, { color: '#548EFF' }]}>+{delta2.toFixed(1)}</Text>
+                </View>
+              )}
+            </View>
+          </GlassCard>
         </View>
 
         {/* Recent Readings */}
@@ -94,12 +112,11 @@ export default function LogsScreen() {
             <Activity size={14} color="#8862ED" />
             <Text style={[styles.sectionTitle, { color: theme.text }]}>Recent Readings</Text>
           </View>
-          <Text style={[styles.sectionCount, { color: theme.textMuted }]}>{recentLogs.length} of {manualLogs.length}</Text>
+          <Text style={[styles.sectionCount, { color: theme.textSecondary }]}>{recentLogs.length} of {manualLogs.length}</Text>
         </View>
 
         {recentLogs.length > 0 ? (
-          <View style={[styles.logCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-            <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
+          <GlassCard style={styles.logCard}>
             {recentLogs.map((log, idx) => {
               const prevLog = recentLogs[idx + 1];
               const delta = prevLog ? log.reading - prevLog.reading : 0;
@@ -114,15 +131,15 @@ export default function LogsScreen() {
                       <Text style={[styles.meterBadgeText, { color: meterColor }]}>{isMeter1 ? 'M1' : 'M2'}</Text>
                     </View>
                     <View style={styles.logInfo}>
-                      <Text style={[styles.logMeter, { color: theme.textSecondary }]}>{meterLabel}</Text>
-                      <Text style={[styles.logTime, { color: theme.textMuted }]}>{formatDateTime(log.timestamp)}</Text>
+                      <Text style={[styles.logMeter, { color: theme.text }]}>{meterLabel}</Text>
+                      <Text style={[styles.logTime, { color: theme.textSecondary }]}>{formatDateTime(log.timestamp)}</Text>
                     </View>
                   </View>
 
                   {/* Middle: reading + delta */}
                   <View style={styles.logMiddle}>
                     <Text style={[styles.logReading, { color: theme.text }]}>{formatReading(log.reading)}</Text>
-                    <Text style={[styles.logUnit, { color: theme.textMuted }]}>units</Text>
+                    <Text style={[styles.logUnit, { color: theme.textSecondary }]}>units</Text>
                     {delta > 0 && (
                       <View style={styles.deltaChip}>
                         <ArrowUpRight size={8} color={meterColor} />
@@ -133,28 +150,27 @@ export default function LogsScreen() {
 
                   {/* Right: notes + delete */}
                   <View style={styles.logRight}>
-                    {log.notes ? <Text style={[styles.logNote, { color: theme.textMuted }]} numberOfLines={1}>{log.notes}</Text> : null}
+                    {log.notes ? <Text style={[styles.logNote, { color: theme.textSecondary }]} numberOfLines={1}>{log.notes}</Text> : null}
                     <Pressable
                       style={styles.deleteBtn}
                       hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                       onPress={() => handleDelete(log.id, meterLabel, log.reading)}
                     >
-                      <Trash2 size={15} color="#EF4C4C" />
+                      <Trash2 size={15} color="#FF5252" />
                     </Pressable>
                   </View>
                 </View>
               );
             })}
-          </View>
+          </GlassCard>
         ) : (
-          <View style={[styles.emptyCard, { borderColor: theme.cardBorder }]}>
-            <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
+          <GlassCard style={styles.emptyCard}>
             <View style={styles.emptyState}>
-              <Clock size={28} color={isLight ? "#94A3B8" : "#7A8499"} />
+              <Clock size={28} color={theme.textSecondary} />
               <Text style={[styles.emptyTitle, { color: theme.text }]}>No readings yet</Text>
               <Text style={[styles.emptySub, { color: theme.textSecondary }]}>Manual readings logged from Settings will appear here.</Text>
             </View>
-          </View>
+          </GlassCard>
         )}
       </ScrollView>
     </View>
@@ -172,19 +188,19 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   header: {
+    alignItems: 'center',
     marginBottom: 4,
   },
   title: {
-    color: undefined,
     fontFamily: 'Outfit',
     fontSize: 26,
     fontWeight: '700',
   },
   subtitle: {
-    color: undefined,
     fontSize: 12,
     fontFamily: 'Outfit',
     marginTop: 3,
+    textAlign: 'center',
   },
 
   // Stats row
@@ -194,40 +210,41 @@ const styles = StyleSheet.create({
   },
   statCard: {
     flex: 1,
-    backgroundColor: 'transparent',
-    borderRadius: 12,
     padding: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  statHighlight: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.08)',
   },
   statLabel: {
-    color: undefined,
-    fontSize: 8,
+    fontSize: 10,
     fontFamily: 'Outfit',
     fontWeight: '600',
     letterSpacing: 0.3,
   },
   statValue: {
-    color: undefined,
     fontSize: 16,
     fontFamily: 'Outfit',
     fontWeight: '700',
     marginTop: 3,
   },
   statUnit: {
-    color: undefined,
-    fontSize: 8,
+    fontSize: 10,
     fontFamily: 'Outfit',
+  },
+  statBottomRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 2,
+  },
+  deltaTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+    borderWidth: 0.5,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  deltaTagText: {
+    fontSize: 9,
+    fontFamily: 'Outfit',
+    fontWeight: '700',
   },
 
   // Section header
@@ -245,34 +262,19 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   sectionTitle: {
-    color: undefined,
     fontSize: 11,
     fontFamily: 'Outfit',
     fontWeight: '700',
     letterSpacing: 0.5,
   },
   sectionCount: {
-    color: undefined,
-    fontSize: 9,
+    fontSize: 10,
     fontFamily: 'Outfit',
   },
 
   // Log card
   logCard: {
-    backgroundColor: 'transparent',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  cardHighlight: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    padding: 0,
   },
 
   // Log row
@@ -308,14 +310,12 @@ const styles = StyleSheet.create({
     gap: 1,
   },
   logMeter: {
-    color: undefined,
     fontSize: 12,
     fontFamily: 'Outfit',
     fontWeight: '600',
   },
   logTime: {
-    color: undefined,
-    fontSize: 9,
+    fontSize: 10,
     fontFamily: 'Outfit',
   },
 
@@ -325,14 +325,12 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   logReading: {
-    color: undefined,
     fontSize: 15,
     fontFamily: 'Outfit',
     fontWeight: '700',
   },
   logUnit: {
-    color: undefined,
-    fontSize: 8,
+    fontSize: 10,
     fontFamily: 'Outfit',
   },
   deltaChip: {
@@ -356,8 +354,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   logNote: {
-    color: undefined,
-    fontSize: 9,
+    fontSize: 10,
     fontFamily: 'Outfit',
     maxWidth: 60,
   },
@@ -365,21 +362,16 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 10,
-    backgroundColor: 'rgba(239,76,76,0.10)',
+    backgroundColor: 'rgba(255,82,82,0.18)',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(239,76,76,0.15)',
+    borderColor: 'rgba(255,82,82,0.30)',
   },
 
   // Empty state
   emptyCard: {
-    backgroundColor: 'transparent',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    overflow: 'hidden',
-    position: 'relative',
+    padding: 0,
   },
   emptyState: {
     alignItems: 'center',
@@ -387,14 +379,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyTitle: {
-    color: undefined,
     fontSize: 14,
     fontFamily: 'Outfit',
     fontWeight: '600',
     marginTop: 4,
   },
   emptySub: {
-    color: undefined,
     fontSize: 11,
     fontFamily: 'Outfit',
     textAlign: 'center',

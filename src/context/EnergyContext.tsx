@@ -598,7 +598,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const value: EnergyContextValue = {
+  const value = useMemo<EnergyContextValue>(() => ({
     live, tomznLive, inverter, weather, energyToday, flowHistory, home, meters, activeMeter, changeover, recommendations, alerts,
     history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, ups: snapshot?.ups ?? null, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
@@ -610,7 +610,13 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     refreshAll,
     refreshTomznForce,
     refreshInverterForce,
-  };
+  }), [
+    live, tomznLive, inverter, weather, energyToday, flowHistory, home, meters, activeMeter, changeover, recommendations, alerts,
+    history, manualLogs, manualBaselines, tomznHistory, snapshot?.meta, snapshot?.ups, summary,
+    period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
+    setManualBaseline, setLastMonthTotal, addManualLog, editManualLog, deleteManualLog,
+    refreshTomzn, refreshAll, refreshTomznForce, refreshInverterForce, loadDashboard,
+  ]);
 
   return <EnergyContext.Provider value={value}>{children}</EnergyContext.Provider>;
 }

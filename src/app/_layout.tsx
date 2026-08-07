@@ -9,6 +9,7 @@ import { DarkTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 import { EnergyProvider } from "@/context/EnergyContext";
 import { SceneThemeProvider } from "@/context/SceneThemeContext";
@@ -39,18 +40,20 @@ export default function RootLayout() {
   }
 
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
     <SafeAreaProvider>
       <ThemeProvider value={DarkTheme}>
           <EnergyProvider>
           <SceneThemeProvider>
-            <Stack screenOptions={{ headerShown: false }}>
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0B0F1A" } }}>
               <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="overlay-editor" />
+              <Stack.Screen name="overlay-editor" options={{ animation: "slide_from_right" }} />
               <Stack.Screen name="+not-found" />
             </Stack>
           </SceneThemeProvider>
           </EnergyProvider>
       </ThemeProvider>
     </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

@@ -1,34 +1,102 @@
+import { GlassCard } from "@/components/GlassCard";
 import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
-import { Activity, ArrowLeft, BarChart2, CalendarDays, Edit3, History, RefreshCw, Save, Sparkles } from "lucide-react-native";
+import { Activity, BarChart2, CalendarDays, Edit3, RefreshCw, Save, Sparkles } from "lucide-react-native";
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { BlurView } from "expo-blur";
 import Svg, { Circle, Path } from "react-native-svg";
 import { SceneBackground } from "@/components/SceneBackground";
+
+const round = (v: number, d = 2) => Math.round(v * 10 ** d) / 10 ** d;
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { isLight, ...theme } = useSceneTheme();
-  const { swapChangeover, activeMeter, meters, home, setManualBaseline, setLastMonthTotal, addManualLog } = useEnergy();
-  
-  const [meter1Baseline, setMeter1Baseline] = useState("");
-  const [meter2Baseline, setMeter2Baseline] = useState("");
+  const { swapChangeover, activeMeter, meters, home, setManualBaseline, setLastMonthTotal, addManualLog, manualLogs } = useEnergy();
+
+  // 28th baselines — pre-filled with current baseline, locked until Edit pressed
+  const baseline1 = meters.meter1.reading - (meters.meter1.cycleUsage || 0);
+  const baseline2 = meters.meter2.reading - (meters.meter2.cycleUsage || 0);
+  const [meter1Baseline, setMeter1Baseline] = useState(String(baseline1.toFixed(2)));
+  const [meter2Baseline, setMeter2Baseline] = useState(String(baseline2.toFixed(2)));
+  const [editingBaselines, setEditingBaselines] = useState(false);
   const [savingBaselines, setSavingBaselines] = useState(false);
-  
+
+  // Keep baseline fields in sync when meter data loads
+  useEffect(() => {
+    if (!editingBaselines) {
+      setMeter1Baseline(String(baseline1.toFixed(2)));
+      setMeter2Baseline(String(baseline2.toFixed(2)));
+    }
+  }, [baseline1, baseline2, editingBaselines]);
+
+  // Manual readings — always empty, user enters new values
   const [meter1Reading, setMeter1Reading] = useState("");
   const [meter2Reading, setMeter2Reading] = useState("");
   const [savingReadings, setSavingReadings] = useState(false);
-  
+
+  // Last logged reading per meter (from manualLogs)
+  const lastLog1 = manualLogs.filter(l => l.meterId === 'meter1').sort((a, b) => b.timestamp - a.timestamp)[0];
+  const lastLog2 = manualLogs.filter(l => l.meterId === 'meter2').sort((a, b) => b.timestamp - a.timestamp)[0];
+
   const [lastMonthInput, setLastMonthInput] = useState("");
   const [savingLastMonth, setSavingLastMonth] = useState(false);
 
-  useEffect(() => {
-    if (!meter1Baseline) setMeter1Baseline(String((meters.meter1.reading - (meters.meter1.cycleUsage || 0)).toFixed(2)));
-    if (!meter2Baseline) setMeter2Baseline(String((meters.meter2.reading - (meters.meter2.cycleUsage || 0)).toFixed(2)));
-  }, [meters.meter1.reading, meters.meter1.cycleUsage, meters.meter2.reading, meters.meter2.cycleUsage]);
+  // AI Trend Impact: compares this month's projected usage against last month's
+  // total to show how the trend affects the forecast.
+  const trendImpact = useMemo(() => {
+    const lastMonth = home?.lastMonthTotal;
+    const projected = home?.projectedMonthly ?? 0;
+    if (lastMonth == null || lastMonth <= 0 || projected <= 0) {
+      return {
+        units: "0.0",
+        label: "Impact on forecast",
+        status: "Neutral",
+        subLabel: "Set last month's total to see impact",
+        gaugeX: 50, gaugeY: 50, gaugeColor: theme.textMuted,
+      };
+    }
+    const delta = round(projected - lastMonth, 1);
+    const pct = (delta / lastMonth) * 100;
+    const absDelta = Math.abs(delta);
+    // Gauge: semicircle from (10,50) to (90,50), center (50,50), radius 40.
+    // Map -50%..+50% to 180°..0° (left = saving, right = over).
+    const clampedPct = Math.max(-50, Math.min(50, pct));
+    const angleDeg = 180 - ((clampedPct + 50) / 100) * 180;
+    const angleRad = (angleDeg * Math.PI) / 180;
+    const gx = 50 + 40 * Math.cos(angleRad);
+    const gy = 50 - 40 * Math.sin(angleRad);
+
+    if (delta < -1) {
+      return {
+        units: `${absDelta.toFixed(1)}`,
+        label: `Saving vs last month`,
+        status: "Lower",
+        subLabel: `${Math.abs(pct).toFixed(0)}% less than last month`,
+        gaugeX: gx, gaugeY: gy, gaugeColor: "#32E56B",
+      };
+    }
+    if (delta > 1) {
+      return {
+        units: `+${absDelta.toFixed(1)}`,
+        label: `Over vs last month`,
+        status: "Higher",
+        subLabel: `${pct.toFixed(0)}% more than last month`,
+        gaugeX: gx, gaugeY: gy, gaugeColor: "#EF4C4C",
+      };
+    }
+    return {
+      units: "0.0",
+      label: "Impact on forecast",
+      status: "Neutral",
+      subLabel: "On track with last month",
+      gaugeX: 50, gaugeY: 10, gaugeColor: "#4A85FF",
+    };
+  }, [home?.lastMonthTotal, home?.projectedMonthly]);
 
   const handleSwap = () => {
     swapChangeover();
@@ -47,6 +115,7 @@ export default function SettingsScreen() {
       await setManualBaseline("meter1", meter1, Date.now());
       await setManualBaseline("meter2", meter2, Date.now());
       Alert.alert("Baselines saved", "Both meter baselines are set for the billing cycle.");
+      setEditingBaselines(false);
     } catch {
       Alert.alert("Could not save baselines", "Check the server connection and try again.");
     } finally {
@@ -103,24 +172,8 @@ export default function SettingsScreen() {
         
         {/* Header */}
         <View style={s.header}>
-          <View style={s.headerLeft}>
-            <View style={[s.backBtn, { backgroundColor: theme.overlayBg }]}>
-              <ArrowLeft size={20} color={isLight ? "#0F172A" : "#F4F8FC"} />
-            </View>
-            <View>
-              <Text style={[s.title, { color: theme.text }]}>Settings</Text>
-              <Text style={[s.subtitle, { color: theme.textSecondary }]}>Manage changeover & billing-cycle baselines</Text>
-            </View>
-          </View>
-          <View style={s.headerRight}>
-            <View style={[s.updatePill, { backgroundColor: theme.overlayBg }]}>
-              <View style={s.updateDot} />
-              <Text style={[s.updateText, { color: theme.textMuted }]}>Updated 10s ago</Text>
-            </View>
-            <View style={[s.refreshBtn, { backgroundColor: theme.overlayBg }]}>
-              <RefreshCw size={16} color={isLight ? "#0F172A" : "#F4F8FC"} />
-            </View>
-          </View>
+          <Text style={[s.title, { color: theme.text }]}>Settings</Text>
+          <Text style={[s.subtitle, { color: theme.textSecondary }]}>Changeover control, baselines & manual calibration</Text>
         </View>
 
         {/* Changeover Control */}
@@ -129,7 +182,7 @@ export default function SettingsScreen() {
             <RefreshCw size={14} color="#32E56B" />
             <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>CHANGEOVER CONTROL</Text>
           </View>
-          <View style={[s.card, { borderColor: theme.cardBorder, backgroundColor: theme.card }]}>
+          <GlassCard style={s.card}>
             <View style={s.changeoverRow}>
               <View style={s.changeoverLeft}>
                 <View style={s.changeoverIcon}>
@@ -151,12 +204,22 @@ export default function SettingsScreen() {
                 <Text style={[s.aboutTitle, { color: theme.text }]}>About Changeover</Text>
                 <Text style={[s.aboutDesc, { color: theme.textSecondary }]}>Switch between meters to control which meter records the consumption.</Text>
                 <Pressable style={s.swapBtn} onPress={handleSwap}>
-                  <RefreshCw size={14} color="#32E56B" />
-                  <Text style={[s.swapBtnText, { color: theme.text }]}>Swap Source</Text>
+                  <BlurView
+                    intensity={30}
+                    tint="dark"
+                    style={StyleSheet.absoluteFill}
+                    blurMethod={Platform.OS === "android" ? "none" : undefined}
+                  />
+                  <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(50,229,107,0.10)" }]} />
+                  <View style={s.swapBtnBorder} />
+                  <View style={s.swapBtnContent}>
+                    <RefreshCw size={18} color="#32E56B" />
+                    <Text style={s.swapBtnText}>Swap Source</Text>
+                  </View>
                 </Pressable>
               </View>
             </View>
-          </View>
+          </GlassCard>
         </View>
 
         {/* Billing Cycle Baselines */}
@@ -166,68 +229,64 @@ export default function SettingsScreen() {
             <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>BILLING CYCLE BASELINES</Text>
           </View>
           
-          <View style={s.baselineCardWrapper}>
-            <View style={[s.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
-            <View style={[s.card, s.blueCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-              <View style={s.baselineContentRow}>
-                
-                <View style={s.baselineLeft}>
-                  <View style={s.baselineHeaderRow}>
-                    <View style={s.calendarIconBox}>
-                      <CalendarDays size={20} color="#4A85FF" />
-                      <Text style={s.calendarIconNum}>28</Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[s.whiteCardTitle, { color: theme.text }]}>Meter readings on the 28th</Text>
-                      <Text style={[s.grayCardDesc, { color: theme.textSecondary }]}>Enter the physical readings from your bill. Both values anchor the current monthly cycle.</Text>
-                      <Text style={s.blueCycleText}>Billing cycle starts on the 28th of every month</Text>
-                    </View>
-                  </View>
-
-                  <View style={s.inputRow}>
-                    <View style={s.inputWrapper}>
-                      <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 1 (Analog)</Text>
-                      <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
-                        <TextInput value={meter1Baseline} onChangeText={setMeter1Baseline} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder="0.00" placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
-                        <Edit3 size={14} color="#4A85FF" />
-                      </View>
-                    </View>
-                    <View style={s.inputWrapper}>
-                      <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 2 (Digital)</Text>
-                      <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
-                        <TextInput value={meter2Baseline} onChangeText={setMeter2Baseline} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder="0.00" placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
-                        <Edit3 size={14} color="#4A85FF" />
-                      </View>
-                    </View>
-                  </View>
-
-                  <Pressable style={[s.primaryBtn, { backgroundColor: '#1A5CE5' }, savingBaselines && s.btnDisabled]} onPress={handleSaveBaselines} disabled={savingBaselines}>
-                    <Save size={16} color="#FFF" />
-                    <Text style={[s.primaryBtnText, { color: "#FFF" }]}>{savingBaselines ? "Saving…" : "Save 28th baselines"}</Text>
-                  </Pressable>
+          <GlassCard style={[s.card, s.blueCard]}>
+              <View style={s.baselineHeaderRow}>
+                <View style={s.calendarIconBox}>
+                  <CalendarDays size={20} color="#4A85FF" />
+                  <Text style={s.calendarIconNum}>28</Text>
                 </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.whiteCardTitle, { color: theme.text }]}>Meter readings on the 28th</Text>
+                  <Text style={[s.grayCardDesc, { color: theme.textSecondary }]}>Physical readings from your bill that anchor the current monthly cycle.</Text>
+                  <Text style={s.blueCycleText}>Billing cycle starts on the 28th of every month</Text>
+                </View>
+              </View>
 
-                {/* Right side illustration simulation */}
-                <View style={s.baselineRight}>
-                  <View style={s.illustrationMock}>
-                    <View style={s.illDoc}>
-                      <Activity size={24} color="#4A85FF" />
-                      <View style={s.illLine} />
-                      <View style={[s.illLine, { width: '60%' }]} />
-                      <View style={s.illLine} />
-                    </View>
-                    <View style={s.illCal}>
-                      <Text style={s.illCalText}>28</Text>
-                    </View>
-                    {/* Stars */}
-                    <View style={[s.star, { top: 10, left: 10 }]} />
-                    <View style={[s.star, { top: 30, right: 30 }]} />
-                    <View style={[s.star, { top: 60, left: 40 }]} />
+              <View style={s.inputRow}>
+                <View style={s.inputWrapper}>
+                  <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 1 (Analog)</Text>
+                  <View style={s.inputContainer}>
+                    <TextInput
+                      value={meter1Baseline}
+                      onChangeText={setMeter1Baseline}
+                      keyboardType="decimal-pad"
+                      style={s.inputField}
+                      editable={editingBaselines}
+                      underlineColorAndroid="transparent"
+                      placeholderTextColor="rgba(255,255,255,0.2)"
+                    />
+                    {editingBaselines && <Edit3 size={14} color="#4A85FF" />}
+                  </View>
+                </View>
+                <View style={s.inputWrapper}>
+                  <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 2 (Digital)</Text>
+                  <View style={s.inputContainer}>
+                    <TextInput
+                      value={meter2Baseline}
+                      onChangeText={setMeter2Baseline}
+                      keyboardType="decimal-pad"
+                      style={s.inputField}
+                      editable={editingBaselines}
+                      underlineColorAndroid="transparent"
+                      placeholderTextColor="rgba(255,255,255,0.2)"
+                    />
+                    {editingBaselines && <Edit3 size={14} color="#4A85FF" />}
                   </View>
                 </View>
               </View>
-            </View>
-          </View>
+
+              {editingBaselines ? (
+                <Pressable style={[s.primaryBtn, { backgroundColor: '#1A5CE5' }, savingBaselines && s.btnDisabled]} onPress={handleSaveBaselines} disabled={savingBaselines}>
+                  <Save size={16} color="#FFF" />
+                  <Text style={[s.primaryBtnText, { color: "#FFF" }]}>{savingBaselines ? "Saving…" : "Save 28th baselines"}</Text>
+                </Pressable>
+              ) : (
+                <Pressable style={s.editBtn} onPress={() => setEditingBaselines(true)}>
+                  <Edit3 size={15} color="#4A85FF" />
+                  <Text style={s.editBtnText}>Edit baselines</Text>
+                </Pressable>
+              )}
+            </GlassCard>
         </View>
 
         {/* Manual Meter Readings */}
@@ -237,62 +296,66 @@ export default function SettingsScreen() {
             <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>MANUAL METER READINGS</Text>
           </View>
 
-          <View style={s.readingsRow}>
-            {/* Main Log Card */}
-            <View style={[s.card, s.purpleCard, { flex: 2, backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-              <View style={s.logHeaderRow}>
-                <View style={s.purpleIconBox}>
-                  <Activity size={18} color="#B69AFF" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.whiteCardTitle, { color: theme.text }]}>Log current readings</Text>
-                  <Text style={[s.grayCardDesc, { color: theme.textSecondary }]}>Enter the latest physical readings from both meters.</Text>
-                </View>
-                <Pressable style={s.historyBtn}>
-                  <History size={12} color="#B69AFF" />
-                  <Text style={s.historyBtnText}>History</Text>
-                </Pressable>
+          <GlassCard style={[s.card, s.purpleCard]}>
+            <View style={s.logHeaderRow}>
+              <View style={s.purpleIconBox}>
+                <Activity size={18} color="#B69AFF" />
               </View>
-
-              <View style={s.inputRow}>
-                <View style={s.inputWrapper}>
-                  <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 1 (Analog)</Text>
-                  <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
-                    <TextInput value={meter1Reading} onChangeText={setMeter1Reading} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder={meters.meter1.reading.toFixed(1)} placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
-                    <Edit3 size={14} color="#B69AFF" />
-                  </View>
-                </View>
-                <View style={s.inputWrapper}>
-                  <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 2 (Digital)</Text>
-                  <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
-                    <TextInput value={meter2Reading} onChangeText={setMeter2Reading} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder={meters.meter2.reading.toFixed(1)} placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
-                    <Edit3 size={14} color="#B69AFF" />
-                  </View>
-                </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[s.whiteCardTitle, { color: theme.text }]}>Log current readings</Text>
+                <Text style={[s.grayCardDesc, { color: theme.textSecondary }]}>Enter the latest physical readings from both meters.</Text>
               </View>
-
-              <Pressable style={[s.primaryBtn, { backgroundColor: '#4C2882' }, savingReadings && s.btnDisabled]} onPress={handleSaveReadings} disabled={savingReadings}>
-                <Save size={16} color="#FFF" />
-                <Text style={[s.primaryBtnText, { color: "#FFF" }]}>{savingReadings ? "Saving…" : "Log readings"}</Text>
-              </Pressable>
             </View>
 
-            {/* Last Logged Card */}
-            <View style={[s.card, { flex: 1, backgroundColor: theme.card, borderColor: theme.cardBorder, justifyContent: 'center' }]}>
-              <View style={s.lastLoggedHeader}>
-                <History size={12} color={isLight ? "#94A3B8" : "#7E91A6"} />
-                <Text style={[s.lastLoggedLabel, { color: theme.textMuted }]}>Last Logged</Text>
+            {/* Meter 1 */}
+            <View style={s.meterInputBlock}>
+              <Text style={[s.meterNameText, { color: theme.text }]}>Meter 1 (Analog)</Text>
+              <View style={s.inputContainer}>
+                <TextInput
+                  value={meter1Reading}
+                  onChangeText={setMeter1Reading}
+                  keyboardType="decimal-pad"
+                  style={s.inputField}
+                  underlineColorAndroid="transparent"
+                  placeholder={`Current: ${meters.meter1.reading.toFixed(1)} kWh`}
+                  placeholderTextColor="rgba(255,255,255,0.25)"
+                />
+                <Edit3 size={14} color="#B69AFF" />
               </View>
-              <Text style={[s.lastLoggedDate, { color: theme.text }]}>Jul 21, 2025</Text>
-              <Text style={[s.lastLoggedTime, { color: theme.textSecondary }]}>3:02 PM</Text>
-
-              <View style={[s.lastLoggedDivider, { backgroundColor: theme.border }]} />
-
-              <Text style={[s.diffLabel, { color: theme.textMuted }]}>Difference</Text>
-              <Text style={s.diffValue}>44492.9</Text>
-              <Text style={[s.diffUnit, { color: theme.textMuted }]}>units</Text>
+              {lastLog1 && (
+                <Text style={s.lastLoggedSubText}>
+                  Last logged: {lastLog1.reading.toFixed(1)} kWh · {new Date(lastLog1.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </Text>
+              )}
             </View>
-          </View>
+
+            {/* Meter 2 */}
+            <View style={s.meterInputBlock}>
+              <Text style={[s.meterNameText, { color: theme.text }]}>Meter 2 (Digital)</Text>
+              <View style={s.inputContainer}>
+                <TextInput
+                  value={meter2Reading}
+                  onChangeText={setMeter2Reading}
+                  keyboardType="decimal-pad"
+                  style={s.inputField}
+                  underlineColorAndroid="transparent"
+                  placeholder={`Current: ${meters.meter2.reading.toFixed(1)} kWh`}
+                  placeholderTextColor="rgba(255,255,255,0.25)"
+                />
+                <Edit3 size={14} color="#B69AFF" />
+              </View>
+              {lastLog2 && (
+                <Text style={s.lastLoggedSubText}>
+                  Last logged: {lastLog2.reading.toFixed(1)} kWh · {new Date(lastLog2.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </Text>
+              )}
+            </View>
+
+            <Pressable style={[s.primaryBtn, { backgroundColor: '#4C2882' }, savingReadings && s.btnDisabled]} onPress={handleSaveReadings} disabled={savingReadings}>
+              <Save size={16} color="#FFF" />
+              <Text style={[s.primaryBtnText, { color: "#FFF" }]}>{savingReadings ? "Saving…" : "Log readings"}</Text>
+            </Pressable>
+          </GlassCard>
         </View>
 
         {/* Last Month Total */}
@@ -302,7 +365,7 @@ export default function SettingsScreen() {
             <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>LAST MONTH TOTAL</Text>
           </View>
 
-          <View style={[s.card, s.greenCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+          <GlassCard style={[s.card, s.greenCard]}>
             <View style={s.lastMonthRow}>
               
               <View style={s.lastMonthLeft}>
@@ -318,8 +381,8 @@ export default function SettingsScreen() {
 
                 <View style={s.inputWrapper}>
                   <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Total units</Text>
-                  <View style={[s.inputContainer, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
-                    <TextInput value={lastMonthInput} onChangeText={setLastMonthInput} keyboardType="decimal-pad" style={[s.inputField, { color: theme.text, backgroundColor: theme.inputBg, borderColor: theme.inputBorder, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 38 }]} placeholder={home?.lastMonthTotal != null ? String(Math.round(home.lastMonthTotal)) : "0"} placeholderTextColor={isLight ? "rgba(15,23,42,0.3)" : "rgba(255,255,255,0.2)"} />
+                  <View style={s.inputContainer}>
+                    <TextInput value={lastMonthInput} onChangeText={setLastMonthInput} keyboardType="decimal-pad" style={s.inputField} underlineColorAndroid="transparent" placeholder={home?.lastMonthTotal != null ? String(Math.round(home.lastMonthTotal)) : "0"} placeholderTextColor="rgba(255,255,255,0.2)" />
                   </View>
                 </View>
 
@@ -339,25 +402,25 @@ export default function SettingsScreen() {
 
                 <View style={s.aiTrendContent}>
                   <View>
-                    <Text style={[s.aiImpactValue, { color: theme.text }]}>0.0</Text>
+                    <Text style={[s.aiImpactValue, { color: theme.text }]}>{trendImpact.units}</Text>
                     <Text style={[s.aiImpactUnit, { color: theme.textMuted }]}>units</Text>
-                    <Text style={[s.aiImpactDesc, { color: theme.textSecondary }]}>Impact on forecast</Text>
+                    <Text style={[s.aiImpactDesc, { color: theme.textSecondary }]}>{trendImpact.label}</Text>
                   </View>
                   <View style={s.trendGauge}>
                     <Svg width={56} height={32} viewBox="0 0 100 50">
                       <Path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke={isLight ? "rgba(15,23,42,0.06)" : "rgba(255,255,255,0.05)"} strokeWidth="8" strokeLinecap="round" />
                       <Path d="M 10 50 A 40 40 0 0 1 50 10" fill="none" stroke="#4A85FF" strokeWidth="8" strokeLinecap="round" />
                       <Path d="M 50 10 A 40 40 0 0 1 90 50" fill="none" stroke="#B69AFF" strokeWidth="8" strokeLinecap="round" />
-                      <Circle cx="50" cy="50" r="4" fill="#32E56B" />
+                      <Circle cx={trendImpact.gaugeX} cy={trendImpact.gaugeY} r="4" fill={trendImpact.gaugeColor} />
                     </Svg>
-                    <Text style={s.gaugeLabel}>Neutral</Text>
-                    <Text style={[s.gaugeSub, { color: theme.textMuted }]}>No impact yet</Text>
+                    <Text style={s.gaugeLabel}>{trendImpact.status}</Text>
+                    <Text style={[s.gaugeSub, { color: theme.textMuted }]}>{trendImpact.subLabel}</Text>
                   </View>
                 </View>
               </View>
 
             </View>
-          </View>
+          </GlassCard>
         </View>
 
         {__DEV__ && (
@@ -367,13 +430,14 @@ export default function SettingsScreen() {
               <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>DEVELOPER</Text>
             </View>
             <Pressable
-              style={[s.card, { borderColor: theme.cardBorder, backgroundColor: theme.card }]}
               onPress={() => router.push("/overlay-editor")}
             >
-              <Text style={[s.cardLabelText, { color: theme.text }]}>Hero Overlay Editor</Text>
-              <Text style={[s.cardLabelText, { color: theme.textSecondary, marginTop: 4 }]}>
-                Visually tune SVG wiring paths per weather background
-              </Text>
+              <GlassCard style={s.card}>
+                <Text style={[s.cardLabelText, { color: theme.text }]}>Hero Overlay Editor</Text>
+                <Text style={[s.cardLabelText, { color: theme.textSecondary, marginTop: 4 }]}>
+                  Visually tune SVG wiring paths per weather background
+                </Text>
+              </GlassCard>
             </Pressable>
           </View>
         )}
@@ -395,69 +459,21 @@ const s = StyleSheet.create({
   
   // Header
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 8,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flex: 1,
-  },
-  backBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   title: {
     color: undefined,
     fontFamily: "Outfit",
-    fontSize: 20,
+    fontSize: 26,
     fontWeight: "700",
   },
   subtitle: {
     color: undefined,
     fontFamily: "Outfit",
-    fontSize: 11,
-    marginTop: 1,
-  },
-  headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  updatePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 16,
-  },
-  updateDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: '#32E56B',
-  },
-  updateText: {
-    color: undefined,
-    fontFamily: "Outfit",
-    fontSize: 9,
-  },
-  refreshBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    fontSize: 12,
+    marginTop: 3,
+    textAlign: "center",
   },
 
   // Sections
@@ -478,7 +494,6 @@ const s = StyleSheet.create({
   },
   card: {
     borderRadius: 14,
-    borderWidth: 1,
     padding: 14,
   },
 
@@ -558,45 +573,35 @@ const s = StyleSheet.create({
     marginBottom: 10,
   },
   swapBtn: {
+    borderRadius: 12,
+    paddingVertical: 13,
+    marginTop: 4,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  swapBtnBorder: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(50,229,107,0.30)',
+  },
+  swapBtnContent: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(50,229,107,0.3)',
-    borderRadius: 8,
-    paddingVertical: 7,
+    gap: 8,
+    zIndex: 1,
   },
   swapBtnText: {
     color: '#32E56B',
     fontFamily: "Outfit",
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 14,
+    fontWeight: "700",
   },
 
   // Baselines specific
-  baselineCardWrapper: {
-    position: 'relative',
-    borderRadius: 14,
-    overflow: 'hidden',
-  },
-  cardHighlight: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, height: 1,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    zIndex: 10,
-  },
   blueCard: {
-    backgroundColor: 'transparent',
     borderColor: 'rgba(74,133,255,0.15)',
-  },
-  baselineContentRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  baselineLeft: {
-    flex: 2.5,
-    paddingRight: 12,
   },
   baselineHeaderRow: {
     flexDirection: 'row',
@@ -636,59 +641,28 @@ const s = StyleSheet.create({
     marginBottom: 6,
   },
   blueCycleText: {
-    color: '#4A85FF',
+    color: '#7BA8FF',
     fontFamily: "Outfit",
-    fontSize: 9,
-    fontWeight: "500",
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 4,
   },
-  baselineRight: {
-    flex: 1,
+  // Edit button (for locked baselines)
+  editBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 7,
+    borderWidth: 1,
+    borderColor: 'rgba(74,133,255,0.3)',
+    borderRadius: 10,
+    paddingVertical: 11,
   },
-  illustrationMock: {
-    width: 80,
-    height: 100,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  illDoc: {
-    width: 56, height: 72,
-    backgroundColor: 'rgba(74,133,255,0.1)',
-    borderRadius: 8,
-    borderWidth: 1, borderColor: 'rgba(74,133,255,0.2)',
-    padding: 8,
-    transform: [{ rotate: '-10deg' }],
-  },
-  illLine: {
-    width: '100%', height: 4,
-    backgroundColor: 'rgba(74,133,255,0.2)',
-    borderRadius: 2,
-    marginTop: 6,
-  },
-  illCal: {
-    position: 'absolute',
-    bottom: 5, right: -5,
-    width: 38, height: 38,
-    backgroundColor: '#1E3A8A',
-    borderRadius: 6,
-    borderTopWidth: 4, borderTopColor: '#3B82F6',
-    alignItems: 'center', justifyContent: 'center',
-    transform: [{ rotate: '5deg' }],
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 3,
-  },
-  illCalText: {
-    color: '#FFF',
+  editBtnText: {
+    color: '#7BA8FF',
     fontFamily: "Outfit",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  star: {
-    position: 'absolute',
-    width: 4, height: 4,
-    backgroundColor: '#93C5FD',
-    borderRadius: 2,
-    opacity: 0.6,
+    fontSize: 13,
+    fontWeight: "600",
   },
 
   // Inputs
@@ -710,18 +684,23 @@ const s = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.2)',
+    backgroundColor: 'rgba(0,0,0,0.15)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.08)',
     borderRadius: 10,
     paddingHorizontal: 10,
     height: 42,
   },
   inputField: {
     flex: 1,
-    color: undefined,
+    color: '#F4F8FC',
     fontFamily: "Outfit",
     fontSize: 13,
+    paddingVertical: 0,
+    height: 40,
+    maxHeight: 40,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
   },
   
   // Buttons
@@ -744,12 +723,7 @@ const s = StyleSheet.create({
   },
 
   // Readings Section
-  readingsRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
   purpleCard: {
-    backgroundColor: '#161122',
     borderColor: 'rgba(182,154,255,0.1)',
   },
   logHeaderRow: {
@@ -764,85 +738,33 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(182,154,255,0.1)',
     alignItems: 'center', justifyContent: 'center',
   },
-  historyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 10,
-    backgroundColor: 'rgba(182,154,255,0.05)',
-    borderWidth: 1, borderColor: 'rgba(182,154,255,0.1)',
+  // Per-meter input block — stacked vertically to prevent overlap
+  meterInputBlock: {
+    marginBottom: 14,
   },
-  historyBtnText: {
-    color: '#B69AFF',
-    fontFamily: "Outfit",
-    fontSize: 9,
-    fontWeight: "600",
-  },
-  
-  // Last Logged
-  lastLoggedHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginBottom: 5,
-  },
-  lastLoggedLabel: {
-    color: undefined,
-    fontFamily: "Outfit",
-    fontSize: 9,
-  },
-  lastLoggedDate: {
-    color: undefined,
+  meterNameText: {
     fontFamily: "Outfit",
     fontSize: 12,
     fontWeight: "600",
+    marginBottom: 6,
   },
-  lastLoggedTime: {
-    color: undefined,
-    fontFamily: "Outfit",
-    fontSize: 10,
-    marginTop: 1,
-  },
-  lastLoggedDivider: {
-    width: '100%',
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    marginVertical: 10,
-  },
-  diffLabel: {
-    color: undefined,
-    fontFamily: "Outfit",
-    fontSize: 8,
-    fontWeight: "500",
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  diffValue: {
-    color: '#B69AFF',
-    fontFamily: "Outfit",
-    fontSize: 14,
-    fontWeight: "700",
-    marginTop: 3,
-  },
-  diffUnit: {
-    color: undefined,
+  lastLoggedSubText: {
+    color: '#8A9BAE',
     fontFamily: "Outfit",
     fontSize: 9,
+    marginTop: 5,
   },
 
   // Last Month
   greenCard: {
-    backgroundColor: '#0C1613',
     borderColor: 'rgba(50,229,107,0.1)',
   },
   lastMonthRow: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
+    flexDirection: 'column',
+    gap: 14,
   },
   lastMonthLeft: {
-    flex: 1.5,
+    width: '100%',
   },
   lastMonthHeader: {
     flexDirection: 'row',
@@ -856,18 +778,18 @@ const s = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   lastMonthSep: {
-    width: 1,
-    alignSelf: 'stretch',
+    width: '100%',
+    height: 1,
     backgroundColor: 'rgba(255,255,255,0.06)',
-    marginHorizontal: 14,
   },
   lastMonthRight: {
-    flex: 1,
-    justifyContent: 'center',
+    width: '100%',
+    alignItems: 'center',
   },
   aiTrendHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 5,
     marginBottom: 10,
   },
@@ -879,8 +801,9 @@ const s = StyleSheet.create({
   },
   aiTrendContent: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignItems: 'flex-start',
+    gap: 20,
   },
   aiImpactValue: {
     color: undefined,
