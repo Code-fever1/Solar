@@ -6,11 +6,11 @@ import Animated, { FadeIn } from 'react-native-reanimated';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { useSceneTheme } from '@/context/SceneThemeContext';
 
 export function Collapsible({ children, title }: PropsWithChildren & { title: string }) {
   const [isOpen, setIsOpen] = useState(false);
-  const theme = useTheme();
+  const theme = useSceneTheme();
 
   return (
     <ThemedView>

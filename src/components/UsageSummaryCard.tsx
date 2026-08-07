@@ -3,20 +3,19 @@ import { StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, G, Path } from "react-native-svg";
 
 import { useEnergy } from "@/context/EnergyContext";
-import { useTheme } from "@/hooks/use-theme";
+import { useSceneTheme } from "@/context/SceneThemeContext";
 import { withAlpha } from "@/utils/ColorInterpolation";
 
 export function UsageSummaryCard() {
   const { home } = useEnergy();
-  const { isLight, ...theme } = useTheme();
+  const theme = useSceneTheme();
   const dailyData = (home.dailyUsage || []).map((item, index, all) => ({
     day: item.label,
     val: item.usage,
     active: index === all.length - 1,
   }));
   const maxVal = Math.max(1, ...dailyData.map((item) => item.val));
-  const todayUsage = dailyData.length > 0 ? dailyData[dailyData.length - 1].val.toFixed(2) : "0.00";
-  
+
   const periodDay            = home.periodDay            || 0;
   const periodNight          = home.periodNight          || 0;
   const periodMorningEvening = home.periodMorningEvening || 0;
@@ -57,19 +56,19 @@ export function UsageSummaryCard() {
     return `rgb(${Math.round(r1 + (r2 - r1) * t_)},${Math.round(g1 + (g2 - g1) * t_)},${Math.round(b1 + (b2 - b1) * t_)})`;
   };
 
-  const WHITE: [number, number, number] = isLight ? [71, 85, 105] : [230, 234, 240]; // soft white on dark / slate on light
+  const WHITE: [number, number, number] = [168, 184, 202]; // theme.textSecondary tone
   const RED:   [number, number, number] = [239, 68,  68];
   const GREEN: [number, number, number] = [16,  185, 129];
 
   const getBarColor = (val: number, isActive: boolean): string => {
-    // Today always blue
+    // Today always accent blue
     if (isActive) return '#3B82F6';
-    if (val === 0) return isLight ? 'rgba(15,23,42,0.06)' : 'rgba(255,255,255,0.04)';
+    if (val === 0) return theme.trackBg;
 
     const delta = val / avgBarVal - 1;   // 0 = exactly avg
     const t = Math.min(1, Math.abs(delta) * 3); // full intensity at ~33% off avg
 
-    if (Math.abs(delta) < 0.05) return isLight ? `rgba(71,85,105,0.80)` : `rgba(230,234,240,0.80)`; // avg
+    if (Math.abs(delta) < 0.05) return `rgba(168, 184, 202, 0.80)`; // avg — uses theme textSecondary tone
     // Blend from WHITE toward RED or GREEN — the closer to avg, the whiter
     return delta > 0
       ? lerpRgb(WHITE, RED,   t)  // above avg → redder
@@ -114,17 +113,19 @@ export function UsageSummaryCard() {
   });
 
   return (
-    <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+    <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.cardBorder, shadowColor: theme.cardShadow }]}>
+      {/* Faint top highlight — glass effect */}
+      <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.titleRow}>
-          <View style={styles.titleIconBox}>
-            <Activity size={14} color="#A78BFA" />
+          <View style={[styles.titleIconBox, { backgroundColor: theme.overlayBg }]}>
+            <Activity size={14} color={theme.textSecondary} />
           </View>
           <Text style={[styles.title, { color: theme.text }]}>USAGE SUMMARY</Text>
         </View>
-        <View style={styles.confidenceBadge}>
-          <Text style={styles.confidenceText}>{home.confidencePercent}% confidence</Text>
+        <View style={[styles.confidenceBadge, { backgroundColor: theme.overlayBg, borderColor: theme.cardBorder }]}>
+          <Text style={[styles.confidenceText, { color: theme.textSecondary }]}>{home.confidencePercent}% confidence</Text>
         </View>
       </View>
 
@@ -150,7 +151,7 @@ export function UsageSummaryCard() {
               return (
                 <View key={index} style={styles.barCol}>
                   <Text style={[styles.barValText, { color: theme.textSecondary }]}>{item.val}</Text>
-                  <View style={[styles.barTrack, { backgroundColor: isLight ? "rgba(15,23,42,0.04)" : "rgba(255,255,255,0.04)" }]}>
+                  <View style={[styles.barTrack, { backgroundColor: theme.trackBg }]}>
                     <View style={[styles.barFill, { height: `${heightPercent}%`, backgroundColor: barColor }]} />
                   </View>
                   <Text style={[styles.barDayText, { color: theme.textMuted }, item.active && styles.barDayTextActive]}>
@@ -195,7 +196,7 @@ export function UsageSummaryCard() {
                     <Text style={[styles.legendTime, { color: theme.textMuted }]}>{p.time}</Text>
                     <Text style={[styles.legendPct, { color: p.color }]}>{p.pct}%</Text>
                   </View>
-                  <View style={[styles.legendProgressBar, { backgroundColor: isLight ? "rgba(15,23,42,0.06)" : "rgba(255,255,255,0.05)" }]}>
+                  <View style={[styles.legendProgressBar, { backgroundColor: theme.trackBg }]}>
                     <View style={[styles.legendProgressFill, { width: `${p.pct}%`, backgroundColor: p.color }]} />
                   </View>
                 </View>
@@ -210,9 +211,22 @@ export function UsageSummaryCard() {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
+    overflow: "hidden",
+    position: "relative",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  cardHighlight: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 1,
   },
   header: {
     flexDirection: "row",
@@ -226,7 +240,6 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   titleIconBox: {
-    backgroundColor: "rgba(167, 139, 250, 0.1)",
     padding: 6,
     borderRadius: 8,
   },
@@ -237,15 +250,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   confidenceBadge: {
-    backgroundColor: "rgba(16, 185, 129, 0.1)",
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: "rgba(16, 185, 129, 0.2)",
   },
   confidenceText: {
-    color: "#10B981",
     fontFamily: "Outfit",
     fontSize: 11,
     fontWeight: "600",
@@ -332,6 +342,7 @@ const styles = StyleSheet.create({
     color: "#3B82F6",
     fontWeight: "700",
   },
+
   pieSectionRow: {
     flexDirection: "row",
     alignItems: "center",

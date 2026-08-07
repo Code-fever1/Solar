@@ -1,8 +1,10 @@
+import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { useEnergy } from "@/context/EnergyContext";
-import { useTheme } from "@/hooks/use-theme";
+import { useSceneTheme } from "@/context/SceneThemeContext";
 import { Activity, ArrowUpRight, Clock, Trash2 } from "lucide-react-native";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SceneBackground } from "@/components/SceneBackground";
 
 function formatDateTime(timestamp: number): string {
   const d = new Date(timestamp);
@@ -22,7 +24,7 @@ function formatReading(reading: number): string {
 
 export default function LogsScreen() {
   const insets = useSafeAreaInsets();
-  const { isLight, ...theme } = useTheme();
+  const { isLight, ...theme } = useSceneTheme();
   const { manualLogs, deleteManualLog, meters } = useEnergy();
 
   const recentLogs = [...manualLogs].sort((a, b) => b.timestamp - a.timestamp).slice(0, 10);
@@ -49,7 +51,9 @@ export default function LogsScreen() {
   };
 
   return (
-    <View style={[styles.screen, { backgroundColor: theme.screenBg }]}>
+    <TabSlideWrapper index={3}>
+    <View style={styles.screen}>
+      <SceneBackground />
       <ScrollView
         contentContainerStyle={[
           styles.container,
@@ -146,7 +150,7 @@ export default function LogsScreen() {
           <View style={[styles.emptyCard, { borderColor: theme.cardBorder }]}>
             <View style={[styles.cardHighlight, { backgroundColor: theme.cardHighlight }]} />
             <View style={styles.emptyState}>
-              <Clock size={28} color={isLight ? "#94A3B8" : "#3A4658"} />
+              <Clock size={28} color={isLight ? "#94A3B8" : "#7A8499"} />
               <Text style={[styles.emptyTitle, { color: theme.text }]}>No readings yet</Text>
               <Text style={[styles.emptySub, { color: theme.textSecondary }]}>Manual readings logged from Settings will appear here.</Text>
             </View>
@@ -154,6 +158,7 @@ export default function LogsScreen() {
         )}
       </ScrollView>
     </View>
+    </TabSlideWrapper>
   );
 }
 

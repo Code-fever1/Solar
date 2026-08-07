@@ -1,6 +1,7 @@
+import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { UsageSummaryCard } from "@/components/UsageSummaryCard";
 import { useEnergy } from "@/context/EnergyContext";
-import { useTheme } from "@/hooks/use-theme";
+import { useSceneTheme } from "@/context/SceneThemeContext";
 import {
     Activity,
     AlertCircle,
@@ -31,6 +32,7 @@ import Animated, {
     withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SceneBackground } from "@/components/SceneBackground";
 
 type Tab = "usage" | "fronus" | "tomzn";
 
@@ -66,7 +68,7 @@ const SEVERITY_COLOR = { critical: "#EF4C4C", warning: "#F8C653", info: "#548EFF
 
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
-  const { isLight, ...theme } = useTheme();
+  const { isLight, ...theme } = useSceneTheme();
   const { home, inverter, tomznLive, refreshTomzn, tomznHistory } = useEnergy();
   const [tab, setTab] = useState<Tab>("usage");
   const [refreshing, setRefreshing] = useState(false);
@@ -97,7 +99,9 @@ export default function HistoryScreen() {
   ];
 
   return (
-    <View style={[styles.screen, { backgroundColor: theme.screenBg }]}>
+    <TabSlideWrapper index={2}>
+    <View style={styles.screen}>
+      <SceneBackground />
       <ScrollView
         contentContainerStyle={[
           styles.container,
@@ -144,6 +148,7 @@ export default function HistoryScreen() {
         )}
       </ScrollView>
     </View>
+    </TabSlideWrapper>
   );
 }
 
@@ -160,7 +165,7 @@ function UsageTab() {
 /* ─────────────────── Fronus (Inverter) Tab ─────────────────── */
 
 function FronusTab({ inverter }: { inverter: any }) {
-  const { isLight, ...theme } = useTheme();
+  const { isLight, ...theme } = useSceneTheme();
   const isLive = inverter?.isLive;
   const isOnline = inverter?.isOnline !== false;
   const statusColor = isLive && isOnline ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
@@ -193,7 +198,7 @@ function FronusTab({ inverter }: { inverter: any }) {
 
         {/* Last fetched */}
         <View style={styles.fetchedRow}>
-          <Clock size={10} color={isLight ? "#94A3B8" : "#5C6C7E"} />
+          <Clock size={10} color={isLight ? "#94A3B8" : "#7A8499"} />
           <Text style={[styles.fetchedText, { color: theme.textMuted }]}>Last fetched: {fetchedAt}</Text>
         </View>
 
@@ -241,7 +246,7 @@ function FronusTab({ inverter }: { inverter: any }) {
         <SectionHeader icon={<Cpu size={12} color="#8862ED" />} title="Inverter Status" color="#8862ED" />
         <View style={styles.dataGrid}>
           <DataTile label="Mode" value={inverter?.inverterMode || "--"} icon={<Cpu size={10} color="#8862ED" />} />
-          <DataTile label="Fault" value={inverter?.inverterFault || "--"} icon={<AlertCircle size={10} color={inverter?.inverterFault && inverter.inverterFault !== "OK" && inverter.inverterFault !== "UNKNOWN" ? "#EF4C4C" : "#5C6C7E"} />} />
+          <DataTile label="Fault" value={inverter?.inverterFault || "--"} icon={<AlertCircle size={10} color={inverter?.inverterFault && inverter.inverterFault !== "OK" && inverter.inverterFault !== "UNKNOWN" ? "#EF4C4C" : "#7A8499"} />} />
           <DataTile label="Temperature" value={inverter?.temperatureC ? `${inverter.temperatureC.toFixed(1)}°C` : "-- °C"} icon={<Thermometer size={10} color="#8862ED" />} />
         </View>
         <View style={styles.dataGrid}>
@@ -271,7 +276,7 @@ function TomznTab({
   refreshing: boolean;
   spinStyle: any;
 }) {
-  const { isLight, ...theme } = useTheme();
+  const { isLight, ...theme } = useSceneTheme();
   const isLive = tomznLive?.isLive;
   const isOnline = tomznLive?.isOnline;
   const statusColor = isLive ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
@@ -307,7 +312,7 @@ function TomznTab({
 
         {/* Refresh button + last fetched */}
         <View style={styles.fetchedRow}>
-          <Clock size={10} color={isLight ? "#94A3B8" : "#5C6C7E"} />
+          <Clock size={10} color={isLight ? "#94A3B8" : "#7A8499"} />
           <Text style={[styles.fetchedText, { color: theme.textMuted }]}>Last fetched: {fetchedAt}</Text>
           <Pressable onPress={onRefresh} style={styles.refreshBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Animated.View style={spinStyle}>
@@ -423,7 +428,7 @@ function TomznTab({
           tomznHistory.slice(-10).reverse().map((row: any, idx: number) => (
             <View key={idx} style={[styles.historyRow, { borderBottomColor: theme.border }]}>
               <View style={styles.historyLeft}>
-                <Clock size={10} color={isLight ? "#94A3B8" : "#5C6C7E"} />
+                <Clock size={10} color={isLight ? "#94A3B8" : "#7A8499"} />
                 <Text style={[styles.historyTime, { color: theme.textMuted }]}>
                   {row.timestamp ? new Date(row.timestamp).toLocaleString() : "--"}
                 </Text>
@@ -455,7 +460,7 @@ function SectionHeader({ icon, title, color }: { icon: React.ReactNode; title: s
 }
 
 function DataTile({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
-  const { ...theme } = useTheme();
+  const { ...theme } = useSceneTheme();
   return (
     <View style={[styles.dataTile, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
       <View style={styles.dataTileHeader}>

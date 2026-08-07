@@ -1,6 +1,6 @@
 import { useEnergy } from '@/context/EnergyContext';
 import type { MeterId, MeterState } from '@/context/energy-types';
-import { useTheme } from "@/hooks/use-theme";
+import { useSceneTheme } from "@/context/SceneThemeContext";
 import {
   ArrowDown,
   ArrowLeft,
@@ -20,6 +20,7 @@ import React, { useMemo, useState } from 'react';
 import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Rect, Text as SvgText } from 'react-native-svg';
+import { SceneBackground } from "@/components/SceneBackground";
 
 const { width: screenWidth } = Dimensions.get('window');
 const cardWidth = (screenWidth - 32) / 2;
@@ -56,7 +57,7 @@ function formatDateTime(timestamp: number): string {
 
 export function NewMetersScreen() {
   const insets = useSafeAreaInsets();
-  const { isLight, ...theme } = useTheme();
+  const { isLight, ...theme } = useSceneTheme();
   const {
     activeMeter, meters, home, changeover, tomznLive, inverter,
     swapChangeover, refreshTomzn, lastSyncedAt,
@@ -169,7 +170,8 @@ export function NewMetersScreen() {
   };
 
   return (
-    <View style={[s.screen, { backgroundColor: theme.screenBg }]}>
+    <View style={s.screen}>
+      <SceneBackground />
       <ScrollView
         contentContainerStyle={[s.content, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 105 }]}
         showsVerticalScrollIndicator={false}
@@ -217,6 +219,7 @@ export function NewMetersScreen() {
             meter={meter1}
             isActive={activeMeter === 'meter1'}
             isLight={isLight}
+            cardBg={theme.card}
             accentColor="#32E56B"
             typeLabel="Analog"
             typePillStyle={s.typePillAnalog}
@@ -227,6 +230,7 @@ export function NewMetersScreen() {
             meter={meter2}
             isActive={activeMeter === 'meter2'}
             isLight={isLight}
+            cardBg={theme.card}
             accentColor="#548EFF"
             typeLabel="Digital"
             typePillStyle={s.typePillDigital}
@@ -291,7 +295,7 @@ export function NewMetersScreen() {
                         </React.Fragment>
                       );
                     }) : (
-                      <SvgText x="100" y="30" fill={isLight ? "#94A3B8" : "#5C6C7E"} fontSize="8" textAnchor="middle">No data yet</SvgText>
+                      <SvgText x="100" y="30" fill={isLight ? "#94A3B8" : "#7A8499"} fontSize="8" textAnchor="middle">No data yet</SvgText>
                     )}
                   </Svg>
                 </View>
@@ -381,7 +385,7 @@ export function NewMetersScreen() {
 }
 
 // ── Meter Card Component ────────────────────────────────────────────────
-function MeterCard({ meter, isActive, accentColor, typeLabel, typePillStyle, typePillTextStyle, vsYesterday, isLight = false }: {
+function MeterCard({ meter, isActive, accentColor, typeLabel, typePillStyle, typePillTextStyle, vsYesterday, isLight = false, cardBg: cardBgProp }: {
   meter: MeterState;
   isActive: boolean;
   accentColor: string;
@@ -390,12 +394,13 @@ function MeterCard({ meter, isActive, accentColor, typeLabel, typePillStyle, typ
   typePillTextStyle: any;
   vsYesterday: number;
   isLight?: boolean;
+  cardBg?: string;
 }) {
-  const cardBg = isLight ? '#FFFFFF' : '#0E1521';
+  const cardBg = cardBgProp ?? (isLight ? '#FFFFFF' : '#0E1521');
   const cardBorder = isLight ? 'rgba(15,23,42,0.08)' : 'rgba(255,255,255,0.06)';
   const textPrimary = isLight ? '#0F172A' : '#F4F8FC';
   const textSecondary = isLight ? '#475569' : '#AAB7C7';
-  const textMuted = isLight ? '#94A3B8' : '#5C6C7E';
+  const textMuted = isLight ? '#94A3B8' : '#7A8499';
   const overlayBg = isLight ? 'rgba(15,23,42,0.03)' : 'rgba(255,255,255,0.03)';
   const remainingPct = Math.round((meter.remainingUnits / Math.max(1, meter.targetUnits)) * 100);
   const remainingClamped = Math.max(0, Math.min(100, remainingPct));

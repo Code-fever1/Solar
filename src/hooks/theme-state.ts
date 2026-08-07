@@ -1,5 +1,8 @@
 export type ThemeMode = 'light' | 'dark' | 'system';
-let currentTheme: ThemeMode = 'system';
+// Default to 'dark' — the app has its own scene-driven theming on the home
+// page and a consistent dark aesthetic on all screens. The phone's system
+// dark/light setting must NOT impact the app's appearance.
+let currentTheme: ThemeMode = 'dark';
 const listeners = new Set<(theme: ThemeMode) => void>();
 
 export function getThemeOverride(): ThemeMode {

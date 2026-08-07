@@ -6,7 +6,7 @@ import Svg, { Circle, Line, Path } from 'react-native-svg';
 const { width: screenWidth } = Dimensions.get('window');
 
 // Theme-aware color tokens — derived from isLight flag
-type CardTheme = {
+export type CardTheme = {
   cardBg: string;
   cardBorder: string;
   cardHighlight: string;
@@ -28,9 +28,9 @@ const DARK_THEME: CardTheme = {
   cardShadow: '#000',
   textPrimary: '#F4F8FC',
   textSecondary: '#94A5B8',
-  textMuted: '#5C6C7E',
+  textMuted: '#7A8499',
   trackBg: 'rgba(255,255,255,0.05)',
-  overlayBg: 'rgba(255,255,255,0.03)',
+  overlayBg: 'rgba(255,255,255,0.04)',
   overlayBorder: 'rgba(255,255,255,0.06)',
   svgGridLine: 'rgba(255,255,255,0.04)',
   svgTrack: 'rgba(255,255,255,0.06)',
@@ -55,6 +55,31 @@ function useCardTheme(isLight: boolean): CardTheme {
   return isLight ? LIGHT_THEME : DARK_THEME;
 }
 
+// Build a scene-tinted CardTheme from the active wallpaper's seam color.
+// The card background is a darkened version of the seam color (×0.42), so
+// each card inherits the scene's hue while staying dark enough for light
+// text. Text colors are brightened (vs the base dark theme) to guarantee
+// WCAG AA contrast (≥3:1 muted, ≥4.5:1 secondary/primary) even for the
+// lightest scene (morning-cloud, seam 148,142,140 → card rgb(62,60,59)).
+export function makeSceneCardTheme(seam: [number, number, number]): CardTheme {
+  const d = (v: number) => Math.round(v * 0.42);
+  const [r, g, b] = seam;
+  return {
+    cardBg: `rgb(${d(r)},${d(g)},${d(b)})`,
+    cardBorder: 'rgba(255,255,255,0.08)',
+    cardHighlight: 'rgba(255,255,255,0.06)',
+    cardShadow: 'rgba(0,0,0,0.5)',
+    textPrimary: '#F4F8FC',
+    textSecondary: '#A8B8CA',
+    textMuted: '#8A9BAE',
+    trackBg: 'rgba(255,255,255,0.05)',
+    overlayBg: 'rgba(255,255,255,0.04)',
+    overlayBorder: 'rgba(255,255,255,0.06)',
+    svgGridLine: 'rgba(255,255,255,0.04)',
+    svgTrack: 'rgba(255,255,255,0.06)',
+  };
+}
+
 // Color helper: keeps original color above 20 units, transitions yellow→red as it drops below 20
 // At 20: yellow (#F8C653), at 0: red (#EF4C4C), interpolated in between
 function gaugeColor(remaining: number, baseColor: string): string {
@@ -76,10 +101,10 @@ const cardWidth = (screenWidth - 32) / 2;
 // ═══════════════════════════════════════════════════════════════════════
 
 // ── Energy Received Today ───────────────────────────────────────────────
-export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWapda, isLight = false }: {
-  totalEnergy: number; solarEnergy: number; gridEnergy: number; isWapda: boolean; isLight?: boolean;
+export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWapda, isLight = false, cardTheme }: {
+  totalEnergy: number; solarEnergy: number; gridEnergy: number; isWapda: boolean; isLight?: boolean; cardTheme?: CardTheme;
 }) {
-  const t = useCardTheme(isLight);
+  const t = cardTheme ?? useCardTheme(isLight);
   const solarShare = totalEnergy > 0 ? Math.round((solarEnergy / totalEnergy) * 100) : 0;
   const gridShare = totalEnergy > 0 ? 100 - solarShare : 0;
   const dominant = solarShare >= gridShare ? 'solar' : 'grid';
@@ -138,15 +163,15 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
 });
 
 // ── Energy Used Today ───────────────────────────────────────────────────
-export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liveLoadW, peakLoadW, vsYesterdayPercent, voltage, currentA, loadStatus, normalDrawKw, isLight = false }: {
+export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liveLoadW, peakLoadW, vsYesterdayPercent, voltage, currentA, loadStatus, normalDrawKw, isLight = false, cardTheme }: {
   totalHomeUsage: number; liveLoadW: number; peakLoadW: number; vsYesterdayPercent: number | null;
   voltage: number; currentA: number; loadStatus: 'Low' | 'Normal' | 'High';
-  normalDrawKw: number; isLight?: boolean;
+  normalDrawKw: number; isLight?: boolean; cardTheme?: CardTheme;
 }) {
-  const t = useCardTheme(isLight);
+  const t = cardTheme ?? useCardTheme(isLight);
   const hasTrend = vsYesterdayPercent != null;
   const isLower = hasTrend && vsYesterdayPercent <= 0;
-  const statusColor = loadStatus === 'High' ? '#EF4C4C' : loadStatus === 'Low' ? '#5C6C7E' : '#32E56B';
+  const statusColor = loadStatus === 'High' ? '#EF4C4C' : loadStatus === 'Low' ? '#7A8499' : '#32E56B';
   const loadPct = Math.min(100, (liveLoadW / 2500) * 100);
 
   return (
@@ -217,7 +242,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   daysLeft, combinedDaysLeft, averageDaily,
   meter1Left, meter1Target, meter1Used, meter1Today, meter1DaysLeft,
   meter2Left, meter2Target, meter2Used, meter2Today, meter2DaysLeft,
-  isLight = false,
+  isLight = false, cardTheme,
 }: {
   expectedUnits: number; vsLastMonth: number | null; lastMonthTotal: number; confidence: number;
   dailyUsage: Array<{ timestamp: number; label: string; usage: number }>;
@@ -225,9 +250,9 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   combinedDaysLeft: number; averageDaily: number;
   meter1Left: number; meter1Target: number; meter1Used: number; meter1Today: number; meter1DaysLeft: number;
   meter2Left: number; meter2Target: number; meter2Used: number; meter2Today: number; meter2DaysLeft: number;
-  isLight?: boolean;
+  isLight?: boolean; cardTheme?: CardTheme;
 }) {
-  const t = useCardTheme(isLight);
+  const t = cardTheme ?? useCardTheme(isLight);
   const totalTarget = 400;
   const totalRemaining = meter1Left + meter2Left;
   const totalUsed = meter1Used + meter2Used;

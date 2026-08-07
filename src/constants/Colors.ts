@@ -47,7 +47,7 @@ export const Colors = {
   dark: {
     text: "#F4F5F8",
     textSecondary: "#8A94A6",
-    textMuted: "#5C6578",
+    textMuted: "#7A8499",
     background: "#0A0D14",
     backgroundElement: "rgba(255, 255, 255, 0.03)",
     backgroundElevated: "rgba(255, 255, 255, 0.06)",

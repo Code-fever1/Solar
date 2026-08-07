@@ -1,15 +1,17 @@
+import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { useEnergy } from "@/context/EnergyContext";
-import { useTheme } from "@/hooks/use-theme";
+import { useSceneTheme } from "@/context/SceneThemeContext";
 import { Activity, ArrowLeft, BarChart2, CalendarDays, Edit3, History, RefreshCw, Save, Sparkles } from "lucide-react-native";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
+import { SceneBackground } from "@/components/SceneBackground";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { isLight, ...theme } = useTheme();
+  const { isLight, ...theme } = useSceneTheme();
   const { swapChangeover, activeMeter, meters, home, setManualBaseline, setLastMonthTotal, addManualLog } = useEnergy();
   
   const [meter1Baseline, setMeter1Baseline] = useState("");
@@ -94,7 +96,9 @@ export default function SettingsScreen() {
   };
 
   return (
-    <View style={[s.screen, { backgroundColor: theme.screenBg }]}>
+    <TabSlideWrapper index={4}>
+    <View style={s.screen}>
+      <SceneBackground />
       <ScrollView contentContainerStyle={[s.container, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 100 }]} showsVerticalScrollIndicator={false}>
         
         {/* Header */}
@@ -375,6 +379,7 @@ export default function SettingsScreen() {
         )}
       </ScrollView>
     </View>
+    </TabSlideWrapper>
   );
 }
 
