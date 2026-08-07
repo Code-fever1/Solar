@@ -30,6 +30,10 @@ const FlowChart = memo(function FlowChart({ points, width, startOfToday, isLight
   const graphWidth = Math.max(1, width - 40);
   const chartLeft = 28;
   const [tooltip, setTooltip] = useState<{ x: number; time: string; solarKw: number; gridKw: number; loadKw: number } | null>(null);
+  const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear any pending auto-hide timer on unmount
+  useEffect(() => () => { if (tooltipTimer.current) clearTimeout(tooltipTimer.current); }, []);
 
   const { values, max, paths, yLabels } = useMemo(() => {
     // Use real data if we have at least 2 points; otherwise generate a 24h empty axis.
@@ -86,6 +90,9 @@ const FlowChart = memo(function FlowChart({ points, width, startOfToday, isLight
     const hourOf = d.getHours() + d.getMinutes() / 60;
     const tx = chartLeft + (hourOf / 24) * graphWidth;
     setTooltip({ x: tx, time: timeStr, solarKw: pt.solarKw, gridKw: pt.gridKw, loadKw: pt.loadKw });
+    // Auto-hide tooltip after 5 seconds
+    if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
+    tooltipTimer.current = setTimeout(() => setTooltip(null), 5000);
   };
 
   const tooltipBg = isLight ? "rgba(255,255,255,0.92)" : "rgba(10,18,28,0.88)";
