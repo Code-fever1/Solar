@@ -115,7 +115,10 @@ export function screenToViewBox(
   };
 }
 
-/** Duration in ms — higher power → faster flow. */
+/** Duration in ms — higher power → faster flow.
+ *  Uses a square-root curve so speed changes are more noticeable at lower
+ *  power levels (where most residential loads sit) rather than only
+ *  changing near the ceiling. */
 export function flowDurationFromPower(
   powerW: number,
   minMs = 1800,
@@ -123,7 +126,9 @@ export function flowDurationFromPower(
   powerCeilingW = 6000,
 ): number {
   const clamped = Math.max(0, Math.min(powerW, powerCeilingW));
-  return maxMs - (clamped / powerCeilingW) * (maxMs - minMs);
+  const ratio = clamped / powerCeilingW;
+  const curved = Math.sqrt(ratio); // sqrt → faster ramp-up at low power
+  return maxMs - curved * (maxMs - minMs);
 }
 
 export function wireOpacity(

@@ -115,6 +115,8 @@ type EnergyContextValue = {
 const API_URL = "http://104.43.56.204:3001/api/solar";
 const POLL_FOREGROUND_MS = 5_000;
 const POLL_BACKGROUND_MS = 5_000;
+const SYNC_INTERVAL_MS = 30_000;  // full dashboard delta sync every 30s
+const FLOW_INTERVAL_MS = 60_000;  // flow history every 60s
 const DASHBOARD_CACHE_KEY = "voltx.solar.dashboard.v1";
 const PENDING_OPERATIONS_KEY = "voltx.solar.pending-operations.v1";
 const LAST_MONTH_TOTAL_KEY = "voltx.solar.last-month-total.v1";
@@ -180,6 +182,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const activeMeterOverrideRef = useRef<{ meterId: MeterId; timestamp: number } | null>(null);
   const manualReadingOverrideRef = useRef<Record<MeterId, { reading: number; timestamp: number } | null>>({ meter1: null, meter2: null });
   const deletedLogIdsRef = useRef<Set<string>>(new Set());
+  const dataVersionRef = useRef<number>(0);
 
   const normaliseSnapshot = (data: DashboardSnapshot): DashboardSnapshot => ({
       ...data,
@@ -400,6 +403,73 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Lightweight live fetch — returns just tomznLive + inverter without the heavy
+  // dashboard DB queries. Used on app open and 5s polling so the hero section
+  // renders instantly. Pass force=true on foreground to bypass the backend cache
+  // and get truly fresh data from Tuya/inverter APIs.
+  const fetchLive = async (force = false) => {
+    try {
+      const data = await request(`/live${force ? "?force=true" : ""}`);
+      if (data?.tomznLive || data?.inverter) {
+        setSnapshot((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            tomznLive: data.tomznLive ?? prev.tomznLive,
+            inverter: data.inverter ?? prev.inverter,
+          };
+        });
+        setIsOffline(false);
+        setError(null);
+        setLoading(false);
+      }
+    } catch {
+      // Live fetch is best-effort — the full dashboard will follow right after.
+    }
+  };
+
+  // Delta sync — sends the current dataVersion. If nothing changed, the backend
+  // returns { changed: false } with just live hero data (tiny response). If data
+  // changed, it returns the full dashboard. This avoids re-fetching and re-rendering
+  // the entire dashboard every 5s when only the hero section needs updating.
+  const syncDashboard = async () => {
+    try {
+      // If there are pending operations, flush them first — this may bump
+      // dataVersion on the server, so the sync that follows will pick up changes.
+      const queued = await readPendingOperations();
+      if (queued.length > 0) {
+        await flushPendingOperations();
+      }
+      const data = await request(`/dashboard/sync?since=${dataVersionRef.current}`);
+      if (data.changed) {
+        // Full dashboard changed — apply it and update version
+        dataVersionRef.current = data.dataVersion;
+        applySnapshot(data.dashboard);
+      } else if (data.tomznLive || data.inverter) {
+        // Nothing changed — patch only the live hero data into the existing snapshot
+        dataVersionRef.current = data.dataVersion;
+        setSnapshot((prev) => {
+          if (!prev) return prev;
+          const tomznChanged = data.tomznLive && JSON.stringify(data.tomznLive) !== JSON.stringify(prev.tomznLive);
+          const inverterChanged = data.inverter && JSON.stringify(data.inverter) !== JSON.stringify(prev.inverter);
+          if (!tomznChanged && !inverterChanged) return prev; // no change at all — skip re-render
+          return {
+            ...prev,
+            tomznLive: data.tomznLive ?? prev.tomznLive,
+            inverter: data.inverter ?? prev.inverter,
+          };
+        });
+        setIsOffline(false);
+        setError(null);
+        setLastSyncedAt(Date.now());
+      }
+    } catch (cause) {
+      // Don't immediately go offline on a single sync failure — the 5s live poll
+      // will retry. Only go offline if the live poll also fails.
+      console.warn("[Solar Engine] sync failed", cause);
+    }
+  };
+
   const loadHistory = async () => {
     try { setTomznHistory(await request("/tomzn/history")); } catch { /* dashboard remains usable */ }
   };
@@ -442,29 +512,46 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         // A bad cache must never prevent the fresh server engine from loading.
       }
       if (!disposed) {
-        // Cold start: force-refresh both TOMZN and inverter immediately (bypasses
-        // backend 5s max-age guards) so the user sees fresh data right away.
+        // Phase 1: force-fetch lightweight live data (TOMZN + inverter only) so
+        // the hero section renders instantly with fresh data on app open.
+        void fetchLive(true);
+        // Phase 2: fetch the full dashboard (meters, energy, forecasts, flow history)
+        // right after — this takes longer due to DB aggregation queries.
         void refreshAll();
         void loadFlowHistory();
       }
     };
     void bootstrap();
 
-    // Adaptive polling: 5s when app is foregrounded, 5s when backgrounded.
-    let interval: ReturnType<typeof setInterval> | null = null;
+    // Tiered polling:
+    //   5s  — /live (hero section only: tomznLive + inverter, ~200 bytes)
+    //   30s — /dashboard/sync (delta check: { changed: false } if nothing changed)
+    //   60s — /flow-history (chart data, only grows throughout the day)
+    let liveInterval: ReturnType<typeof setInterval> | null = null;
+    let syncInterval: ReturnType<typeof setInterval> | null = null;
+    let flowInterval: ReturnType<typeof setInterval> | null = null;
+
     const startPolling = (ms: number) => {
-      if (interval) clearInterval(interval);
-      interval = setInterval(() => loadDashboard(true), ms);
+      if (liveInterval) clearInterval(liveInterval);
+      if (syncInterval) clearInterval(syncInterval);
+      if (flowInterval) clearInterval(flowInterval);
+      // 5s: lightweight live data for hero section
+      liveInterval = setInterval(() => void fetchLive(), ms);
+      // 30s: delta sync — only fetches full dashboard if dataVersion changed
+      syncInterval = setInterval(() => void syncDashboard(), SYNC_INTERVAL_MS);
+      // 60s: flow history for the chart
+      flowInterval = setInterval(() => void loadFlowHistory(), FLOW_INTERVAL_MS);
     };
     const onAppStateChange = (state: AppStateStatus) => {
       if (state === "active") {
-        // App came to foreground — force-refresh both TOMZN and inverter immediately
-        // (bypasses backend 5s max-age guards), then switch to 5s polling.
-        void refreshAll();
+        // App came to foreground — force-fetch live data (bypasses backend cache)
+        // for instant fresh hero section, then delta sync for the rest.
+        void fetchLive(true);
+        void syncDashboard();
         void loadFlowHistory();
         startPolling(POLL_FOREGROUND_MS);
       } else {
-        // App went to background — keep polling at 5s.
+        // App went to background — keep polling at same rate.
         startPolling(POLL_BACKGROUND_MS);
       }
     };
@@ -473,7 +560,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
     return () => {
       disposed = true;
-      if (interval) clearInterval(interval);
+      if (liveInterval) clearInterval(liveInterval);
+      if (syncInterval) clearInterval(syncInterval);
+      if (flowInterval) clearInterval(flowInterval);
       subscription.remove();
     };
   }, []);
@@ -618,6 +707,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const refreshAll = async () => {
     try {
       const data = await request("/refresh?force=true", { method: "POST" });
+      if (data.dataVersion != null) dataVersionRef.current = data.dataVersion;
       applySnapshot(data.dashboard);
       await loadHistory();
     } catch (cause) {
@@ -632,6 +722,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const refreshTomznForce = async () => {
     try {
       const data = await request("/refresh/tomzn?force=true", { method: "POST" });
+      if (data.dataVersion != null) dataVersionRef.current = data.dataVersion;
       applySnapshot(data.dashboard);
       await loadHistory();
     } catch (cause) {
@@ -646,6 +737,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const refreshInverterForce = async () => {
     try {
       const data = await request("/refresh/inverter?force=true", { method: "POST" });
+      if (data.dataVersion != null) dataVersionRef.current = data.dataVersion;
       applySnapshot(data.dashboard);
     } catch (cause) {
       showOfflineEstimate(cause);

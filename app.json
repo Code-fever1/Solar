@@ -11,9 +11,9 @@
       "icon": "./assets/images/meter.png"
     },
     "android": {
-      "icon": "./assets/images/meter.png",
+      "icon": "./assets/images/meter-square.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/meter.png",
+        "foregroundImage": "./assets/images/meter-adaptive.png",
         "backgroundColor": "#0A0E1A"
       },
       "predictiveBackGestureEnabled": false,
@@ -30,9 +30,21 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#0A0E1A",
-          "image": "./assets/images/meter.png",
-          "imageWidth": 120
+          "backgroundColor": "#000000",
+          "image": "./assets/images/loading.jpeg",
+          "imageWidth": 200,
+          "dark": {
+            "backgroundColor": "#000000",
+            "image": "./assets/images/loading.jpeg"
+          },
+          "ios": {
+            "backgroundColor": "#000000",
+            "image": "./assets/images/loading.jpeg"
+          },
+          "android": {
+            "backgroundColor": "#000000",
+            "image": "./assets/images/loading.jpeg"
+          }
         }
       ]
     ],

@@ -522,7 +522,6 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
   // Solar text debounce: count consecutive polls where solarW=0 AND solarV=0 AND solarA=0.
   // Only hide solar text after 10 consecutive zero-checks (~50s at 5s poll).
-  const solarZeroCountRef = useRef(0);
   const [solarTextVisible, setSolarTextVisible] = useState(true);
 
   useEffect(() => {
@@ -571,8 +570,10 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   const wapdaCutOff = !offline && tomznLive.isOnline && (fault === 2048 || fault === 8192);
   // Relay off with no fault = standby (user/manual disconnect, not a fault)
   const wapdaStandby = !offline && tomznLive.isOnline && !tomznLive.switchOn && fault !== 2048 && fault !== 8192;
+  // Grid is unavailable when: system offline, TOMZN device offline, wapda cut off, or wapda standby.
+  const gridUnavailable = offline || !tomznLive.isOnline || wapdaCutOff || wapdaStandby;
   // Grid arc always uses Tomzn (Wapda) meter data — independent of inverter state.
-  const gridImporting = !offline && tomznLive.isOnline && tomznLive.powerW >= 10 && !wapdaCutOff && !wapdaStandby;
+  const gridImporting = !offline && tomznLive.isOnline && tomznLive.powerW > 0 && !wapdaCutOff && !wapdaStandby;
   const gridPowerW = gridImporting ? Math.max(0, tomznLive.powerW) : 0;
   const gridColor = gridImporting ? "#6E9BFF" : wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : "#8A8A8A";
   // Export detection: TOMZN can't distinguish import vs export on its own, so we
@@ -687,36 +688,28 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   const homeW = offline ? 0 : invW;
   const homeV = offline ? 0 : invV;
   const homeA = offline ? 0 : invA;
-  const homeActive = !offline && homeW > 0;
+  const homeActive = !offline && homeW >= 10;
 
   // Solar V/A
   const solarV = inverter.solarV || 0;
   const solarA = inverter.solarA || 0;
-  // Grid V/A (from tomzn meter)
-  const tomznV = tomznLive.voltageV || 0;
-  const tomznA = tomznLive.currentA || 0;
+  // Grid V/A (from tomzn meter) — zeroed when grid is offline/unavailable/cutoff
+  const tomznV = gridUnavailable ? 0 : (tomznLive.voltageV || 0);
+  const tomznA = gridUnavailable ? 0 : (tomznLive.currentA || 0);
 
-  // Solar text debounce: only hide after 10 consecutive polls where W, V, A are all 0.
-  // This prevents the text from flickering off during brief data gaps or cloud passes.
+  // Solar text: hide immediately when solar is on standby (0W, 0V, 0A).
   const solarAllZero = inverter.solarW === 0 && solarV === 0 && solarA === 0;
   useEffect(() => {
     if (inverterOff || offline) {
-      solarZeroCountRef.current = 0;
       setSolarTextVisible(false);
       return;
     }
-    if (solarAllZero) {
-      solarZeroCountRef.current += 1;
-      if (solarZeroCountRef.current >= 10) setSolarTextVisible(false);
-    } else {
-      solarZeroCountRef.current = 0;
-      setSolarTextVisible(true);
-    }
+    setSolarTextVisible(!solarAllZero);
   }, [solarAllZero, inverterOff, offline]);
 
   const solarP = formatPowerShort(offline ? 0 : inverter.solarW);
   const homeP = formatPowerShort(homeW);
-  const gridP = formatPowerShort(offline ? 0 : gridDisplayW);
+  const gridP = formatPowerShort(gridUnavailable ? 0 : gridDisplayW);
   // Bypass mode: inverter is off, so grid feeds the home directly via the
   // bypass path (grid → DB). This applies whether wapda is actively importing
   // or idle — the physical routing doesn't change just because power stops flowing.
@@ -725,6 +718,18 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     bypassMode && overlayConfig?.gridBypassPath?.length
       ? overlayConfig.gridBypassPath
       : undefined;
+  // When grid watts exceed home usage by 100W+, show both grid→inverter and grid→DB wires.
+  // The excess power flows through the bypass path directly to the distribution box.
+  const gridExcess = gridImporting && !isExporting && (gridPowerW - homeW) >= 100;
+  const gridBypassFlow = gridExcess && !bypassMode && overlayConfig?.gridBypassPath?.length
+    ? {
+        active: true,
+        power: Math.max(0, gridPowerW - homeW),
+        color: gridArcColor,
+        glowColor: gridArcColor,
+        idleOpacity: 0.16,
+      }
+    : undefined;
 
   return (
     <View
@@ -764,8 +769,9 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
               glowColor: "#2DDB6C",
               idleOpacity: 0.14,
             }}
-            solarHidden={inverterOff || offline}
-            gridHidden={wapdaCutOff || (solarProducing && !gridImporting && !isExporting)}
+            gridBypassFlow={gridBypassFlow}
+            solarHidden={inverterOff || offline || solarAllZero}
+            gridHidden={gridUnavailable || (solarProducing && !gridImporting && !isExporting)}
             inverterOutputHidden={inverterOff || offline}
           />
         )}
@@ -814,7 +820,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
             overlayConfig ? labelPositionStyle(overlayConfig.gridLabelPosition, overlayConfig.viewBox) : null,
           ]}
         >
-          {!wapdaCutOff && (
+          {!gridUnavailable && (
             <>
               <View style={styles.powerRow}>
                 <Text style={[styles.powerValue, { color: isExporting ? "#6E9BFF" : (gridImporting ? gridArcColor : gridColor) }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.value}</Text>

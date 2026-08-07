@@ -351,6 +351,8 @@ export type HeroOverlayEngineProps = {
   solarFlow: WireFlowState;
   gridFlow: WireFlowState;
   inverterOutputFlow?: WireFlowState;
+  /** When set, renders a second grid wire (grid → DB bypass path) alongside the normal grid path. */
+  gridBypassFlow?: WireFlowState;
   isVisible?: boolean;
   /** When true, the solar wire stream is not rendered at all. */
   solarHidden?: boolean;
@@ -368,6 +370,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
   solarFlow,
   gridFlow,
   inverterOutputFlow,
+  gridBypassFlow,
   isVisible = true,
   solarHidden = false,
   gridHidden = false,
@@ -403,6 +406,19 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           isVisible={isVisible}
           hidden={gridHidden}
         />
+        {gridBypassFlow && config.gridBypassPath && (
+          <WireStream
+            wireId="gridBypass"
+            points={config.gridBypassPath}
+            viewBox={config.viewBox}
+            width={width}
+            height={height}
+            wireStyle={gridWireStyle}
+            flow={gridBypassFlow}
+            isVisible={isVisible}
+            hidden={false}
+          />
+        )}
         <WireStream
           wireId="solar"
           points={config.solarPath}

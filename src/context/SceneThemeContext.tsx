@@ -1,4 +1,5 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 
 import { useEnergy } from "@/context/EnergyContext";
 import {
@@ -144,9 +145,45 @@ export type SceneThemeContextValue = {
 
 const SceneThemeContext = createContext<SceneThemeContextValue | null>(null);
 
+/**
+ * Returns a "tick" number that increments every minute and whenever the app
+ * returns to the foreground. This forces time-dependent memos (like scene
+ * selection) to re-evaluate even while the app was backgrounded for hours.
+ */
+function useSceneTick() {
+  const [tick, setTick] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    const startTimer = () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      intervalRef.current = setInterval(() => setTick((t) => t + 1), 60_000);
+    };
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === "active") {
+        // App returned to foreground — immediately re-evaluate the scene.
+        setTick((t) => t + 1);
+        startTimer();
+      } else {
+        // App backgrounded — stop the timer to save battery.
+        if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+      }
+    };
+    const sub = AppState.addEventListener("change", handleAppStateChange);
+    startTimer();
+    return () => {
+      sub.remove();
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+
+  return tick;
+}
+
 export function SceneThemeProvider({ children }: { children: ReactNode }) {
   const { weather } = useEnergy();
   const [manualSceneIndex, setManualSceneIndex] = useState<number | null>(null);
+  const sceneTick = useSceneTick();
 
   const cycleScene = () => {
     setManualSceneIndex((prev) => {
@@ -161,7 +198,8 @@ export function SceneThemeProvider({ children }: { children: ReactNode }) {
       return { id, source: HERO_SCENE_BACKGROUNDS[id], overlay: HERO_OVERLAY_CONFIGS[id] };
     }
     return resolveHeroScene(weather);
-  }, [manualSceneIndex, weather.code, weather.sunrise, weather.sunset, weather.isDay]);
+    // sceneTick forces re-evaluation every minute and on foreground return
+  }, [manualSceneIndex, weather.code, weather.sunrise, weather.sunset, weather.isDay, sceneTick]);
 
   const sheetColors = HERO_SCENE_SHEET_COLORS[heroScene.id];
   const theme = useMemo(() => makeSceneTheme(sheetColors.seam), [sheetColors]);
