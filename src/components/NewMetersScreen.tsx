@@ -234,7 +234,7 @@ export function NewMetersScreen() {
           meter2Used={meter2.cycleUsage ?? 0}
           meter2Today={meter2.todayUsage}
           meter2DaysLeft={meter2.projectedDaysLeft}
-          isLight={false}
+          isLight={isLight}
         />
 
         {/* ── Bottom Section: Smart Tips ── */}
@@ -300,10 +300,10 @@ const MeterCard = memo(function MeterCard({ meter, isActive, accentColor, typeLa
 }) {
   const cardBg = cardBgProp ?? (isLight ? '#FFFFFF' : '#0E1521');
   const cardBorder = isLight ? 'rgba(15,23,42,0.08)' : 'rgba(255,255,255,0.08)';
-  const textPrimary = isLight ? '#0F172A' : '#F4F8FC';
-  const textSecondary = isLight ? '#475569' : '#B8C5D5';
-  const textMuted = isLight ? '#94A3B8' : '#9AABBE';
-  const overlayBg = isLight ? 'rgba(15,23,42,0.05)' : 'rgba(255,255,255,0.08)';
+  const textPrimary = isLight ? '#0F172A' : '#F8FAFC';
+  const textSecondary = isLight ? '#475569' : '#CBD5E1';
+  const textMuted = isLight ? '#94A3B8' : '#94A3B8';
+  const overlayBg = isLight ? 'rgba(15,23,42,0.05)' : 'rgba(255,255,255,0.12)';
   const remainingPct = Math.round((meter.remainingUnits / Math.max(1, meter.targetUnits)) * 100);
   const remainingClamped = Math.max(0, Math.min(100, remainingPct));
   const lastReading = meter.lastLoggedReading;
@@ -421,7 +421,6 @@ const s = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
-    elevation: 4,
   },
   meterCardHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -485,7 +484,7 @@ const s = StyleSheet.create({
   wideCard: {
     width: '100%', borderRadius: 14, padding: 14,
     overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 4,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 10,
   },
   wideCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   wideCardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -530,7 +529,7 @@ const s = StyleSheet.create({
   tipsCard: {
     borderRadius: 14, padding: 14,
     overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 4,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 10,
   },
   tipBox: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 10, padding: 10 },
   tipIconBox: { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
@@ -542,7 +541,7 @@ const s = StyleSheet.create({
   modalCard: {
     width: '100%', borderRadius: 16, padding: 20,
     overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.5, shadowRadius: 16, elevation: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.5, shadowRadius: 16,
   },
   modalTitle: { color: undefined, fontFamily: 'Outfit', fontSize: 16, fontWeight: '700', marginBottom: 8 },
   modalSub: { color: undefined, fontFamily: 'Outfit', fontSize: 11, marginBottom: 6 },

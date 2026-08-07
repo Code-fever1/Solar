@@ -44,9 +44,9 @@ function makeSceneTheme(seam: [number, number, number]): SceneTheme {
   // Text colors: darker for light scenes, lighter for dark scenes.
   // On glassmorphism, the effective background is a blend of the blurred
   // wallpaper + seam wash, so we need sufficient contrast.
-  const textPrimary = isLightScene ? "#1A2332" : "#F4F8FC";
-  const textSecondary = isLightScene ? "#4A5868" : "#A8B8CA";
-  const textMuted = isLightScene ? "#6B7888" : "#8A9BAE";
+  const textPrimary = isLightScene ? "#1A2332" : "#F8FAFC";
+  const textSecondary = isLightScene ? "#475569" : "#CBD5E1";
+  const textMuted = isLightScene ? "#64748B" : "#94A3B8";
 
   // Element colors: use dark overlays on light scenes, light overlays on dark.
   const overlayBase = isLightScene ? "0,0,0" : "255,255,255";

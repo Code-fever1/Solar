@@ -248,7 +248,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.35,
     shadowRadius: 16,
-    elevation: 8,
   },
   // Top inner glow — bright line at the top edge of the glass bar
   topGlow: {

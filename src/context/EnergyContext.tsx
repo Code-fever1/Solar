@@ -239,17 +239,74 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
             void AsyncStorage.setItem(MANUAL_READINGS_OVERRIDE_KEY, JSON.stringify(manualReadingOverrideRef.current)).catch(() => undefined);
           } else {
             const baselineReading = meter.reading - (meter.cycleUsage || 0);
+            const oldCycleUsage = meter.cycleUsage || 0;
             const cycleUsage = Math.max(0, override.reading - baselineReading);
+            const cycleUsageDelta = Math.round((cycleUsage - oldCycleUsage) * 1000) / 1000;
+            const todayUsage = Math.max(0, Math.round(((meter.todayUsage || 0) + cycleUsageDelta) * 1000) / 1000);
+            // Gap between server prediction and manual reading — recalculate health/confidence
+            const gap = Math.round((override.reading - meter.reading) * 1000) / 1000;
+            const absGap = Math.abs(gap);
+            const avgDaily = Math.max(0.1, meter.averageDaily || meter.recentDailyAvg || 1);
+            const errorPenalty = Math.min(40, Math.round((absGap / avgDaily) * 30));
+            const baseConfidence = avgDaily > 0 ? Math.round(55 + Math.min(35, 8)) : 20;
+            const finalConfidence = Math.max(10, Math.min(95, baseConfidence - errorPenalty));
+            const gapRatio = Math.min(1, absGap / avgDaily);
+            const healthScore = Math.round(Math.max(0, 100 - gapRatio * 60));
+            const healthColor = healthScore > 70 ? "#22C55E" : healthScore > 40 ? "#F8C653" : "#EF4C4C";
+            const calibrationConfidence = Math.max(10, Math.min(95, Math.round(95 - gapRatio * 50)));
+            const remainingUnits = Math.max(0, meter.targetUnits - cycleUsage);
+            const projectedDaysLeft = avgDaily > 0 ? Math.max(0, Math.floor(remainingUnits / avgDaily)) : 0;
+            // Recalculate projected monthly: cycle usage + remaining cycle days × daily rate
+            const now = new Date();
+            const billingDay = 28;
+            const cycleStartMonth = now.getDate() >= billingDay ? now.getMonth() : now.getMonth() - 1;
+            const cycleStartYear = cycleStartMonth < 0 ? now.getFullYear() - 1 : now.getFullYear();
+            const cycleStartIdx = ((cycleStartMonth % 12) + 12) % 12;
+            const cycleStartDate = new Date(cycleStartYear, cycleStartIdx, billingDay);
+            const cycleEndDate = new Date(cycleStartYear, cycleStartIdx + 1, billingDay);
+            const totalCycleDays = Math.max(1, Math.round((cycleEndDate.getTime() - cycleStartDate.getTime()) / 86_400_000));
+            const elapsedDays = Math.max(0, Math.min(totalCycleDays, Math.floor((now.getTime() - cycleStartDate.getTime()) / 86_400_000)));
+            const remainingCycleDays = Math.max(0, totalCycleDays - elapsedDays);
+            const projectedMonthly = Math.round((cycleUsage + remainingCycleDays * avgDaily) * 10) / 10;
+            // Recalculate home-level aggregates
+            const otherMeterId: MeterId = meterId === "meter1" ? "meter2" : "meter1";
+            const otherMeter = next.meters[otherMeterId];
+            const combinedRemaining = remainingUnits + (otherMeter?.remainingUnits || 0);
+            const combinedAvgDaily = avgDaily + Math.max(0.1, otherMeter?.averageDaily || otherMeter?.recentDailyAvg || 1);
+            const combinedDaysLeft = Math.max(0, Math.floor(combinedRemaining / combinedAvgDaily));
+            const combinedProjected = Math.round((projectedMonthly + (otherMeter?.projectedMonthly || 0)) * 10) / 10;
             next.meters = {
               ...next.meters,
               [meterId]: {
                 ...meter,
                 reading: override.reading,
                 cycleUsage,
-                remainingUnits: Math.max(0, meter.targetUnits - cycleUsage),
+                remainingUnits,
+                todayUsage,
+                currentDaily: todayUsage,
                 lastLoggedAt: override.timestamp,
                 lastLoggedReading: override.reading,
+                projectedDaysLeft,
+                projectedMonthly,
+                driftOffset: gap,
+                averageError: absGap,
+                predictionConfidence: finalConfidence,
+                confidencePercent: finalConfidence,
+                healthScore,
+                healthColor,
+                consumptionSpeedScore: healthScore,
+                consumptionSpeedColor: healthColor,
+                calibrationConfidence,
+                trendStatus: absGap > avgDaily * 0.5 ? "worsening" : absGap < avgDaily * 0.1 ? "improving" : "stable",
+                explanation: `Manual reading ${override.reading.toFixed(1)} kWh overrides prediction of ${meter.reading.toFixed(1)}. Gap: ${gap > 0 ? "+" : ""}${gap.toFixed(1)} units. Confidence: ${finalConfidence}%.`,
               },
+            };
+            next.home = {
+              ...next.home,
+              projectedMonthly: combinedProjected,
+              combinedDaysLeft,
+              confidencePercent: finalConfidence,
+              todayUsage: Math.round(((next.home.todayUsage || 0) + cycleUsageDelta) * 1000) / 1000,
             };
           }
         }

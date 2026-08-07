@@ -48,9 +48,12 @@ export const HERO_SCENE_SHEET_COLORS: Record<HeroSceneId, {
   mid: [number, number, number];
 }> = {
   night:           { seam: [26, 35, 53],    sky: [6, 21, 45],    mid: [16, 28, 49] },
-  "rain-light":    { seam: [83, 83, 83],    sky: [167, 174, 184], mid: [125, 128, 133] },
-  "clouds-dark":   { seam: [104, 103, 104], sky: [102, 107, 116], mid: [103, 105, 110] },
-  fog:             { seam: [122, 122, 126], sky: [175, 185, 198], mid: [148, 153, 162] },
+  // rain-light: white text. Made sky darker so white text remains visible at bottom.
+  "rain-light":    { seam: [83, 83, 83],    sky: [65, 70, 75],   mid: [75, 78, 80] },
+  // clouds-dark: white text (luminance ~0.3). Made all colors darker for white text contrast.
+  "clouds-dark":   { seam: [75, 75, 78],    sky: [70, 75, 82],   mid: [72, 75, 80] },
+  // fog: dark text (luminance ~0.6). Made all colors brighter for dark text contrast.
+  fog:             { seam: [155, 155, 160], sky: [175, 185, 198], mid: [165, 170, 178] },
   evening:         { seam: [120, 95, 80],   sky: [172, 144, 139], mid: [146, 119, 109] },
   "morning-cloud": { seam: [148, 142, 140], sky: [125, 159, 198], mid: [136, 150, 169] },
 };

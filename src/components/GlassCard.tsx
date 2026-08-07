@@ -50,20 +50,24 @@ export const GlassCard = memo(function GlassCard({
   const rimColor = isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)";
   const blurTint = isLight ? "light" : "dark";
 
+  // Android often fails to clip absolute children with overflow: 'hidden'
+  // if they don't have their own borderRadius.
+  const radius = (StyleSheet.flatten(style)?.borderRadius as number) || 14;
+
   return (
     <View style={[styles.container, style]}>
       {blur && (
         <BlurView
           intensity={intensity}
           tint={blurTint as any}
-          style={StyleSheet.absoluteFill}
+          style={[StyleSheet.absoluteFill, { borderRadius: radius }]}
           blurMethod={Platform.OS === "android" ? "none" : undefined}
         />
       )}
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: rgba(seam, tintAmount) }]} />
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: washColor }]} />
-      <View style={[styles.topGlow, { borderTopColor: glowColor }]} />
-      <View style={[styles.rim, { borderColor: rimColor }]} />
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: rgba(seam, tintAmount), borderRadius: radius }]} />
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: washColor, borderRadius: radius }]} />
+      <View style={[styles.topGlow, { borderTopColor: glowColor, borderRadius: radius }]} />
+      <View style={[styles.rim, { borderColor: rimColor, borderRadius: radius }]} />
       <View style={styles.content}>{children}</View>
     </View>
   );

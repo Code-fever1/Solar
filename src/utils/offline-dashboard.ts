@@ -252,7 +252,56 @@ export function applyOfflineManualReading(
 ): CachedDashboardSnapshot {
   const meter = source.meters[meterId];
   const baselineReading = meter.reading - (meter.cycleUsage || 0);
+  const oldCycleUsage = meter.cycleUsage || 0;
   const cycleUsage = Math.max(0, reading - baselineReading);
+
+  // Gap between what the system predicted and what the user actually read.
+  const predictedReading = meter.reading;
+  const gap = round(reading - predictedReading, 3);
+  const absGap = Math.abs(gap);
+
+  // The cycle usage delta from the manual correction is attributed to today.
+  const cycleUsageDelta = round(cycleUsage - oldCycleUsage, 3);
+  const todayUsage = Math.max(0, round((meter.todayUsage || 0) + cycleUsageDelta, 3));
+
+  // Recalculate confidence based on the gap.
+  const avgDaily = Math.max(0.1, meter.averageDaily || meter.recentDailyAvg || 1);
+  const errorPenalty = Math.min(40, Math.round((absGap / avgDaily) * 30));
+  const baseConfidence = avgDaily > 0 ? Math.round(55 + Math.min(35, 8)) : 20;
+  const finalConfidence = Math.max(10, Math.min(95, baseConfidence - errorPenalty));
+
+  // Health score: large gaps reduce health.
+  const gapRatio = Math.min(1, absGap / avgDaily);
+  const healthScore = Math.round(Math.max(0, 100 - gapRatio * 60));
+  const healthColor = healthScore > 70 ? "#22C55E" : healthScore > 40 ? "#F8C653" : "#EF4C4C";
+
+  const calibrationConfidence = Math.max(10, Math.min(95, Math.round(95 - gapRatio * 50)));
+
+  // Recalculate projected days left and monthly projection based on new remaining units.
+  const remainingUnits = round(Math.max(0, meter.targetUnits - cycleUsage));
+  const projectedDaysLeft = avgDaily > 0 ? Math.max(0, Math.floor(remainingUnits / avgDaily)) : 0;
+
+  // Projected monthly: current cycle usage + remaining days in cycle × daily rate
+  const now = new Date();
+  const billingDay = 28;
+  const cycleStartMonth = now.getDate() >= billingDay ? now.getMonth() : now.getMonth() - 1;
+  const cycleStartYear = cycleStartMonth < 0 ? now.getFullYear() - 1 : now.getFullYear();
+  const cycleStartIdx = ((cycleStartMonth % 12) + 12) % 12;
+  const cycleStartDate = new Date(cycleStartYear, cycleStartIdx, billingDay);
+  const cycleEndDate = new Date(cycleStartYear, cycleStartIdx + 1, billingDay);
+  const totalCycleDays = Math.max(1, Math.round((cycleEndDate.getTime() - cycleStartDate.getTime()) / 86_400_000));
+  const elapsedDays = Math.max(0, Math.min(totalCycleDays, Math.floor((now.getTime() - cycleStartDate.getTime()) / 86_400_000)));
+  const remainingCycleDays = Math.max(0, totalCycleDays - elapsedDays);
+  const projectedMonthly = round(cycleUsage + remainingCycleDays * avgDaily, 1);
+
+  // Recalculate home-level aggregates using both meters
+  const otherMeterId: MeterId = meterId === "meter1" ? "meter2" : "meter1";
+  const otherMeter = source.meters[otherMeterId];
+  const combinedRemaining = remainingUnits + (otherMeter?.remainingUnits || 0);
+  const combinedAvgDaily = avgDaily + Math.max(0.1, otherMeter?.averageDaily || otherMeter?.recentDailyAvg || 1);
+  const combinedDaysLeft = Math.max(0, Math.floor(combinedRemaining / combinedAvgDaily));
+  const combinedProjected = round(projectedMonthly + (otherMeter?.projectedMonthly || 0), 1);
+
   const manualLog: ManualLog = { id: `offline-${meterId}-${timestamp}`, meterId, reading, timestamp, notes };
   return {
     ...source,
@@ -262,14 +311,36 @@ export function applyOfflineManualReading(
         ...meter,
         reading: round(reading),
         cycleUsage: round(cycleUsage),
-        remainingUnits: round(Math.max(0, meter.targetUnits - cycleUsage)),
+        remainingUnits,
+        todayUsage,
+        currentDaily: todayUsage,
         lastLoggedAt: timestamp,
         lastLoggedReading: reading,
-        explanation: "Manual reading saved offline. The server will use it to reconcile and learn this meter's ratio after sync.",
+        projectedDaysLeft,
+        projectedMonthly,
+        driftOffset: gap,
+        averageError: absGap,
+        predictionConfidence: finalConfidence,
+        confidencePercent: finalConfidence,
+        healthScore,
+        healthColor,
+        consumptionSpeedScore: healthScore,
+        consumptionSpeedColor: healthColor,
+        remainingColor: remainingUnits / meter.targetUnits > 0.5 ? "#22C55E" : remainingUnits / meter.targetUnits > 0.25 ? "#F8C653" : "#EF4C4C",
+        calibrationConfidence,
+        trendStatus: absGap > avgDaily * 0.5 ? "worsening" : absGap < avgDaily * 0.1 ? "improving" : "stable",
+        explanation: `Manual reading ${reading.toFixed(1)} kWh logged. Predicted was ${predictedReading.toFixed(1)} — gap of ${gap > 0 ? "+" : ""}${gap.toFixed(1)} units. Confidence adjusted to ${finalConfidence}%.`,
       },
     },
     manualLogs: [manualLog, ...source.manualLogs],
-    home: { ...source.home, explanation: "Manual reading saved offline. It will sync and improve this meter's forecast on reconnect." },
+    home: {
+      ...source.home,
+      projectedMonthly: combinedProjected,
+      combinedDaysLeft,
+      confidencePercent: finalConfidence,
+      todayUsage: round((source.home.todayUsage || 0) + cycleUsageDelta, 3),
+      explanation: `Manual reading saved. Gap of ${gap > 0 ? "+" : ""}${gap.toFixed(1)} units — readings, usage, projections and confidence recalculated.`,
+    },
   };
 }
 

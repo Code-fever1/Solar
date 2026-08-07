@@ -72,15 +72,15 @@ export function makeSceneCardTheme(seam: [number, number, number]): CardTheme {
   const overlayBase = isLightScene ? "0,0,0" : "255,255,255";
   return {
     cardBg: `rgb(${d(r)},${d(g)},${d(b)})`,
-    cardBorder: `rgba(${overlayBase},0.08)`,
-    cardHighlight: `rgba(${overlayBase},0.06)`,
+    cardBorder: `rgba(${overlayBase},0.12)`,
+    cardHighlight: `rgba(${overlayBase},0.08)`,
     cardShadow: 'rgba(0,0,0,0.5)',
-    textPrimary: isLightScene ? '#1A2332' : '#F4F8FC',
-    textSecondary: isLightScene ? '#4A5868' : '#A8B8CA',
-    textMuted: isLightScene ? '#6B7888' : '#8A9BAE',
-    trackBg: `rgba(${overlayBase},0.05)`,
-    overlayBg: `rgba(${overlayBase},0.04)`,
-    overlayBorder: `rgba(${overlayBase},0.06)`,
+    textPrimary: isLightScene ? '#1A2332' : '#F8FAFC',
+    textSecondary: isLightScene ? '#475569' : '#CBD5E1',
+    textMuted: isLightScene ? '#64748B' : '#94A3B8',
+    trackBg: `rgba(${overlayBase},0.08)`,
+    overlayBg: `rgba(${overlayBase},0.06)`,
+    overlayBorder: `rgba(${overlayBase},0.12)`,
     svgGridLine: `rgba(${overlayBase},${isLightScene ? 0.12 : 0.06})`,
     svgTrack: `rgba(${overlayBase},0.06)`,
   };
@@ -590,7 +590,6 @@ const s = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
-    elevation: 4,
   },
   wideCard: {
     width: '100%',
@@ -599,7 +598,6 @@ const s = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
-    elevation: 4,
   },
   // Faint top highlight — glass effect
   cardHighlight: {
