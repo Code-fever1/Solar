@@ -1,0 +1,22 @@
+{
+  "project_name": "Voltix Solar Dashboard",
+  "description": "React Native (Expo SDK 57) solar energy monitoring app with self-hosted backend",
+  "server": {
+    "ip": "104.43.56.204",
+    "ssh_key": "~/Documents/vm1_key_0322.pem",
+    "ssh_user": "azureuser",
+    "backend_port": 3001,
+    "pm2_process": "backend_api",
+    "mongo_uri": "mongodb://localhost:27017",
+    "mongo_db": "ont_monitor"
+  },
+  "deploy": {
+    "backend_files": ["backend_api.js", "unified_solar_routes.js", "tuya_routes.js"],
+    "command": "scp -i ~/Documents/vm1_key_0322.pem -o StrictHostKeyChecking=no <file> azureuser@104.43.56.204:~/ && ssh -i ~/Documents/vm1_key_0322.pem azureuser@104.43.56.204 'node -c ~/<file> && pm2 restart backend_api'"
+  },
+  "build": {
+    "android": "cd android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew :app:assembleRelease",
+    "apk_path": "android/app/build/outputs/apk/release/app-release.apk",
+    "typecheck": "npx tsc --noEmit"
+  }
+}

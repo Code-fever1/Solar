@@ -24,6 +24,7 @@ import Animated, {
   withTiming,
   type SharedValue,
 } from "react-native-reanimated";
+
 import type { InverterTelemetry, WeatherState } from "@/context/energy-types";
 import type { TomznLive } from "@/context/EnergyContext";
 import { HeroOverlayEngine } from "@/overlay/HeroOverlayEngine";
@@ -181,35 +182,31 @@ function SkiaStreamLayer({ ctrl, path, glowColor, gradientStart, gradientEnd, gr
   const activeOpacity = useSharedValue(active ? 1 : 0);
   const pulse = useSharedValue(0.85);
   const progress = useSharedValue(0);
+  const smoothPower = useSharedValue(power);
   const particleCount = active ? Math.min(8, Math.max(1, Math.round(power / 1000))) : 0;
-  const duration = Math.max(2000, 6000 - power / 8000 * 4000);
   const particleSize = 2 + Math.min(1, power / 4000);
   const glowOpacity = useDerivedValue(() => activeOpacity.value * 0.15);
-  const streamOpacity = useDerivedValue(() => activeOpacity.value * pulse.value);
+  const streamOpacity = useDerivedValue(() => activeOpacity.value * (0.7 + 0.3 * (0.5 + 0.5 * Math.sin(pulse.value))));
 
   useEffect(() => {
     activeOpacity.value = withTiming(active ? 1 : 0, { duration: 500 });
   }, [active, activeOpacity]);
 
-  useEffect(() => {
-    cancelAnimation(progress);
-    if (!active || !isVisible) {
-      progress.value = 0;
-      return;
-    }
-    progress.value = 0;
-    progress.value = withRepeat(withTiming(1, { duration, easing: Easing.linear }), -1, false);
-  }, [active, duration, isVisible, progress]);
-
-  useEffect(() => {
-    cancelAnimation(pulse);
-    if (!active || !isVisible) {
-      pulse.value = 0.85;
-      return;
-    }
-    pulse.value = 0.85;
-    pulse.value = withRepeat(withSequence(withTiming(1, { duration: 1000 }), withTiming(0.7, { duration: 1000 })), -1, false);
-  }, [active, isVisible, pulse]);
+  // Continuous frame callback — speed changes smoothly with power, no restarts
+  useFrameCallback((info) => {
+    "worklet";
+    if (!isVisible || !active) return;
+    // Lerp power toward target for gradual speed transitions
+    smoothPower.value += (power - smoothPower.value) * 0.08;
+    // Duration from smoothed power — continuous sqrt curve (inlined for worklet)
+    const ratio = Math.max(0, Math.min(smoothPower.value / 5000, 1));
+    const dur = Math.max(1000, 9000 - Math.sqrt(ratio) * 8000);
+    const dt = info.timeSincePreviousFrame ?? 16;
+    progress.value = (progress.value + dt / dur) % 1;
+    // Pulse oscillation
+    pulse.value += (dt / 1000) * Math.PI;
+    if (pulse.value > Math.PI * 2) pulse.value -= Math.PI * 2;
+  }, isVisible && active);
 
   return (
     <>
@@ -307,35 +304,24 @@ function EnergyCanvas({ solarOnline, gridImporting, homeActive, solarPower, grid
   );
 }
 
-function SolarFlowLine() {
+function SolarFlowLine({ power = 0 }: { power?: number }) {
   const vertProgress = useSharedValue(0);
   const horzProgress = useSharedValue(0);
-  const VERT_DUR = 2000;
-  const HORZ_DUR = 2000;
+  const smoothPower = useSharedValue(power);
 
-  useEffect(() => {
-    vertProgress.value = 0;
-    vertProgress.value = withRepeat(
-      withSequence(
-        withTiming(1, { duration: VERT_DUR, easing: Easing.linear }),
-        withTiming(0, { duration: 0 }),
-      ),
-      -1,
-      false,
-    );
-    horzProgress.value = 0;
-    horzProgress.value = withSequence(
-      withTiming(0, { duration: VERT_DUR, easing: Easing.linear }),
-      withRepeat(
-        withSequence(
-          withTiming(1, { duration: HORZ_DUR, easing: Easing.linear }),
-          withTiming(0, { duration: 0 }),
-        ),
-        -1,
-        false,
-      ),
-    );
-  }, []);
+  // Continuous frame callback — speed changes smoothly with power, no restarts
+  useFrameCallback((info) => {
+    "worklet";
+    smoothPower.value += (power - smoothPower.value) * 0.08;
+    // Inlined duration calculation (worklet-safe)
+    // Slower range: 3000ms at idle → 1500ms at max solar power
+    const ratio = Math.max(0, Math.min(smoothPower.value / 3000, 1));
+    const dur = Math.max(1500, 3000 - Math.sqrt(ratio) * 1500);
+    const dt = info.timeSincePreviousFrame ?? 16;
+    vertProgress.value = (vertProgress.value + dt / dur) % 1;
+    // Horizontal starts after vertical completes (delay = dur)
+    horzProgress.value = (horzProgress.value + dt / dur) % 1;
+  }, true);
 
   const caveOpacity = (t: number) => {
     'worklet';
@@ -393,17 +379,19 @@ function GridFlowLine({ color, power }: { color: string; power: number }) {
   const pulseColor = useSharedValue(color);
   const rate = useSharedValue(0.0005); // phases per ms (default 6000ms cycle)
   const bodyScale = useSharedValue(1);  // pulse size shrinks as power rises
+  const smoothPower = useSharedValue(power);
 
   useEffect(() => {
     pulseColor.value = withTiming(color, { duration: 500 });
-  }, [color]);
+    bodyScale.value = withTiming(getBodyScale(power), { duration: 500 });
+  }, [color, power]);
 
   const getTotalDuration = (watts: number) => {
     const maxPower = 5000;
     const minDur = 2500;  // fastest at high consumption
     const maxDur = 12000; // slowest at low/no consumption
     const clamped = Math.max(0, Math.min(watts, maxPower));
-    return maxDur - (clamped / maxPower) * (maxDur - minDur);
+    return maxDur - Math.sqrt(clamped / maxPower) * (maxDur - minDur);
   };
 
   const getBodyScale = (watts: number) => {
@@ -413,20 +401,18 @@ function GridFlowLine({ color, power }: { color: string; power: number }) {
     return Math.max(0.4, 1 - (clamped / maxPower) * 0.6);
   };
 
-  useEffect(() => {
-    const totalDur = getTotalDuration(power);
-    const twoPhaseDur = (totalDur * 2) / 3; // 2 phases instead of 3
-    
-    progress.value = 0;
-    progress.value = withRepeat(
-      withTiming(2, { duration: twoPhaseDur, easing: Easing.linear }),
-      -1,
-      false
-    );
-    
-    pulseColor.value = withTiming(color, { duration: 500 });
-    bodyScale.value = withTiming(getBodyScale(power), { duration: 500 });
-  }, [power, color]);
+  // Continuous frame callback — speed changes smoothly with power, no restarts
+  useFrameCallback((info) => {
+    "worklet";
+    smoothPower.value += (power - smoothPower.value) * 0.08;
+    // Inlined duration calculation (worklet-safe)
+    const ratio = Math.max(0, Math.min(smoothPower.value / 5000, 1));
+    const totalDur = 12000 - Math.sqrt(ratio) * 9500;
+    // 2 phases instead of 3 → progress goes 0→2
+    const twoPhaseDur = (totalDur * 2) / 3;
+    const dt = info.timeSincePreviousFrame ?? 16;
+    progress.value = (progress.value + (dt / twoPhaseDur) * 2) % 2;
+  }, true);
 
   // Water-through-pipe: 2 glowing bodies flow through all 3 segments.
   // Body 2 starts when body 1 reaches the end of line 2 (phase offset = 2 phases).
@@ -435,15 +421,14 @@ function GridFlowLine({ color, power }: { color: string; power: number }) {
   const VERT_H = 56;   // gridLVertical height
   const HORZ_W = 160;  // gridLHorizontal width
   const BYPASS_H = 75; // gridBypassLine height
-  const VERT_BODY = 0.6;
-  const HORZ_BODY = 0.3;
-  const BYPASS_BODY = 0.6;
 
+  // Body length scales continuously with power — more power = longer energy bodies
   const vertStyleFor = (p: number) => {
     'worklet';
     if (p < 0 || p > 1.15) return { opacity: 0 };
     const t = Math.max(0, Math.min(1, p));
-    const bodyLen = VERT_H * VERT_BODY;
+    const powerRatio = Math.max(0, Math.min(smoothPower.value / 5000, 1));
+    const bodyLen = VERT_H * (0.4 + Math.sqrt(powerRatio) * 0.5);
     const travel = VERT_H - bodyLen + 20;
     const y = t * travel - 10;
     let op = 1;
@@ -461,7 +446,8 @@ function GridFlowLine({ color, power }: { color: string; power: number }) {
     'worklet';
     if (p < 0.85 || p > 2.15) return { opacity: 0 };
     const t = Math.max(0, Math.min(1, p - 1));
-    const bodyLen = HORZ_W * HORZ_BODY;
+    const powerRatio = Math.max(0, Math.min(smoothPower.value / 5000, 1));
+    const bodyLen = HORZ_W * (0.2 + Math.sqrt(powerRatio) * 0.3);
     const travel = HORZ_W - bodyLen + 20;
     const x = HORZ_W - bodyLen - t * travel + 10;
     let op = 1;
@@ -588,35 +574,38 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   // TOMZN sees all power flowing to the home whether from solar or grid, so the
   // ratio is consistent and not affected by whether solar is active or not.
   const lerpSpeed = (a: number, b: number, x: number) => Math.round(a + (b - a) * Math.max(0, Math.min(1, x)));
+  // Power-based color mapping (absolute watts, not relative to normal):
+  //   0–500W:   light green → full green  (less green as it approaches 500)
+  //   500–750W: light green → white
+  //   750–1000W: white → yellow
+  //   1–2kW:    yellow → orange
+  //   2kW+:     orange → red (deeper red as it climbs)
   const getPowerColor = (): string => {
-    const currentKw = (tomznLive.powerW || 0) / 1000;
-    const normalKw = normalDrawKw ?? 0;
-    if (normalKw <= 0 || currentKw <= 0) return "#6B7280";
-    const loadRatio = currentKw / normalKw;
-    const delta = loadRatio - 1;
-    // Wider dead zone (±15%) so minor fluctuations don't trigger color changes
-    if (Math.abs(delta) < 0.15) return "#F8FAFC";
-    if (delta > 0) {
-      // white → yellow → orange → red (above normal)
-      const t = Math.min(1, delta / 1.0);
-      if (t < 0.4) {
-        const s = t / 0.4;
-        return `rgb(255,${lerpSpeed(255, 200, s)},${lerpSpeed(255, 50, s)})`;
-      } else if (t < 0.7) {
-        const s = (t - 0.4) / 0.3;
-        return `rgb(255,${lerpSpeed(200, 130, s)},${lerpSpeed(50, 15, s)})`;
-      }
-      const s = (t - 0.7) / 0.3;
-      return `rgb(${lerpSpeed(255, 239, s)},${lerpSpeed(130, 68, s)},${lerpSpeed(15, 68, s)})`;
+    const w = tomznLive.powerW || 0;
+    if (w <= 0) return "#6B7280";
+    if (w <= 500) {
+      // light green (144,238,144) → full green (34,197,94)
+      const s = w / 500;
+      return `rgb(${lerpSpeed(144, 34, s)},${lerpSpeed(238, 197, s)},${lerpSpeed(144, 94, s)})`;
     }
-    // white → mint → green (below normal)
-    const t = Math.min(1, Math.abs(delta) / 0.6);
-    if (t < 0.45) {
-      const s = t / 0.45;
-      return `rgb(${lerpSpeed(255, 100, s)},${lerpSpeed(255, 230, s)},${lerpSpeed(255, 175, s)})`;
+    if (w <= 750) {
+      // full green (34,197,94) → white (255,255,255)
+      const s = (w - 500) / 250;
+      return `rgb(${lerpSpeed(34, 255, s)},${lerpSpeed(197, 255, s)},${lerpSpeed(94, 255, s)})`;
     }
-    const s = (t - 0.45) / 0.55;
-    return `rgb(${lerpSpeed(100, 16, s)},${lerpSpeed(230, 185, s)},${lerpSpeed(175, 129, s)})`;
+    if (w <= 1000) {
+      // white (255,255,255) → yellow (255,215,0)
+      const s = (w - 750) / 250;
+      return `rgb(255,${lerpSpeed(255, 215, s)},${lerpSpeed(255, 0, s)})`;
+    }
+    if (w <= 2000) {
+      // yellow (255,215,0) → orange (255,140,0)
+      const s = (w - 1000) / 1000;
+      return `rgb(255,${lerpSpeed(215, 140, s)},${lerpSpeed(0, 0, s)})`;
+    }
+    // 2kW+: orange (255,140,0) → red (239,68,68), deepening with more power
+    const s = Math.min(1, (w - 2000) / 2000);
+    return `rgb(${lerpSpeed(255, 239, s)},${lerpSpeed(140, 68, s)},${lerpSpeed(0, 68, s)})`;
   };
   const paceColor = getPowerColor();
   // Grid arc color uses pace algorithm when importing, falls back to status color otherwise
@@ -644,8 +633,9 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     ? "Idle"
     : !tomznDrawing
     ? "No draw"
-    : loadStatus === "High" ? "↑ High"
-    : loadStatus === "Low" ? "↓ Low"
+    : (tomznLive.powerW || 0) >= 2000 ? "↑ Critical"
+    : (tomznLive.powerW || 0) >= 1000 ? "↑ High"
+    : (tomznLive.powerW || 0) <= 500 ? "↓ Low"
     : "On Pace";
   const { modeLabel, modeColor } = (() => {
     if (offline) return { modeLabel: "System Offline", modeColor: "#EF4C4C" };

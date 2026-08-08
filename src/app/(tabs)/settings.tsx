@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BlurView } from "expo-blur";
 import Svg, { Circle, Path } from "react-native-svg";
 import { SceneBackground } from "@/components/SceneBackground";
+import * as Application from "expo-application";
 
 const round = (v: number, d = 2) => Math.round(v * 10 ** d) / 10 ** d;
 
@@ -17,6 +18,9 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { isLight, ...theme } = useSceneTheme();
   const { swapChangeover, activeMeter, meters, home, setManualBaseline, setLastMonthTotal, addManualLog, manualLogs } = useEnergy();
+
+  // Installed version
+  const installedVersion = `v${Application.nativeApplicationVersion || "1.0.0"}`;
 
   // 28th baselines — pre-filled with current baseline, locked until Edit pressed
   const baseline1 = meters.meter1.reading - (meters.meter1.cycleUsage || 0);
@@ -172,6 +176,9 @@ export default function SettingsScreen() {
         
         {/* Header */}
         <View style={s.header}>
+          <View style={s.versionBadge}>
+            <Text style={[s.versionText, { color: theme.textSecondary }]}>{installedVersion}</Text>
+          </View>
           <Text style={[s.title, { color: theme.text }]}>Settings</Text>
           <Text style={[s.subtitle, { color: theme.textSecondary }]}>Changeover control, baselines & manual calibration</Text>
         </View>
@@ -461,6 +468,22 @@ const s = StyleSheet.create({
   header: {
     alignItems: 'center',
     marginBottom: 8,
+  },
+  versionBadge: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    backgroundColor: "rgba(84,142,255,0.12)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: "rgba(84,142,255,0.2)",
+  },
+  versionText: {
+    fontFamily: "Outfit",
+    fontSize: 11,
+    fontWeight: "700",
   },
   title: {
     color: undefined,

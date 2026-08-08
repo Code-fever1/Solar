@@ -4,25 +4,26 @@
     "slug": "voltix",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/meter.png",
+    "icon": "./assets/images/logo.png",
     "scheme": "voltix",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/images/meter.png"
+      "icon": "./assets/images/logo.png"
     },
     "android": {
-      "icon": "./assets/images/meter-square.png",
+      "icon": "./assets/images/logo.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/meter-adaptive.png",
+        "foregroundImage": "./assets/images/logo.png",
         "backgroundColor": "#0A0E1A"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.voltix.app",
-      "usesCleartextTraffic": true
+      "usesCleartextTraffic": true,
+      "versionCode": 12
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/logo.png"
     },
     "plugins": [
       "expo-router",

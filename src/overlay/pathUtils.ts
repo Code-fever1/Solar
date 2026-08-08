@@ -116,18 +116,18 @@ export function screenToViewBox(
 }
 
 /** Duration in ms — higher power → faster flow.
- *  Uses a square-root curve so speed changes are more noticeable at lower
- *  power levels (where most residential loads sit) rather than only
- *  changing near the ceiling. */
+ *  Uses a power curve (ratio^0.5) for a natural perceptual mapping where
+ *  speed ramps up quickly at low power and flattens toward max speed. */
 export function flowDurationFromPower(
   powerW: number,
-  minMs = 1800,
-  maxMs = 10000,
-  powerCeilingW = 6000,
+  minMs = 800,
+  maxMs = 3000,
+  powerCeilingW = 2000,
 ): number {
+  "worklet";
   const clamped = Math.max(0, Math.min(powerW, powerCeilingW));
   const ratio = clamped / powerCeilingW;
-  const curved = Math.sqrt(ratio); // sqrt → faster ramp-up at low power
+  const curved = Math.sqrt(ratio);
   return maxMs - curved * (maxMs - minMs);
 }
 

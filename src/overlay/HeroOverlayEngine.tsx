@@ -11,8 +11,8 @@ import {
     Easing,
     cancelAnimation,
     useDerivedValue,
+    useFrameCallback,
     useSharedValue,
-    withRepeat,
     withTiming,
     type SharedValue,
 } from "react-native-reanimated";
@@ -70,7 +70,7 @@ function WireStream({
   const strokeWidth = wireStyle.strokeWidth ?? 2.5;
   const glowWidth = wireStyle.glowWidth ?? strokeWidth + 2;
   const conduitWidth = wireStyle.conduitWidth ?? strokeWidth + 4;
-  const dashTravel = wireStyle.dashTravel ?? 48;
+  const baseDashTravel = wireStyle.dashTravel ?? 48;
   const particleCount = wireStyle.particleCount ?? 3;
   const minDurationMs = wireStyle.minDurationMs ?? 1800;
   const maxDurationMs = wireStyle.maxDurationMs ?? 10000;
@@ -90,6 +90,7 @@ function WireStream({
 
   const dashOffset = useSharedValue(0);
   const pulse = useSharedValue(0.5);
+  const dashTravel = useSharedValue(baseDashTravel);
   const targetOpacity = useSharedValue(
     wireOpacity(
       flow.active,
@@ -101,34 +102,11 @@ function WireStream({
     ),
   );
 
-  const duration = useMemo(
-    () => flowDurationFromPower(flow.power, minDurationMs, maxDurationMs, powerCeilingW),
-    [flow.power, minDurationMs, maxDurationMs, powerCeilingW],
-  );
+  // Smooth power shared value — lerps toward target each frame for gradual speed changes
+  const smoothPower = useSharedValue(flow.power);
+  const direction = flow.reverse ? 1 : -1;
 
   useEffect(() => {
-    if (!isVisible) {
-      cancelAnimation(dashOffset);
-      cancelAnimation(pulse);
-      return;
-    }
-
-    dashOffset.value = 0;
-    dashOffset.value = withRepeat(
-      withTiming(flow.reverse ? dashTravel : -dashTravel, { duration, easing: Easing.linear }),
-      -1,
-      false,
-    );
-
-    pulse.value = withRepeat(
-      withTiming(1, {
-        duration: duration * 0.6,
-        easing: Easing.inOut(Easing.sin),
-      }),
-      -1,
-      true,
-    );
-
     targetOpacity.value = withTiming(
       wireOpacity(
         flow.active,
@@ -143,27 +121,52 @@ function WireStream({
   }, [
     activeOpacityCeiling,
     activeOpacityFloor,
-    dashOffset,
-    dashTravel,
-    duration,
     flow.active,
     flow.power,
-    flow.reverse,
     idleOpacity,
-    isVisible,
     powerCeilingW,
-    pulse,
     targetOpacity,
   ]);
+
+  // Continuous frame callback — advances dashOffset and pulse based on current power.
+  // Both speed AND dash travel distance scale continuously with power.
+  // No restarts, no jumps — everything lerps smoothly.
+  useFrameCallback((info) => {
+    "worklet";
+    if (!isVisible) return;
+
+    // Lerp smoothPower toward flow.power (target)
+    const target = flow.power;
+    smoothPower.value += (target - smoothPower.value) * 0.08;
+
+    // Duration from current smoothed power (continuous sqrt curve)
+    const dur = flowDurationFromPower(smoothPower.value, minDurationMs, maxDurationMs, powerCeilingW);
+
+    // Dash travel scales with power — more power = longer travel per cycle
+    // Continuous: travel goes from 40% of base at idle to 160% of base at max
+    const powerRatio = Math.max(0, Math.min(smoothPower.value / powerCeilingW, 1));
+    const travelScale = 0.4 + Math.sqrt(powerRatio) * 1.2;
+    dashTravel.value = baseDashTravel * travelScale;
+
+    // Speed = dashTravel units per duration ms
+    const speed = dashTravel.value / dur;
+    const dt = info.timeSincePreviousFrame ?? 16;
+    dashOffset.value += speed * dt * direction;
+
+    // Pulse oscillates continuously
+    const pulseDur = dur * 0.6;
+    pulse.value += (dt / pulseDur) * Math.PI;
+    if (pulse.value > Math.PI * 2) pulse.value -= Math.PI * 2;
+  }, isVisible);
 
   // Animated dash phases — run on the UI thread via derived values.
   const glowPhase = useDerivedValue(() => dashOffset.value);
   const corePhase = useDerivedValue(() => dashOffset.value * 0.85);
   const glowDashOpacity = useDerivedValue(
-    () => targetOpacity.value * (0.45 + pulse.value * 0.25),
+    () => targetOpacity.value * (0.45 + (0.5 + 0.5 * Math.sin(pulse.value)) * 0.25),
   );
   const coreDashOpacity = useDerivedValue(
-    () => targetOpacity.value * (0.65 + pulse.value * 0.2),
+    () => targetOpacity.value * (0.65 + (0.5 + 0.5 * Math.sin(pulse.value)) * 0.2),
   );
 
   const trackOpacity = flow.active ? 0.28 : idleOpacity;
@@ -238,7 +241,7 @@ function WireStream({
           height={height}
           color={flow.color}
           offset={i / particleCount}
-          duration={duration}
+          duration={flowDurationFromPower(flow.power, minDurationMs, maxDurationMs, powerCeilingW)}
           active={flow.active}
           power={flow.power}
           opacity={targetOpacity}
@@ -258,7 +261,7 @@ function WireParticle({
   height,
   color,
   offset,
-  duration,
+  duration: _duration,
   active,
   power,
   opacity,
@@ -281,19 +284,23 @@ function WireParticle({
   reverse?: boolean;
 }) {
   const progress = useSharedValue(0);
+  const smoothPower = useSharedValue(power);
 
-  useEffect(() => {
-    if (!isVisible) {
-      cancelAnimation(progress);
-      return;
-    }
-    progress.value = 0;
-    progress.value = withRepeat(
-      withTiming(1, { duration, easing: Easing.linear }),
-      -1,
-      false,
+  // Continuous frame callback — advances progress based on current power.
+  // Speed changes smoothly every frame as power lerps toward target.
+  useFrameCallback((info) => {
+    "worklet";
+    if (!isVisible) return;
+    smoothPower.value += (power - smoothPower.value) * 0.08;
+    const dur = flowDurationFromPower(
+      smoothPower.value,
+      wireStyle.minDurationMs ?? 1800,
+      wireStyle.maxDurationMs ?? 10000,
+      wireStyle.powerCeilingW ?? 6000,
     );
-  }, [duration, isVisible, progress]);
+    const dt = info.timeSincePreviousFrame ?? 16;
+    progress.value = (progress.value + dt / dur) % 1;
+  }, isVisible);
 
   const powerRatio = Math.max(
     0,
