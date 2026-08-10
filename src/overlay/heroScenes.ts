@@ -103,14 +103,21 @@ export function resolveHeroSceneId(weather: WeatherState): HeroSceneId {
   // Night phase: always night, no weather override.
   if (phase === "night") return "night";
 
-  // Day or evening phase: check weather with priority fog > rain > clouds.
+  // Day or evening phase: check weather with priority fog > heavy rain > clouds.
   // WMO weather codes (Open-Meteo):
   //   Fog: 45, 48
-  //   Rain: 51-57 (drizzle), 61-67 (rain), 80-82 (rain showers), 95-99 (thunderstorm)
-  //   Clouds: 1-3 (mainly clear, partly cloudy, overcast)
+  //   Heavy rain: 61-67 (rain), 80-82 (rain showers), 95-99 (thunderstorm)
+  //   Clouds-dark (overcast OR minor rain/drizzle): 3 (overcast), 51-57 (drizzle)
+  //   Morning-cloud (default — already has light clouds in image): 0 (clear),
+  //     1 (mainly clear), 2 (partly cloudy) — 20-30% clouds or a cloud passing by
   if (code === 45 || code === 48) return "fog";
-  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82) || (code >= 95 && code <= 99)) return "rain-light";
-  if (code >= 1 && code <= 3) return "clouds-dark";
+  // Heavy rain only — not for drizzle or light rain.
+  if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82) || (code >= 95 && code <= 99)) return "rain-light";
+  // Overcast (full heavy clouds) or minor drizzle → clouds-dark scene.
+  // Codes 0, 1, 2 (clear / mainly clear / partly cloudy) fall through to the
+  // morning-cloud default — that wallpaper already has light clouds in it, so
+  // 20-30% cloud cover or a single cloud passing by should NOT trigger clouds-dark.
+  if (code === 3 || (code >= 51 && code <= 57)) return "clouds-dark";
 
   // No weather override — use time-based default.
   if (phase === "evening") return "evening";

@@ -23,6 +23,7 @@ import type {
     AlertItem,
     EnergyFlowPoint,
     EnergyToday,
+    GridFlow,
     HistoryPoint,
     HomeState,
     InverterTelemetry,
@@ -38,6 +39,7 @@ export type {
     AlertItem,
     EnergyFlowPoint,
     EnergyToday,
+    GridFlow,
     HistoryPoint,
     HomeState,
     InverterTelemetry,
@@ -77,6 +79,7 @@ type EnergyContextValue = {
   weather: WeatherState;
   energyToday: EnergyToday;
   flowHistory: EnergyFlowPoint[];
+  gridFlow: GridFlow | null;
   home: HomeState;
   meters: Record<MeterId, MeterState>;
   activeMeter: MeterId;
@@ -417,6 +420,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
             ...prev,
             tomznLive: data.tomznLive ?? prev.tomznLive,
             inverter: data.inverter ?? prev.inverter,
+            gridFlow: data.gridFlow ?? prev.gridFlow,
           };
         });
         setIsOffline(false);
@@ -457,6 +461,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
             ...prev,
             tomznLive: data.tomznLive ?? prev.tomznLive,
             inverter: data.inverter ?? prev.inverter,
+            gridFlow: data.gridFlow ?? prev.gridFlow,
           };
         });
         setIsOffline(false);
@@ -572,6 +577,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const home = snapshot?.home || (error ? { ...EMPTY_HOME, explanation: error } : EMPTY_HOME);
   const live = snapshot?.live || EMPTY_LIVE;
   const tomznLive = snapshot?.tomznLive || EMPTY_TOMZN;
+  const gridFlow = snapshot?.gridFlow ?? null;
   const inverter = snapshot?.inverter
     ? { ...EMPTY_INVERTER, ...snapshot.inverter }
     : EMPTY_INVERTER;
@@ -748,7 +754,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   };
 
   const value = useMemo<EnergyContextValue>(() => ({
-    live, tomznLive, inverter, weather, energyToday, flowHistory, home, meters, activeMeter, changeover, recommendations, alerts,
+    live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
     history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, ups: snapshot?.ups ?? null, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     calibrateMeter: (meterId, reading) => { void addManualLog(meterId, reading, Date.now(), "Manual calibration"); },
@@ -760,7 +766,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     refreshTomznForce,
     refreshInverterForce,
   }), [
-    live, tomznLive, inverter, weather, energyToday, flowHistory, home, meters, activeMeter, changeover, recommendations, alerts,
+    live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
     history, manualLogs, manualBaselines, tomznHistory, snapshot?.meta, snapshot?.ups, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     setManualBaseline, setLastMonthTotal, addManualLog, editManualLog, deleteManualLog,

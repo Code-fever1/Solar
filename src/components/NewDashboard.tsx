@@ -1,17 +1,17 @@
+import { LinearGradient } from "expo-linear-gradient";
 import { CloudSun, Cpu, RadioTower, Sun, Waves } from "lucide-react-native";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Image, NativeScrollEvent, NativeSyntheticEvent, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type ScrollView as ScrollViewType } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Circle, G, Line, Path, Text as SvgText } from "react-native-svg";
 
+import { GlassCard } from "@/components/GlassCard";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
 import { HERO_SCENE_LIST } from "@/overlay/heroScenes";
 import type { HeroSceneId } from "@/overlay/types";
 import { LiveEnergyScene } from "./LiveEnergyScene";
 import { EnergyReceivedCard, EnergyUsedCard } from "./NewDashboardCards";
-import { GlassCard } from "@/components/GlassCard";
 
 const SCENE_LABELS: Record<HeroSceneId, string> = {
   night: "Night",
@@ -196,7 +196,7 @@ export const NewDashboard = memo(function NewDashboard() {
     liveSceneVisible.current = visible;
     setIsLiveSceneVisible(visible);
   };
-  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive, meta, ups, lastSyncedAt, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
+  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive, meta, ups, lastSyncedAt, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
   const meterOne = meters.meter1;
   const meterTwo = meters.meter2;
   const chartWidth = Math.min(width - 32, 520);
@@ -283,7 +283,7 @@ export const NewDashboard = memo(function NewDashboard() {
 
   return <View style={styles.screen}><Image source={heroScene.source} style={{ position: "absolute", top: 0, left: 0, width, height }} resizeMode="stretch" /><LinearGradient colors={["rgba(0,0,0,0.25)", "rgba(0,0,0,0.1)", "rgba(0,0,0,0.4)"]} locations={[0, 0.35, 1]} style={{ position: "absolute", top: 0, left: 0, width, height }} />
     <View style={{ position: "absolute", top: 0, left: 0, width: "100%", height: height * 0.50 }} pointerEvents="none">
-      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible} variant="hero" overlayConfig={heroScene.overlay} lastSyncedAt={lastSyncedAt} onSyncPress={() => { void refreshAll(); }} ups={ups} />
+      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible} variant="hero" overlayConfig={heroScene.overlay} lastSyncedAt={lastSyncedAt} onSyncPress={() => { void refreshAll(); }} ups={ups} gridFlow={gridFlow} />
     </View>
     <ScrollView ref={scrollRef} style={{ backgroundColor: "transparent" }} contentContainerStyle={[styles.content, { paddingTop: height * 0.49 }]} showsVerticalScrollIndicator={false} removeClippedSubviews={true} nestedScrollEnabled={true} scrollEventThrottle={16} bounces={true} alwaysBounceVertical={true} onScroll={handleScroll}>
     <View style={{ width: "100%", borderTopLeftRadius: 28, borderTopRightRadius: 28, minHeight: height * 0.65 }}>

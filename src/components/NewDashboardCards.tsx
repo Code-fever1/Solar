@@ -1,8 +1,8 @@
+import { GlassCard } from "@/components/GlassCard";
 import { ArrowDown, ArrowUp, Home, Sparkles, SunMedium, TowerControl, Zap } from 'lucide-react-native';
 import { memo } from 'react';
 import { Dimensions, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
-import { GlassCard } from "@/components/GlassCard";
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -246,6 +246,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   daysLeft, combinedDaysLeft, averageDaily,
   meter1Left, meter1Target, meter1Used, meter1Today, meter1DaysLeft,
   meter2Left, meter2Target, meter2Used, meter2Today, meter2DaysLeft,
+  cycleStartTs, billingEndTs,
   isLight = false, cardTheme,
 }: {
   expectedUnits: number; vsLastMonth: number | null; lastMonthTotal: number; confidence: number;
@@ -254,6 +255,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   combinedDaysLeft: number; averageDaily: number;
   meter1Left: number; meter1Target: number; meter1Used: number; meter1Today: number; meter1DaysLeft: number;
   meter2Left: number; meter2Target: number; meter2Used: number; meter2Today: number; meter2DaysLeft: number;
+  cycleStartTs?: number; billingEndTs?: number;
   isLight?: boolean; cardTheme?: CardTheme;
 }) {
   const t = cardTheme ?? useCardTheme(isLight);
@@ -278,14 +280,22 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   const chH = 130;
   const chW = screenWidth * 0.48;
 
-  // ── Build cumulative actual + forecast across the billing cycle (29th → 28th) ──
+  // ── Build cumulative actual + forecast across the billing cycle ──
+  // Use the backend's cycleStart and billingEnd from meta (fully dynamic —
+  // follows the billing day automatically each month). Fall back to local
+  // computation with billingDay=28 if meta is unavailable (offline cache).
   const now = new Date();
   const billingDay = 28;
-  const cycleStartMonth = now.getDate() >= billingDay ? now.getMonth() : now.getMonth() - 1;
-  const cycleStartYear = cycleStartMonth < 0 ? now.getFullYear() - 1 : now.getFullYear();
-  const cycleStartIdx = ((cycleStartMonth % 12) + 12) % 12;
-  const cycleStartDate = new Date(cycleStartYear, cycleStartIdx, billingDay);
-  const cycleEndDate = new Date(cycleStartYear, cycleStartIdx + 1, billingDay);
+  const cycleStartDate = cycleStartTs && Number.isFinite(cycleStartTs)
+    ? new Date(cycleStartTs)
+    : (() => {
+        const m = now.getDate() >= billingDay ? now.getMonth() : now.getMonth() - 1;
+        const y = m < 0 ? now.getFullYear() - 1 : now.getFullYear();
+        return new Date(y, ((m % 12) + 12) % 12, billingDay);
+      })();
+  const cycleEndDate = billingEndTs && Number.isFinite(billingEndTs)
+    ? new Date(billingEndTs)
+    : new Date(cycleStartDate.getFullYear(), cycleStartDate.getMonth() + 1, billingDay);
   const totalCycleDays = Math.max(1, Math.round((cycleEndDate.getTime() - cycleStartDate.getTime()) / 86_400_000));
   const elapsedDays = Math.max(0, Math.min(totalCycleDays, Math.floor((now.getTime() - cycleStartDate.getTime()) / 86_400_000)));
   const remainingDays = Math.max(1, totalCycleDays - elapsedDays);
@@ -332,18 +342,59 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
     actualPoints.push({ x, y });
   }
 
-  // Forecast line: starts at the actual's last point for smooth continuity,
-  // then linearly interpolates to expectedUnits by end of cycle.
-  // No wave — clean straight line from current to projected end.
+  // Forecast line: day-of-week-aware curve that bumps on weekends.
+  // Learns the weekly usage pattern from dailyUsage (each day-of-week's average
+  // consumption), then projects each future day using its day-of-week average.
+  // The curve is scaled so the total matches expectedUnits (backend's projection).
+  // This creates realistic bumps on weekends (when consumption is higher) while
+  // staying flat on weekdays — instead of a flat straight line.
+  const dowAvg: number[] = new Array(7).fill(0);   // 0=Sun, 1=Mon, ..., 6=Sat
+  const dowCount: number[] = new Array(7).fill(0);
+  for (const day of sortedDaily) {
+    if (day.usage > 0) {
+      const dow = new Date(day.timestamp).getDay();
+      dowAvg[dow] += day.usage;
+      dowCount[dow] += 1;
+    }
+  }
+  for (let d = 0; d < 7; d++) {
+    if (dowCount[d] > 0) dowAvg[d] /= dowCount[d];
+  }
+  // Fallback: if no dailyUsage history, use flat averageDaily for all days.
+  const hasDowPattern = dowCount.some((c) => c > 0);
+  const flatDaily = averageDaily > 0 ? averageDaily : (expectedUnits / Math.max(1, totalCycleDays));
+  const getPredictedDaily = (dayOffset: number): number => {
+    if (!hasDowPattern) return flatDaily;
+    const futureDate = new Date(cycleStartDate.getTime() + dayOffset * 86_400_000);
+    const dow = futureDate.getDay();
+    return dowAvg[dow] > 0 ? dowAvg[dow] : flatDaily;
+  };
+  // Build per-day predictions for the remaining cycle, then scale to match
+  // expectedUnits so the curve endpoint aligns with the backend's projection.
+  const remainingStart = elapsedDays + 1;
+  const rawPredictions: number[] = [];
+  let rawTotal = 0;
+  for (let i = remainingStart; i <= totalCycleDays; i++) {
+    const pred = getPredictedDaily(i);
+    rawPredictions.push(pred);
+    rawTotal += pred;
+  }
+  // Scale factor: (expectedUnits - lastActualCumulative) / rawTotal
+  // This preserves the weekend bump SHAPE while hitting the backend's endpoint.
+  const targetRemaining = Math.max(0, expectedUnits - lastActualCumulative);
+  const scale = rawTotal > 0 ? targetRemaining / rawTotal : 1;
+
   const forecastStartX = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].x : 0;
   const forecastStartY = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].y : chH;
   forecastPoints.push({ x: forecastStartX, y: forecastStartY });
 
-  for (let i = elapsedDays + 1; i <= totalCycleDays; i++) {
+  let forecastCumulative = lastActualCumulative;
+  for (let i = remainingStart; i <= totalCycleDays; i++) {
+    const predIdx = i - remainingStart;
+    const pred = rawPredictions[predIdx] * scale;
+    forecastCumulative += pred;
     const x = (i / totalPoints) * chW;
-    const progress = (i - elapsedDays) / Math.max(1, totalCycleDays - elapsedDays);
-    const val = lastActualCumulative + (expectedUnits - lastActualCumulative) * progress;
-    const y = chH - Math.min(1, val / yMax) * chH;
+    const y = chH - Math.min(1, forecastCumulative / yMax) * chH;
     forecastPoints.push({ x, y });
   }
 
@@ -353,12 +404,21 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   const currentX = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].x : 0;
   const currentY = actualPoints.length > 0 ? actualPoints[actualPoints.length - 1].y : chH;
 
-  const startMonthLabel = MONTHS[cycleStartIdx];
-  const endMonthIdx = (cycleStartIdx + 1) % 12;
-  const endMonthLabel = MONTHS[endMonthIdx];
-  const q1Month = MONTHS[(cycleStartIdx + 0.25 * 1) % 12 | 0];
-  const midMonth = MONTHS[(cycleStartIdx + Math.floor(totalCycleDays / 2 / 30)) % 12];
-  const q3Month = MONTHS[(endMonthIdx + 11) % 12];
+  // X-axis labels: compute actual dates at 5 points across the cycle (0%,
+  // 25%, 50%, 75%, 100%) and format as "Mon DD". This is fully dynamic —
+  // follows the billing cycle dates automatically each month.
+  const fmtLabel = (ts: number): string => {
+    const d = new Date(ts);
+    return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+  };
+  const cycleStartMs = cycleStartDate.getTime();
+  const cycleEndMs = cycleEndDate.getTime();
+  const cycleSpan = cycleEndMs - cycleStartMs;
+  const startLabel = fmtLabel(cycleStartMs);
+  const q1Label = fmtLabel(cycleStartMs + cycleSpan * 0.25);
+  const midLabel = fmtLabel(cycleStartMs + cycleSpan * 0.5);
+  const q3Label = fmtLabel(cycleStartMs + cycleSpan * 0.75);
+  const endLabel = fmtLabel(cycleEndMs);
 
   return (
     <GlassCard style={s.wideCard}>
@@ -392,7 +452,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
       <View style={s.contentRow}>
         <View style={s.leftCol}>
           <Text style={[s.forecastHeroValue, { color: t.textPrimary }]}>{Math.round(expectedUnits)}</Text>
-          <Text style={[s.forecastHeroUnit, { color: t.textSecondary }]}>units predicted by {endMonthLabel} {billingDay}</Text>
+          <Text style={[s.forecastHeroUnit, { color: t.textSecondary }]}>units predicted by {endLabel}</Text>
           <Text style={[s.forecastOverUnder, { color: isOver ? '#EF4C4C' : '#32E56B' }]}>
             {isOver ? `+${overBudget} units saved` : overBudget === 0 ? 'On budget' : `${Math.abs(overBudget)} units saved`}
           </Text>
@@ -463,11 +523,11 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
             </View>
           </View>
           <View style={s.xAxisRow}>
-            <Text style={[s.axisText, { color: t.textSecondary }]}>{startMonthLabel} 28</Text>
-            <Text style={[s.axisText, { color: t.textSecondary }]}>{q1Month} 5</Text>
-            <Text style={[s.axisText, { color: t.textSecondary }]}>{midMonth} 12</Text>
-            <Text style={[s.axisText, { color: t.textSecondary }]}>{q3Month} 20</Text>
-            <Text style={[s.axisText, { color: t.textSecondary }]}>{endMonthLabel} 28</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{startLabel}</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{q1Label}</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{midLabel}</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{q3Label}</Text>
+            <Text style={[s.axisText, { color: t.textSecondary }]}>{endLabel}</Text>
           </View>
         </View>
       </View>

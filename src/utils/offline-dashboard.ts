@@ -1,4 +1,4 @@
-import type { EnergyFlowPoint, EnergyToday, HomeState, InverterTelemetry, LiveTelemetry, ManualLog, MeterId, MeterState, WeatherState } from "@/context/energy-types";
+import type { EnergyFlowPoint, EnergyToday, GridFlow, HomeState, InverterTelemetry, LiveTelemetry, ManualLog, MeterId, MeterState, WeatherState } from "@/context/energy-types";
 
 export type CachedTomznLive = {
   energyKwh: number;
@@ -26,6 +26,7 @@ export type CachedDashboardSnapshot = {
   energyToday?: EnergyToday;
   flowHistory?: EnergyFlowPoint[];
   live: LiveTelemetry;
+  gridFlow?: GridFlow;
   home: HomeState;
   meters: Record<MeterId, MeterState>;
   manualLogs: ManualLog[];

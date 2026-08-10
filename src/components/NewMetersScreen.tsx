@@ -1,26 +1,21 @@
-import { useEnergy } from '@/context/EnergyContext';
-import type { MeterId, MeterState } from '@/context/energy-types';
-import { useSceneTheme } from "@/context/SceneThemeContext";
-import {
-  ArrowDown,
-  ArrowUp,
-  CheckCircle2,
-  ChevronDown,
-  Clock,
-  LineChart,
-  Repeat,
-  Sparkles,
-  TrendingUp,
-  Trophy,
-  Zap
-} from 'lucide-react-native';
-import React, { memo, useMemo, useState } from 'react';
-import { Dimensions, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BlurView } from "expo-blur";
-import { SceneBackground } from "@/components/SceneBackground";
 import { GlassCard } from "@/components/GlassCard";
 import { ForecastBudgetCard } from "@/components/NewDashboardCards";
+import { SceneBackground } from "@/components/SceneBackground";
+import type { MeterId, MeterState } from '@/context/energy-types';
+import { useEnergy } from '@/context/EnergyContext';
+import { useSceneTheme } from "@/context/SceneThemeContext";
+import {
+    CheckCircle2,
+    Clock,
+    LineChart,
+    Repeat,
+    Sparkles,
+    TrendingUp,
+    Zap
+} from 'lucide-react-native';
+import React, { memo, useMemo, useState } from 'react';
+import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width: screenWidth } = Dimensions.get('window');
 const cardWidth = (screenWidth - 32) / 2;
@@ -59,7 +54,7 @@ export function NewMetersScreen() {
   const insets = useSafeAreaInsets();
   const { isLight, ...theme } = useSceneTheme();
   const {
-    activeMeter, meters, home, changeover, tomznLive, inverter,
+    activeMeter, meters, home, changeover, tomznLive, inverter, meta,
     swapChangeover,
   } = useEnergy();
 
@@ -234,6 +229,8 @@ export function NewMetersScreen() {
           meter2Used={meter2.cycleUsage ?? 0}
           meter2Today={meter2.todayUsage}
           meter2DaysLeft={meter2.projectedDaysLeft}
+          cycleStartTs={meta?.cycleStart as number | undefined}
+          billingEndTs={meta?.billingEnd as number | undefined}
           isLight={isLight}
         />
 

@@ -1,31 +1,29 @@
 import {
-  BlurMask,
-  Canvas,
-  Group,
-  Circle as SkiaCircle,
-  LinearGradient as SkiaLinearGradient,
-  Path as SkiaPath,
-  vec,
+    BlurMask,
+    Canvas,
+    Group,
+    Circle as SkiaCircle,
+    LinearGradient as SkiaLinearGradient,
+    Path as SkiaPath,
+    vec,
 } from "@shopify/react-native-skia";
-import { RefreshCw } from "lucide-react-native";
 import { BlurView } from "expo-blur";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { RefreshCw } from "lucide-react-native";
+import { memo, useEffect, useState } from "react";
 import { AppState, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import Animated, {
-  cancelAnimation,
-  Easing,
-  useAnimatedProps,
-  useAnimatedStyle,
-  useDerivedValue,
-  useFrameCallback,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withTiming,
-  type SharedValue,
+    cancelAnimation,
+    useAnimatedStyle,
+    useDerivedValue,
+    useFrameCallback,
+    useSharedValue,
+    withRepeat,
+    withSequence,
+    withTiming,
+    type SharedValue
 } from "react-native-reanimated";
 
-import type { InverterTelemetry, WeatherState } from "@/context/energy-types";
+import type { GridFlow, InverterTelemetry, WeatherState } from "@/context/energy-types";
 import type { TomznLive } from "@/context/EnergyContext";
 import { HeroOverlayEngine } from "@/overlay/HeroOverlayEngine";
 import type { HeroOverlayConfig, OverlayLabelPosition } from "@/overlay/types";
@@ -84,6 +82,7 @@ type SceneProps = {
   lastSyncedAt?: number | null;
   onSyncPress?: () => void;
   ups?: { active: boolean; label: string } | null;
+  gridFlow?: GridFlow | null;
 };
 
 function labelPositionStyle(
@@ -502,6 +501,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   lastSyncedAt = null,
   onSyncPress,
   ups = null,
+  gridFlow = null,
 }: SceneProps) {
   const [now, setNow] = useState(() => Date.now());
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
@@ -562,13 +562,27 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   const gridImporting = !offline && tomznLive.isOnline && tomznLive.powerW > 0 && !wapdaCutOff && !wapdaStandby;
   const gridPowerW = gridImporting ? Math.max(0, tomznLive.powerW) : 0;
   const gridColor = gridImporting ? "#6E9BFF" : wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : "#8A8A8A";
-  // Export detection: TOMZN can't distinguish import vs export on its own, so we
-  // use the Fronus inverter's gridWRaw sign to determine direction. When Fronus
-  // reports gridWRaw < 0, the home is exporting to the grid — display TOMZN's
-  // powerW as negative. This is DISPLAY-ONLY: meter readings, energy units, and
-  // accumulation are unaffected (they always count as positive import).
-  const isExporting = !offline && !inverterOff && inverter?.isOnline !== false && (inverter?.gridWRaw ?? 0) < 0;
-  const gridDisplayW = isExporting ? -Math.max(0, tomznLive.powerW || 0) : gridPowerW;
+  // Export detection + on-grid mode: the backend's gridFlow object carries the
+  // mode-aware determination (hybrid energy balance for loadW ≥ 10W, on-grid
+  // zero-crossing state machine for loadW < 10W). This avoids Fronus's unreliable
+  // gridWRaw sign in on-grid mode. Falls back to a local heuristic if gridFlow
+  // hasn't arrived yet (first render before /live responds).
+  //   onGridMode: changeover on WAPDA, loadW ≈ 0, solar injecting to grid bus.
+  //   In on-grid mode, home = solarW ± tomznPowerW (computed by backend), NOT
+  //   loadW (which is ~0 because the inverter's load output isn't feeding home).
+  const onGridMode = gridFlow?.mode === "on-grid";
+  const solarNow = inverter?.solarW ?? 0;
+  // Physical law: export can NEVER exceed solar production. If tomzn shows more
+  // power than solar is producing (tomzn > solar), it MUST be import (home drawing
+  // grid + solar), not export. This guards against stale gridFlow.direction or any
+  // backend edge case — the UI will never show e.g. 800W export from 600W solar.
+  const exportPhysicallyPossible = (tomznLive.powerW ?? 0) <= solarNow + 50;
+  const isExporting = gridFlow
+    ? (gridFlow.direction === "export" && exportPhysicallyPossible)
+    : (!offline && !inverterOff && inverter?.isOnline !== false && (inverter?.gridWRaw ?? 0) < 0 && (inverter?.solarW ?? 0) > Math.max(0, tomznLive.powerW ?? 0));
+  // Clamp export magnitude to solarW — can't export more than is being produced.
+  const exportW = Math.min(Math.max(0, tomznLive.powerW || 0), Math.max(0, solarNow));
+  const gridDisplayW = isExporting ? -exportW : gridPowerW;
 
   // Pace algorithm — uses TOMZN powerW (total home draw) for BOTH label and color.
   // TOMZN sees all power flowing to the home whether from solar or grid, so the
@@ -644,6 +658,12 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     if (ups) return { modeLabel: ups.active ? "UPS" : "Power Down", modeColor: ups.active ? "#F8C653" : "#EF4C4C" };
     if (wapdaCutOff) return { modeLabel: "Wapda Cut Off", modeColor: "#EF4C4C" };
     if (inverterOff && gridImporting) return { modeLabel: "Bypass Mode", modeColor: "#F8C653" };
+    // On-grid mode: changeover on WAPDA, loadW ≈ 0, solar injecting to grid bus.
+    // Blue labels with middle dot: "On-Grid · Exporting" / "On-Grid · Importing".
+    // Home is computed (solarW ± tomznPowerW), not loadW.
+    if (onGridMode && isExporting) return { modeLabel: "On-Grid · Exporting", modeColor: "#6E9BFF" };
+    if (onGridMode && gridImporting) return { modeLabel: "On-Grid · Importing", modeColor: "#6E9BFF" };
+    if (onGridMode) return { modeLabel: "On-Grid", modeColor: "#6E9BFF" };
     if (isExporting) return { modeLabel: "Exporting", modeColor: "#6E9BFF" };
     if (solarProducing && gridImporting) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
     // Solar producing, relay ON but no power flowing → still "Hybrid" mode,
@@ -674,10 +694,14 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
           ? `${Math.floor(elapsedSec / 60)}m`
           : `${Math.floor(elapsedSec / 3600)}h`;
 
-  // Home power/V/A always from the inverter's load readings.
-  const homeW = offline ? 0 : invW;
-  const homeV = offline ? 0 : invV;
-  const homeA = offline ? 0 : invA;
+  // Home power/V/A: in hybrid mode from the inverter's load readings (loadW).
+  // In on-grid mode, loadW ≈ 0 (inverter's load output isn't feeding home), so
+  // use the backend's computed homeW (solarW ± tomznPowerW) from gridFlow.
+  // Voltage comes from the TOMZN meter (WAPDA grid voltage feeding home) and
+  // current is derived: A = W / V. All three (W, V, A) are predicted values.
+  const homeW = offline ? 0 : (onGridMode && gridFlow ? gridFlow.homeW : invW);
+  const homeV = offline ? 0 : (onGridMode && gridFlow ? (tomznLive.voltageV || inverter.gridV || invV) : invV);
+  const homeA = offline ? 0 : (onGridMode && gridFlow ? (homeW / Math.max(1, homeV)) : invA);
   const homeActive = !offline && homeW >= 10;
 
   // Solar V/A
@@ -746,22 +770,24 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
             }}
             gridFlow={{
               active: gridImporting || isExporting,
-              power: isExporting ? Math.max(0, tomznLive.powerW || 0) : gridPowerW,
-              color: isExporting ? "#6E9BFF" : gridArcColor,
-              glowColor: isExporting ? "#6E9BFF" : (gridImporting ? gridArcColor : gridColor),
+              power: isExporting ? exportW : gridPowerW,
+              color: (isExporting || onGridMode) ? "#6E9BFF" : gridArcColor,
+              glowColor: (isExporting || onGridMode) ? "#6E9BFF" : (gridImporting ? gridArcColor : gridColor),
               idleOpacity: 0.16,
               reverse: isExporting,
             }}
             inverterOutputFlow={{
+              // In on-grid mode, the inverter→DB wire turns blue (solar injecting
+              // to the WAPDA bus, not feeding home via the load output).
               active: homeActive && !bypassMode,
               power: homeW,
-              color: "#45E376",
-              glowColor: "#2DDB6C",
+              color: onGridMode ? "#6E9BFF" : "#45E376",
+              glowColor: onGridMode ? "#6E9BFF" : "#2DDB6C",
               idleOpacity: 0.14,
             }}
             gridBypassFlow={gridBypassFlow}
             solarHidden={inverterOff || offline || solarAllZero}
-            gridHidden={gridUnavailable || (solarProducing && !gridImporting && !isExporting)}
+            gridHidden={gridUnavailable || (solarProducing && !gridImporting && !isExporting && !onGridMode)}
             inverterOutputHidden={inverterOff || offline}
           />
         )}
@@ -795,10 +821,10 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
           {!inverterOff && !offline && (
             <>
               <View style={styles.powerRow}>
-                <Text style={[styles.powerValue, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.value}</Text>
-                <Text style={[styles.powerUnit, { color: homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.unit}</Text>
+                <Text style={[styles.powerValue, { color: onGridMode ? "#6E9BFF" : homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.value}</Text>
+                <Text style={[styles.powerUnit, { color: onGridMode ? "#6E9BFF" : homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.unit}</Text>
               </View>
-              <Text style={[styles.vaText, styles.vaOutline]}>{homeV.toFixed(0)}V · {homeA.toFixed(1)}A</Text>
+              <Text style={[styles.vaText, styles.vaOutline, onGridMode ? { color: "#6E9BFF" } : null]}>{homeV.toFixed(0)}V · {homeA.toFixed(1)}A</Text>
             </>
           )}
         </View>

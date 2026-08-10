@@ -1,5 +1,17 @@
 export type MeterId = "meter1" | "meter2";
 
+// Grid flow as determined by the backend's mode-aware energy-balance + on-grid
+// direction state machine. The frontend uses this for on-grid labels (blue),
+// the blue inverter→DB wire, and displaying computed home when loadW ≈ 0.
+export type GridFlow = {
+  mode: "hybrid" | "on-grid" | "bypass" | "night";
+  direction: "import" | "export" | "idle";
+  homeW: number;
+  gridExchangeW: number; // + = import, - = export
+  solarW: number;
+  loadW: number;
+};
+
 export type LiveTelemetry = {
   gridKw: number;
   solarKw?: number;
