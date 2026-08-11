@@ -301,12 +301,35 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   const remainingDays = Math.max(1, totalCycleDays - elapsedDays);
 
   const sortedDaily = [...dailyUsage].sort((a, b) => a.timestamp - b.timestamp);
-  let cumulative = 0;
-  const actualCumulative: number[] = [];
+
+  // ── Build actual cumulative mapped to day-offset from cycle start ──
+  // The backend's dailyUsage only covers the last 7 days, but the graph spans
+  // the entire billing cycle (up to 31 days from the 28th). We need to:
+  //  1. Map each dailyUsage entry to its correct day offset from cycle start
+  //     (based on its timestamp, NOT its array index).
+  //  2. Anchor the total to meter1Used + meter2Used (total used in the cycle).
+  //     The usage before the 7-day window = totalUsed - sum(7-day dailyUsage).
+  //  3. For days before the 7-day window, ramp linearly from 0 to the first
+  //     data point's cumulative (which includes the pre-window usage).
+  //  4. For days with data, use the real cumulative.
+  //  5. For days after the last data point (but ≤ today), extend flat.
+  const cycleStartMs = cycleStartDate.getTime();
+  const recentTotal = sortedDaily.reduce((sum, d) => sum + d.usage, 0);
+  const earlyTotal = Math.max(0, totalUsed - recentTotal); // usage before the 7-day window
+  const dayOffsetToCumulative = new Map<number, number>();
+  let cumulative = earlyTotal;
+  let firstDataDayOffset = -1;
+  let lastDataDayOffset = -1;
   for (const day of sortedDaily) {
     cumulative += day.usage;
-    actualCumulative.push(cumulative);
+    const dayOffset = Math.round((day.timestamp - cycleStartMs) / 86_400_000);
+    if (firstDataDayOffset < 0) firstDataDayOffset = dayOffset;
+    lastDataDayOffset = dayOffset;
+    dayOffsetToCumulative.set(dayOffset, cumulative);
   }
+  // Fallbacks when no dailyUsage at all
+  if (firstDataDayOffset < 0) firstDataDayOffset = elapsedDays;
+  if (lastDataDayOffset < 0) lastDataDayOffset = elapsedDays;
 
   // Use backend's combinedDaysLeft (blends TOMZN + historical, same as old UI)
   // combinedDaysLeft = how many days until both meters run out at current burn rate
@@ -325,8 +348,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   // (same as old UI: m1.projectedDaysLeft + m2.projectedDaysLeft)
   const estDaysLeft = meter1DaysLeft + meter2DaysLeft;
 
-  const actualDays = actualCumulative.length;
-  const lastActualCumulative = actualCumulative.length > 0 ? actualCumulative[actualCumulative.length - 1] : 0;
+  const lastActualCumulative = cumulative; // includes earlyTotal + all dailyUsage
   // Hardcode yMax to 400 units so the forecast line scales accordingly
   const yMax = 400;
 
@@ -334,10 +356,25 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   const actualPoints: Array<{ x: number; y: number }> = [];
   const totalPoints = totalCycleDays;
 
-  // Actual line: from day 0 to the last actual data point
-  for (let i = 0; i <= elapsedDays && i <= actualDays; i++) {
+  // Actual line: from day 0 to today (elapsedDays). Each day is plotted at its
+  // correct x-position based on its offset from the cycle start. Days before the
+  // 7-day data window ramp from 0 to the first data point; days after the last
+  // data point extend flat to today.
+  const firstDataCumulative = dayOffsetToCumulative.get(firstDataDayOffset) ?? lastActualCumulative;
+  let prevCumulative = 0;
+  for (let i = 0; i <= elapsedDays; i++) {
     const x = (i / totalPoints) * chW;
-    const val = actualCumulative[i] || (i === 0 ? 0 : lastActualCumulative);
+    let val: number;
+    if (dayOffsetToCumulative.has(i)) {
+      val = dayOffsetToCumulative.get(i)!;
+    } else if (i < firstDataDayOffset && firstDataDayOffset > 0) {
+      // Before the 7-day window: ramp linearly from 0 to the first data point
+      val = (firstDataCumulative * i) / firstDataDayOffset;
+    } else {
+      // After the last data point but before today: extend flat
+      val = prevCumulative;
+    }
+    prevCumulative = val;
     const y = chH - Math.min(1, val / yMax) * chH;
     actualPoints.push({ x, y });
   }
@@ -411,7 +448,6 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
     const d = new Date(ts);
     return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
   };
-  const cycleStartMs = cycleStartDate.getTime();
   const cycleEndMs = cycleEndDate.getTime();
   const cycleSpan = cycleEndMs - cycleStartMs;
   const startLabel = fmtLabel(cycleStartMs);
@@ -517,6 +553,10 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
                 <Line x1="0" y1={chH * 0.75} x2={chW} y2={chH * 0.75} stroke={t.svgGridLine} strokeWidth="0.5" />
                 {forecastPath && <Path d={forecastPath} stroke="#F8C653" strokeWidth="1.5" fill="none" strokeDasharray="3 3" />}
                 {actualPath && <Path d={actualPath} stroke="#32E56B" strokeWidth="2" fill="none" />}
+                {/* Today marker — vertical dashed line at elapsedDays position */}
+                {elapsedDays > 0 && elapsedDays < totalCycleDays && (
+                  <Line x1={currentX} y1="0" x2={currentX} y2={chH} stroke="#32E56B" strokeWidth="0.5" strokeDasharray="2 3" opacity="0.4" />
+                )}
                 <Circle cx={currentX} cy={currentY} r="3.5" fill="#32E56B" />
                 <Circle cx={currentX} cy={currentY} r="6" fill="#32E56B" opacity="0.2" />
               </Svg>

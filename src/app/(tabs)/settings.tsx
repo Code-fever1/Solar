@@ -1,18 +1,21 @@
 import { GlassCard } from "@/components/GlassCard";
+import { SceneBackground } from "@/components/SceneBackground";
 import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
-import { Activity, BarChart2, CalendarDays, Edit3, RefreshCw, Save, Sparkles } from "lucide-react-native";
+import { stopOverlay } from "@/native/FloatingOverlay";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Application from "expo-application";
+import { BlurView } from "expo-blur";
 import { router } from "expo-router";
+import { Activity, BarChart2, CalendarDays, Edit3, Eye, EyeOff, RefreshCw, Save, Sparkles } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { BlurView } from "expo-blur";
 import Svg, { Circle, Path } from "react-native-svg";
-import { SceneBackground } from "@/components/SceneBackground";
-import * as Application from "expo-application";
 
 const round = (v: number, d = 2) => Math.round(v * 10 ** d) / 10 ** d;
+const OVERLAY_ENABLED_KEY = "overlayEnabled";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -49,6 +52,24 @@ export default function SettingsScreen() {
 
   const [lastMonthInput, setLastMonthInput] = useState("");
   const [savingLastMonth, setSavingLastMonth] = useState(false);
+
+  // Floating overlay toggle — persisted in AsyncStorage. Default OFF so the
+  // overlay only appears when the user explicitly enables it.
+  const [overlayEnabled, setOverlayEnabled] = useState(false);
+  useEffect(() => {
+    void AsyncStorage.getItem(OVERLAY_ENABLED_KEY).then((v) => {
+      setOverlayEnabled(v === "true");
+    }).catch(() => undefined);
+  }, []);
+  const toggleOverlay = () => {
+    const next = !overlayEnabled;
+    setOverlayEnabled(next);
+    void AsyncStorage.setItem(OVERLAY_ENABLED_KEY, String(next)).catch(() => undefined);
+    if (!next) {
+      // Immediately stop the overlay if it's currently running
+      void stopOverlay().catch(() => undefined);
+    }
+  };
 
   // AI Trend Impact: compares this month's projected usage against last month's
   // total to show how the trend affects the forecast.
@@ -426,6 +447,38 @@ export default function SettingsScreen() {
                 </View>
               </View>
 
+            </View>
+          </GlassCard>
+        </View>
+
+        {/* Floating Overlay Toggle */}
+        <View style={s.section}>
+          <View style={s.sectionHeader}>
+            {overlayEnabled ? <Eye size={14} color="#F8C653" /> : <EyeOff size={14} color="#8A9BAE" />}
+            <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>FLOATING OVERLAY</Text>
+          </View>
+          <GlassCard style={[s.card, s.overlayCard]}>
+            <View style={s.overlayRow}>
+              <View style={s.overlayLeft}>
+                <View style={[s.overlayIconBox, { backgroundColor: overlayEnabled ? "rgba(248,198,83,0.12)" : "rgba(138,155,174,0.08)", borderColor: overlayEnabled ? "rgba(248,198,83,0.25)" : "rgba(138,155,174,0.15)" }]}>
+                  {overlayEnabled ? <Eye size={18} color="#F8C653" /> : <EyeOff size={18} color="#8A9BAE" />}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.cardLabelText, { color: theme.text, fontSize: 13, fontWeight: "600" }]}>Live Data Overlay</Text>
+                  <Text style={[s.aboutDesc, { color: theme.textSecondary }]}>
+                    Show a floating widget with solar, home &amp; grid readings when the app is in the background.
+                  </Text>
+                </View>
+              </View>
+              <Pressable
+                onPress={toggleOverlay}
+                style={[
+                  s.toggleTrack,
+                  { backgroundColor: overlayEnabled ? "#F8C653" : "rgba(138,155,174,0.18)" },
+                ]}
+              >
+                <View style={[s.toggleThumb, { transform: [{ translateX: overlayEnabled ? 22 : 0 }] }]} />
+              </Pressable>
             </View>
           </GlassCard>
         </View>
@@ -860,5 +913,47 @@ const s = StyleSheet.create({
     color: undefined,
     fontFamily: "Outfit",
     fontSize: 8,
-  }
+  },
+
+  // Floating Overlay toggle
+  overlayCard: {
+    borderColor: "rgba(248,198,83,0.12)",
+  },
+  overlayRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  overlayLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+  overlayIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toggleTrack: {
+    width: 48,
+    height: 28,
+    borderRadius: 14,
+    padding: 3,
+    justifyContent: "center",
+  },
+  toggleThumb: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#FFFFFF",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
 });

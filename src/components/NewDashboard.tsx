@@ -25,7 +25,7 @@ const SCENE_LABELS: Record<HeroSceneId, string> = {
 
 type FlowPoint = { timestamp: number; solarKw: number; gridKw: number; loadKw: number };
 
-const FlowChart = memo(function FlowChart({ points, width, startOfToday, isLight, hideSolar }: { points: FlowPoint[]; width: number; startOfToday: number; isLight: boolean; hideSolar?: boolean }) {
+const FlowChart = memo(function FlowChart({ points, width, windowStart, isLight, hideSolar }: { points: FlowPoint[]; width: number; windowStart: number; isLight: boolean; hideSolar?: boolean }) {
   const height = 140;
   const graphWidth = Math.max(1, width - 40);
   const chartLeft = 28;
@@ -38,16 +38,15 @@ const FlowChart = memo(function FlowChart({ points, width, startOfToday, isLight
   const { values, max, paths, yLabels } = useMemo(() => {
     // Use real data if we have at least 2 points; otherwise generate a 24h empty axis.
     const vals = points.length > 1 ? points : Array.from({ length: 24 }, (_, i) => ({
-      timestamp: startOfToday + i * 3_600_000,
+      timestamp: windowStart + i * 3_600_000,
       solarKw: 0,
       loadKw: 0,
       gridKw: 0,
     }));
     const mx = Math.max(1, ...vals.flatMap((p) => [p.solarKw, p.loadKw, p.gridKw]));
-    const hourOf = (ts: number) => {
-      const d = new Date(ts);
-      return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
-    };
+    // Rolling 24h window: x position = hours from windowStart (0 = 24h ago, 24 = now)
+    const HOUR_MS = 60 * 60 * 1000;
+    const hourOf = (ts: number) => (ts - windowStart) / HOUR_MS;
     const make = (key: keyof FlowPoint) => vals.map((p, i) => {
       const x = chartLeft + (hourOf(p.timestamp) / 24) * graphWidth;
       const y = 104 - (p[key] as number) / mx * 76;
@@ -56,9 +55,8 @@ const FlowChart = memo(function FlowChart({ points, width, startOfToday, isLight
     const peakIdx = vals.reduce((mi, p, i, arr) => p.loadKw > arr[mi].loadKw ? i : mi, 0);
     const peakX = chartLeft + (hourOf(vals[peakIdx].timestamp) / 24) * graphWidth;
     const peakY = 104 - vals[peakIdx].loadKw / mx * 76;
-    const now = new Date();
-    const currentHour = now.getHours() + now.getMinutes() / 60;
-    const currentX = chartLeft + (currentHour / 24) * graphWidth;
+    // Current time is always at the right edge of the rolling 24h graph
+    const currentX = chartLeft + graphWidth;
     const niceMax = Math.ceil(mx * 1.1);
     const yL = [
       { kw: niceMax, y: 28 },
@@ -66,7 +64,7 @@ const FlowChart = memo(function FlowChart({ points, width, startOfToday, isLight
       { kw: 0, y: 104 },
     ];
     return { values: vals, max: mx, paths: { solar: make("solarKw"), home: make("loadKw"), grid: make("gridKw"), peakX, peakY, currentX }, yLabels: yL };
-  }, [graphWidth, points, chartLeft, startOfToday]);
+  }, [graphWidth, points, chartLeft, windowStart]);
 
   const findNearestPoint = (x: number) => {
     const hour = ((x - chartLeft) / graphWidth) * 24;
@@ -74,8 +72,7 @@ const FlowChart = memo(function FlowChart({ points, width, startOfToday, isLight
     let nearest = values[0];
     let minDist = Infinity;
     for (const p of values) {
-      const d = new Date(p.timestamp);
-      const ph = d.getHours() + d.getMinutes() / 60;
+      const ph = (p.timestamp - windowStart) / (60 * 60 * 1000);
       const dist = Math.abs(ph - hour);
       if (dist < minDist) { minDist = dist; nearest = p; }
     }
@@ -87,7 +84,7 @@ const FlowChart = memo(function FlowChart({ points, width, startOfToday, isLight
     if (!pt) { setTooltip(null); return; }
     const d = new Date(pt.timestamp);
     const timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    const hourOf = d.getHours() + d.getMinutes() / 60;
+    const hourOf = (pt.timestamp - windowStart) / (60 * 60 * 1000);
     const tx = chartLeft + (hourOf / 24) * graphWidth;
     setTooltip({ x: tx, time: timeStr, solarKw: pt.solarKw, gridKw: pt.gridKw, loadKw: pt.loadKw });
     // Auto-hide tooltip after 5 seconds
@@ -196,20 +193,17 @@ export const NewDashboard = memo(function NewDashboard() {
     liveSceneVisible.current = visible;
     setIsLiveSceneVisible(visible);
   };
-  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive, meta, ups, lastSyncedAt, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
+  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive, ups, lastSyncedAt, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
   const meterOne = meters.meter1;
   const meterTwo = meters.meter2;
   const chartWidth = Math.min(width - 32, 520);
-  // Use Pakistan midnight from backend (meta.todayStart) for consistency with
-  // the server's flow history query. Falls back to device local midnight.
-  const startOfToday = useMemo(() => {
-    if (meta?.todayStart && typeof meta.todayStart === "number") return meta.todayStart;
-    const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime();
-  }, [meta?.todayStart]);
   const peakLoadW = useMemo(() => Math.max(...flowHistory.slice(-288).map(p => p.loadKw * 1000), inverter.loadW), [flowHistory, inverter.loadW]);
-  // Show only today's flow data (from Pakistan midnight), downsampled to max 1 point per 5 min.
-  const todayFlow = useMemo(() => {
-    const filtered = flowHistory.filter((p) => p.timestamp >= startOfToday);
+  // Rolling 24-hour window for the flow graph. Current time is always at the
+  // right edge; the x-axis shifts dynamically with the time of day.
+  const windowStart = useMemo(() => Date.now() - 24 * 60 * 60 * 1000, [flowHistory]);
+  // Show the last 24 hours of flow data, downsampled to max 1 point per 5 min.
+  const rolling24hFlow = useMemo(() => {
+    const filtered = flowHistory.filter((p) => p.timestamp >= windowStart);
     if (filtered.length <= 288) return filtered;
     // Downsample: keep 1 point per 5-minute bucket.
     const bucketMs = 5 * 60_000;
@@ -220,7 +214,23 @@ export const NewDashboard = memo(function NewDashboard() {
       if (!ex || p.timestamp > ex.timestamp) buckets.set(b, p);
     }
     return Array.from(buckets.values()).sort((a, b) => a.timestamp - b.timestamp);
-  }, [flowHistory, startOfToday]);
+  }, [flowHistory, windowStart]);
+  // Dynamic x-axis labels: 5 evenly-spaced time markers across the 24h window.
+  // e.g. at 6 PM: "6 PM, 12 AM, 6 AM, 12 PM, 6 PM"
+  const axisLabels = useMemo(() => {
+    const now = Date.now();
+    const ws = now - 24 * 60 * 60 * 1000;
+    const labels: string[] = [];
+    for (let i = 0; i <= 4; i++) {
+      const ts = ws + (i / 4) * 24 * 60 * 60 * 1000;
+      const d = new Date(ts);
+      let h = d.getHours();
+      const ampm = h >= 12 ? "PM" : "AM";
+      h = h % 12 || 12;
+      labels.push(`${h} ${ampm}`);
+    }
+    return labels;
+  }, [flowHistory]);
   // Note: isLive is NOT checked — it's a data-freshness flag that flips false
   // when the inverter's hardware clock is 3+ min stale, even if solar is still
   // producing (e.g. 333W). Removing it prevents the status from flickering to
@@ -347,7 +357,7 @@ export const NewDashboard = memo(function NewDashboard() {
         cardTheme={sceneCardTheme}
       />
     </View>
-    <GlassCard style={styles.chartCard}><View style={styles.rowHeader}><View><Text style={[styles.cardTitle, { color: sceneCardTheme.textPrimary }]}>Today’s Energy Flow</Text><View style={styles.legend}>{!solarAllZero && <Text style={[styles.legendItem, { color: "#F5C42E" }]}>● Solar</Text>}<Text style={[styles.legendItem, { color: "#35D86C" }]}>● Home</Text><Text style={[styles.legendItem, { color: "#548EFF" }]}>● Grid</Text><Text style={[styles.legendItem, { color: sceneCardTheme.textSecondary }]}>│ Now</Text></View></View></View><FlowChart points={todayFlow} width={chartWidth} startOfToday={startOfToday} isLight={sceneIsLight} hideSolar={solarAllZero} /><View style={styles.axis}><Text style={[styles.axisText, { color: sceneCardTheme.textSecondary }]}>12 AM</Text><Text style={[styles.axisText, { color: sceneCardTheme.textSecondary }]}>6 AM</Text><Text style={[styles.axisText, { color: sceneCardTheme.textSecondary }]}>12 PM</Text><Text style={[styles.axisText, { color: sceneCardTheme.textSecondary }]}>6 PM</Text><Text style={[styles.axisText, { color: sceneCardTheme.textSecondary }]}>12 AM</Text></View></GlassCard>
+    <GlassCard style={styles.chartCard}><View style={styles.rowHeader}><View><Text style={[styles.cardTitle, { color: sceneCardTheme.textPrimary }]}>Last 24 Hours</Text><View style={styles.legend}>{!solarAllZero && <Text style={[styles.legendItem, { color: "#F5C42E" }]}>● Solar</Text>}<Text style={[styles.legendItem, { color: "#35D86C" }]}>● Home</Text><Text style={[styles.legendItem, { color: "#548EFF" }]}>● Grid</Text><Text style={[styles.legendItem, { color: sceneCardTheme.textSecondary }]}>│ Now</Text></View></View></View><FlowChart points={rolling24hFlow} width={chartWidth} windowStart={windowStart} isLight={sceneIsLight} hideSolar={solarAllZero} /><View style={[styles.axis, { width: chartWidth, paddingLeft: 28, paddingRight: 12 }]}>{axisLabels.map((label, i) => <Text key={i} style={[styles.axisText, { color: sceneCardTheme.textSecondary }]}>{label}</Text>)}</View></GlassCard>
   </View>
   </View>
   </ScrollView>

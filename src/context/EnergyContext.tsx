@@ -9,6 +9,7 @@ import {
     type ReactNode,
 } from "react";
 import { AppState, type AppStateStatus } from "react-native";
+import RNEventSource from "react-native-sse";
 
 import { interpolateUsageHistory, summarizeHistory } from "@/utils/calculations";
 import {
@@ -116,8 +117,6 @@ type EnergyContextValue = {
 };
 
 const API_URL = "http://104.43.56.204:3001/api/solar";
-const POLL_FOREGROUND_MS = 5_000;
-const POLL_BACKGROUND_MS = 5_000;
 const SYNC_INTERVAL_MS = 30_000;  // full dashboard delta sync every 30s
 const FLOW_INTERVAL_MS = 60_000;  // flow history every 60s
 const DASHBOARD_CACHE_KEY = "voltx.solar.dashboard.v1";
@@ -408,25 +407,33 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
   // Lightweight live fetch — returns just tomznLive + inverter without the heavy
   // dashboard DB queries. Used on app open and 5s polling so the hero section
-  // renders instantly. Pass force=true on foreground to bypass the backend cache
-  // and get truly fresh data from Tuya/inverter APIs.
+  // Apply live data (tomznLive + inverter + gridFlow) to the snapshot. Shared
+  // by both fetchLive() and the SSE subscription handler so the merge logic
+  // stays DRY.
+  const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any } | null | undefined) => {
+    if (!data || (!data.tomznLive && !data.inverter)) return;
+    setSnapshot((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        tomznLive: data.tomznLive ?? prev.tomznLive,
+        inverter: data.inverter ?? prev.inverter,
+        gridFlow: data.gridFlow ?? prev.gridFlow,
+      };
+    });
+    setIsOffline(false);
+    setError(null);
+    setLoading(false);
+  };
+
+  // Lightweight live fetch — used on app open with force=true to bypass the
+  // backend cache and get truly fresh data from Tuya/inverter APIs instantly.
+  // During normal operation the SSE subscription (startLiveStream) handles
+  // updates — this is only for the initial foreground burst.
   const fetchLive = async (force = false) => {
     try {
       const data = await request(`/live${force ? "?force=true" : ""}`);
-      if (data?.tomznLive || data?.inverter) {
-        setSnapshot((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            tomznLive: data.tomznLive ?? prev.tomznLive,
-            inverter: data.inverter ?? prev.inverter,
-            gridFlow: data.gridFlow ?? prev.gridFlow,
-          };
-        });
-        setIsOffline(false);
-        setError(null);
-        setLoading(false);
-      }
+      applyLive(data);
     } catch {
       // Live fetch is best-effort — the full dashboard will follow right after.
     }
@@ -528,25 +535,53 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     };
     void bootstrap();
 
-    // Tiered polling:
-    //   5s  — /live (hero section only: tomznLive + inverter, ~200 bytes)
-    //   30s — /dashboard/sync (delta check: { changed: false } if nothing changed)
-    //   60s — /flow-history (chart data, only grows throughout the day)
-    let liveInterval: ReturnType<typeof setInterval> | null = null;
+    // Live data: SSE subscription — the backend polls TOMZN + inverter every
+    // 5s on its own schedule and pushes to all subscribers instantly. This
+    // replaces the old 5s HTTP polling that caused each client to trigger its
+    // own backend poll (random bursts, desynchronized updates).
+    //   SSE  — /live/stream (instant push: tomznLive + inverter + gridFlow)
+    //   30s  — /dashboard/sync (delta check: { changed: false } if nothing changed)
+    //   60s  — /flow-history (chart data, only grows throughout the day)
+    let liveEs: RNEventSource | null = null;
     let syncInterval: ReturnType<typeof setInterval> | null = null;
     let flowInterval: ReturnType<typeof setInterval> | null = null;
 
-    const startPolling = (ms: number) => {
-      if (liveInterval) clearInterval(liveInterval);
+    const startLiveStream = () => {
+      stopLiveStream();
+      try {
+        liveEs = new RNEventSource(`${API_URL}/live/stream`, {
+          pollingInterval: 5000, // auto-reconnect 5s after a disconnect
+          timeout: 0, // no activity timeout — connection stays open indefinitely
+        });
+        liveEs.addEventListener("message", (event) => {
+          try {
+            if (!event.data) return;
+            const data = JSON.parse(event.data);
+            applyLive(data);
+          } catch {
+            // ignore parse errors (keep-alive pings, partial chunks)
+          }
+        });
+      } catch {
+        // RNEventSource construction failed — the 30s syncInterval will keep data fresh
+      }
+    };
+    const stopLiveStream = () => {
+      if (liveEs) {
+        try { liveEs.close(); } catch {}
+        liveEs = null;
+      }
+    };
+
+    const startDashboardPolling = () => {
       if (syncInterval) clearInterval(syncInterval);
       if (flowInterval) clearInterval(flowInterval);
-      // 5s: lightweight live data for hero section
-      liveInterval = setInterval(() => void fetchLive(), ms);
       // 30s: delta sync — only fetches full dashboard if dataVersion changed
       syncInterval = setInterval(() => void syncDashboard(), SYNC_INTERVAL_MS);
       // 60s: flow history for the chart
       flowInterval = setInterval(() => void loadFlowHistory(), FLOW_INTERVAL_MS);
     };
+
     const onAppStateChange = (state: AppStateStatus) => {
       if (state === "active") {
         // App came to foreground — force-fetch live data (bypasses backend cache)
@@ -554,18 +589,18 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         void fetchLive(true);
         void syncDashboard();
         void loadFlowHistory();
-        startPolling(POLL_FOREGROUND_MS);
-      } else {
-        // App went to background — keep polling at same rate.
-        startPolling(POLL_BACKGROUND_MS);
+        // Reconnect SSE in case it dropped while JS was suspended in the background
+        startLiveStream();
+        startDashboardPolling();
       }
     };
     const subscription = AppState.addEventListener("change", onAppStateChange);
-    startPolling(POLL_FOREGROUND_MS);
+    startLiveStream();
+    startDashboardPolling();
 
     return () => {
       disposed = true;
-      if (liveInterval) clearInterval(liveInterval);
+      stopLiveStream();
       if (syncInterval) clearInterval(syncInterval);
       if (flowInterval) clearInterval(flowInterval);
       subscription.remove();
