@@ -1,4 +1,5 @@
 import { GlassCard } from "@/components/GlassCard";
+import { SceneBackground } from "@/components/SceneBackground";
 import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { UsageSummaryCard } from "@/components/UsageSummaryCard";
 import { useEnergy } from "@/context/EnergyContext";
@@ -6,7 +7,6 @@ import { useSceneTheme } from "@/context/SceneThemeContext";
 import {
     Activity,
     AlertCircle,
-    Battery,
     Clock,
     Cpu,
     Gauge,
@@ -20,13 +20,12 @@ import {
 } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
 import {
-    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
     Text,
     View,
-    useWindowDimensions,
+    useWindowDimensions
 } from "react-native";
 import Animated, {
     useAnimatedStyle,
@@ -36,7 +35,6 @@ import Animated, {
     withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { SceneBackground } from "@/components/SceneBackground";
 
 type Tab = "usage" | "fronus" | "tomzn";
 
@@ -215,7 +213,6 @@ function FronusTab({ inverter }: { inverter: any }) {
       <GlassCard style={styles.card}>
         <View style={styles.deviceHeader}>
           <View style={styles.deviceHeaderLeft}>
-            {/* Placeholder for Fronus image — replace with actual image when available */}
             <View style={[styles.deviceLogoPlaceholder, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
               <Sun size={24} color="#F8C653" />
             </View>
@@ -236,18 +233,28 @@ function FronusTab({ inverter }: { inverter: any }) {
           <Text style={[styles.fetchedText, { color: theme.textSecondary }]}>Last fetched: {fetchedAt}</Text>
         </View>
 
-        {/* Solar Section */}
+        {/* Solar Section — Total + Dual MPPT */}
         <SectionHeader icon={<Sun size={12} color="#F8C653" />} title="Solar (PV)" color="#F8C653" />
         <View style={styles.dataGrid}>
-          <DataTile label="Power" value={inverter?.solarW ? `${inverter.solarW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#F8C653" />} />
-          <DataTile label="Voltage" value={inverter?.solarV ? `${inverter.solarV.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#F8C653" />} />
-          <DataTile label="Current" value={inverter?.solarA ? `${inverter.solarA.toFixed(1)} A` : "-- A"} icon={<Activity size={10} color="#F8C653" />} />
+          <DataTile label="Total Power" value={inverter?.solarW ? `${inverter.solarW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#F8C653" />} />
+          <DataTile label="Avg Voltage" value={inverter?.solarV ? `${inverter.solarV.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#F8C653" />} />
+          <DataTile label="Total Current" value={inverter?.solarA ? `${inverter.solarA.toFixed(1)} A` : "-- A"} icon={<Activity size={10} color="#F8C653" />} />
+        </View>
+        <View style={styles.dataGrid}>
+          <DataTile label="MPPT1 V" value={inverter?.pv1V ? `${inverter.pv1V.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#F8C653" />} />
+          <DataTile label="MPPT1 A" value={inverter?.pv1A ? `${inverter.pv1A.toFixed(1)} A` : "-- A"} icon={<Activity size={10} color="#F8C653" />} />
+          <DataTile label="MPPT1 W" value={inverter?.pv1W ? `${inverter.pv1W.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#F8C653" />} />
+        </View>
+        <View style={styles.dataGrid}>
+          <DataTile label="MPPT2 V" value={inverter?.pv2V ? `${inverter.pv2V.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#F8C653" />} />
+          <DataTile label="MPPT2 A" value={inverter?.pv2A ? `${inverter.pv2A.toFixed(1)} A` : "-- A"} icon={<Activity size={10} color="#F8C653" />} />
+          <DataTile label="MPPT2 W" value={inverter?.pv2W ? `${inverter.pv2W.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#F8C653" />} />
         </View>
 
         {/* Grid Section */}
         <SectionHeader icon={<Zap size={12} color="#548EFF" />} title="Grid" color="#548EFF" />
         <View style={styles.dataGrid}>
-          <DataTile label="Power" value={(inverter?.isOnline !== false && inverter?.gridWRaw != null) ? `${inverter.gridWRaw.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#548EFF" />} />
+          <DataTile label="Power (raw)" value={(inverter?.isOnline !== false && inverter?.gridWRaw != null) ? `${inverter.gridWRaw.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#548EFF" />} />
           <DataTile label="Voltage" value={inverter?.gridV ? `${inverter.gridV.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#548EFF" />} />
           <DataTile label="Frequency" value={inverter?.gridHz ? `${inverter.gridHz.toFixed(2)} Hz` : "-- Hz"} icon={<Activity size={10} color="#548EFF" />} />
         </View>
@@ -265,27 +272,28 @@ function FronusTab({ inverter }: { inverter: any }) {
         </View>
 
         {/* Load Section */}
-        <SectionHeader icon={<Battery size={12} color="#32E56B" />} title="Load" color="#32E56B" />
+        <SectionHeader icon={<Activity size={12} color="#32E56B" />} title="Load (AC Output)" color="#32E56B" />
         <View style={styles.dataGrid}>
-          <DataTile label="Power" value={inverter?.loadW ? `${inverter.loadW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#32E56B" />} />
+          <DataTile label="Active Power" value={inverter?.loadW ? `${inverter.loadW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#32E56B" />} />
           <DataTile label="Apparent Power" value={inverter?.loadVa ? `${inverter.loadVa.toFixed(0)} VA` : "-- VA"} icon={<Activity size={10} color="#32E56B" />} />
-          <DataTile label="Load %" value={inverter?.loadPercent ? `${inverter.loadPercent.toFixed(1)}%` : "-- %"} icon={<Gauge size={10} color="#32E56B" />} />
+          <DataTile label="Load %" value={inverter?.loadPercent ? `${inverter.loadPercent.toFixed(0)}%` : "-- %"} icon={<Gauge size={10} color="#32E56B" />} />
         </View>
         <View style={styles.dataGrid}>
-          <DataTile label="Output Voltage" value={inverter?.acOutV ? `${inverter.acOutV.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#32E56B" />} />
-          <DataTile label="Output Frequency" value={inverter?.acOutHz ? `${inverter.acOutHz.toFixed(2)} Hz` : "-- Hz"} icon={<Activity size={10} color="#32E56B" />} />
+          <DataTile label="Output V" value={inverter?.acOutV ? `${inverter.acOutV.toFixed(1)} V` : "-- V"} icon={<Gauge size={10} color="#32E56B" />} />
+          <DataTile label="Output Hz" value={inverter?.acOutHz ? `${inverter.acOutHz.toFixed(2)} Hz` : "-- Hz"} icon={<Activity size={10} color="#32E56B" />} />
+          <DataTile label="Rated Output" value={inverter?.ratedOutputW ? `${inverter.ratedOutputW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#32E56B" />} />
         </View>
 
         {/* Inverter Status Section */}
         <SectionHeader icon={<Cpu size={12} color="#8862ED" />} title="Inverter Status" color="#8862ED" />
         <View style={styles.dataGrid}>
           <DataTile label="Mode" value={inverter?.inverterMode || "--"} icon={<Cpu size={10} color="#8862ED" />} />
-          <DataTile label="Fault" value={inverter?.inverterFault || "--"} icon={<AlertCircle size={10} color={inverter?.inverterFault && inverter.inverterFault !== "OK" && inverter.inverterFault !== "UNKNOWN" ? "#FF5252" : theme.textMuted} />} />
+          <DataTile label="Fault" value={inverter?.inverterFault || "--"} icon={<AlertCircle size={10} color={inverter?.inverterFault && inverter.inverterFault !== "NO" && inverter.inverterFault !== "UNKNOWN" ? "#FF5252" : theme.textMuted} />} />
           <DataTile label="Temperature" value={inverter?.temperatureC ? `${inverter.temperatureC.toFixed(1)}°C` : "-- °C"} icon={<Thermometer size={10} color="#8862ED" />} />
         </View>
         <View style={styles.dataGrid}>
-          <DataTile label="Rated Output" value={inverter?.ratedOutputW ? `${inverter.ratedOutputW.toFixed(0)} W` : "-- W"} icon={<Zap size={10} color="#8862ED" />} />
-          <DataTile label="Signal" value={inverter?.signal != null ? `${inverter.signal}%` : "-- %"} icon={<Radio size={10} color="#8862ED" />} />
+          <DataTile label="Signal" value={inverter?.signal != null ? `${inverter.signal} dBm` : "-- dBm"} icon={<Radio size={10} color="#8862ED" />} />
+          <DataTile label="Firmware" value={inverter?.firmware ? inverter.firmware.replace("VERFW:", "") : "--"} icon={<Cpu size={10} color="#8862ED" />} />
           <DataTile label="Data Status" value={isLive && isOnline ? "Live" : isOnline ? "Stale" : "Offline"} icon={<Activity size={10} color={isLive && isOnline ? "#32E56B" : "#EF4C4C"} />} />
         </View>
       </GlassCard>

@@ -1,63 +1,10 @@
 import type {
-    AlertItem,
     HistoryPoint,
-    LiveTelemetry,
     ManualLog,
-    MeterId,
-    MeterState,
-    Recommendation,
 } from "@/context/energy-types";
 
 export function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
-}
-
-export function formatNumber(value: number, digits = 1) {
-  return value.toFixed(digits);
-}
-
-export function formatTimeLabel(time: Date) {
-  return time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-export function getRelativeTime(timestamp?: number) {
-  if (!timestamp) return "Never";
-  const diff = Math.max(0, Date.now() - timestamp);
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
-export function getStartOfBillingCycle(nowTs: number) {
-  const d = new Date(nowTs);
-  let year = d.getFullYear();
-  let month = d.getMonth();
-  
-  if (d.getDate() < 28 || (d.getDate() === 28 && d.getHours() < 12)) {
-      month -= 1;
-      if (month < 0) {
-          month = 11;
-          year -= 1;
-      }
-  }
-  return new Date(year, month, 28, 12, 0, 0, 0).getTime();
-}
-
-export function calibrateMeterReading(
-  meter: MeterState,
-  manualReading: number,
-) {
-  const drift = manualReading - meter.reading;
-  const averageError = meter.averageError * 0.7 + Math.abs(drift) * 0.3;
-
-  return {
-    driftOffset: meter.driftOffset + drift * 0.5,
-    averageError,
-    reading: manualReading,
-  };
 }
 
 export function getReadingAt(
@@ -89,51 +36,6 @@ export function getReadingAt(
     }
   }
   return sorted[sorted.length - 1].reading;
-}
-
-export function calculateRates(logs: ManualLog[]) {
-  if (!logs || logs.length === 0) {
-    return {
-      currentReading: 0,
-      todayUsage: 0,
-      averageDaily: 0,
-      projectedMonthly: 0,
-      lastLoggedAt: undefined,
-    };
-  }
-
-  const sorted = [...logs].sort((a, b) => a.timestamp - b.timestamp);
-  const latest = sorted[sorted.length - 1];
-
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const midnightReading = getReadingAt(sorted, startOfToday.getTime());
-  const todayUsage =
-    midnightReading !== null
-      ? Math.max(0, latest.reading - midnightReading)
-      : 0;
-
-  let averageDaily = 0;
-  if (sorted.length >= 2) {
-    const oldest = sorted[0];
-    const totalUsage = latest.reading - oldest.reading;
-    const totalTimeHours =
-      (latest.timestamp - oldest.timestamp) / (1000 * 60 * 60);
-    if (totalTimeHours > 0) {
-      const hourlyRate = totalUsage / totalTimeHours;
-      averageDaily = hourlyRate * 24;
-    }
-  }
-
-  const projectedMonthly = averageDaily * 30;
-
-  return {
-    currentReading: latest.reading,
-    todayUsage,
-    averageDaily,
-    projectedMonthly,
-    lastLoggedAt: latest.timestamp,
-  };
 }
 
 export function interpolateUsageHistory(
@@ -243,79 +145,4 @@ export function summarizeHistory(history: HistoryPoint[]) {
     grid: m1 + m2,
     load: m1 + m2,
   };
-}
-
-export function buildRecommendations(
-  live: LiveTelemetry,
-  activeMeter: MeterId,
-): Recommendation[] {
-  const items: Recommendation[] = [];
-
-  if (live.gridKw > 2.2) {
-    items.push({
-      id: "high-import",
-      title: "Current WAPDA draw is high",
-      description: `Active source is ${activeMeter === "meter1" ? "Meter 1 (Analog)" : "Meter 2 (Digital)"}. Verify if major loads can be scheduled.`,
-      action: "Check heavy appliances",
-      priority: "high",
-      trend: "down",
-    });
-  }
-
-  if (live.voltage < 202 || live.voltage > 238) {
-    items.push({
-      id: "voltage-drift",
-      title: "Voltage drift detected",
-      description:
-        "Verifying with active active meter input feeds. Protection relays status normal.",
-      action: "Inspect stabilizer",
-      priority: "medium",
-      trend: "down",
-    });
-  }
-
-  if (!items.length) {
-    items.push({
-      id: "steady-state",
-      title: "Supply lines stable",
-      description: "Voltage ranges are within active safe tolerances.",
-      action: "Monitor changeover",
-      priority: "low",
-      trend: "flat",
-    });
-  }
-
-  return items;
-}
-
-export function buildAlerts(live: LiveTelemetry): AlertItem[] {
-  const alerts: AlertItem[] = [];
-
-  if (live.voltage > 242) {
-    alerts.push({
-      id: "over-voltage",
-      title: "Supply Voltage High",
-      description: `Incoming utility supply touched ${formatNumber(live.voltage, 0)}V.`,
-      severity: "critical",
-      source: "TOMZN",
-      createdAt: new Date(),
-    });
-  }
-
-  if (live.voltage < 198) {
-    alerts.push({
-      id: "under-voltage",
-      title: "Supply Voltage Low",
-      description: `Incoming utility supply dipped to ${formatNumber(live.voltage, 0)}V.`,
-      severity: "warning",
-      source: "TOMZN",
-      createdAt: new Date(),
-    });
-  }
-
-  return alerts;
-}
-
-export function slugifyMeter(meterId: MeterId) {
-  return meterId === "meter1" ? "Meter 1" : "Meter 2";
 }

@@ -11,6 +11,7 @@ import {
 import { AppState, type AppStateStatus } from "react-native";
 import RNEventSource from "react-native-sse";
 
+import { useIdle } from "@/context/IdleContext";
 import { interpolateUsageHistory, summarizeHistory } from "@/utils/calculations";
 import {
     applyOfflineBaseline,
@@ -119,6 +120,9 @@ type EnergyContextValue = {
 const API_URL = "http://104.43.56.204:3001/api/solar";
 const SYNC_INTERVAL_MS = 30_000;  // full dashboard delta sync every 30s
 const FLOW_INTERVAL_MS = 60_000;  // flow history every 60s
+const IDLE_LIVE_INTERVAL_MS = 5_000;  // lightweight live poll when idle (replaces SSE)
+const IDLE_SYNC_INTERVAL_MS = 120_000;  // slower dashboard sync when idle
+const IDLE_FLOW_INTERVAL_MS = 300_000; // slower flow history when idle
 const DASHBOARD_CACHE_KEY = "voltx.solar.dashboard.v1";
 const PENDING_OPERATIONS_KEY = "voltx.solar.pending-operations.v1";
 const LAST_MONTH_TOTAL_KEY = "voltx.solar.last-month-total.v1";
@@ -153,7 +157,7 @@ function emptyMeter(id: MeterId): MeterState {
 
 const EMPTY_METERS: Record<MeterId, MeterState> = { meter1: emptyMeter("meter1"), meter2: emptyMeter("meter2") };
 const EMPTY_LIVE: LiveTelemetry = { gridKw: 0, solarKw: 0, homeKw: 0, currentAmp: 0, voltage: 0, frequency: 50, powerFactor: 0 };
-const EMPTY_INVERTER: InverterTelemetry = { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridWRaw: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, sourceTime: null, fetchedAt: "", isLive: false };
+const EMPTY_INVERTER: InverterTelemetry = { solarW: 0, solarV: 0, solarA: 0, pv1V: 0, pv1A: 0, pv1W: 0, pv2V: 0, pv2A: 0, pv2W: 0, gridW: 0, gridWRaw: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, firmware: null, sourceTime: null, fetchedAt: "", isLive: false };
 // isDay is derived from the device's local hour so the empty fallback doesn't
 // report daytime at night (which would force daytime hero scenes/labels before
 // the backend has responded). Pakistan users' local hour matches the site TZ.
@@ -168,6 +172,7 @@ const EnergyContext = createContext<EnergyContextValue | null>(null);
  * on the VM so every device sees the same dashboard.
  */
 export function EnergyProvider({ children }: { children: ReactNode }) {
+  const { isIdle } = useIdle();
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [tomznHistory, setTomznHistory] = useState<any[]>([]);
   const [flowHistory24h, setFlowHistory24h] = useState<{ timestamp: number; solarKw: number; gridKw: number; loadKw: number }[]>([]);
@@ -185,6 +190,11 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const manualReadingOverrideRef = useRef<Record<MeterId, { reading: number; timestamp: number } | null>>({ meter1: null, meter2: null });
   const deletedLogIdsRef = useRef<Set<string>>(new Set());
   const dataVersionRef = useRef<number>(0);
+  const startLiveStreamRef = useRef<(() => void) | null>(null);
+  const startDashboardPollingRef = useRef<(() => void) | null>(null);
+  const startIdlePollingRef = useRef<(() => void) | null>(null);
+  const stopIdlePollingRef = useRef<(() => void) | null>(null);
+  const startRetryLoopRef = useRef<(() => void) | null>(null);
 
   const normaliseSnapshot = (data: DashboardSnapshot): DashboardSnapshot => ({
       ...data,
@@ -346,13 +356,20 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   };
 
   const request = async (path: string, init?: RequestInit) => {
-    const response = await fetch(`${API_URL}${path}`, {
-      ...init,
-      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Solar server request failed");
-    return data;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch(`${API_URL}${path}`, {
+        ...init,
+        headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+        signal: controller.signal,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Solar server request failed");
+      return data;
+    } finally {
+      clearTimeout(timeout);
+    }
   };
 
   const flushPendingOperations = async () => {
@@ -410,7 +427,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   // Apply live data (tomznLive + inverter + gridFlow) to the snapshot. Shared
   // by both fetchLive() and the SSE subscription handler so the merge logic
   // stays DRY.
-  const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any } | null | undefined) => {
+  const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any } | null | undefined) => {
     if (!data || (!data.tomznLive && !data.inverter)) return;
     setSnapshot((prev) => {
       if (!prev) return prev;
@@ -419,6 +436,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         tomznLive: data.tomznLive ?? prev.tomznLive,
         inverter: data.inverter ?? prev.inverter,
         gridFlow: data.gridFlow ?? prev.gridFlow,
+        weather: data.weather ?? prev.weather,
       };
     });
     setIsOffline(false);
@@ -524,13 +542,29 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         // A bad cache must never prevent the fresh server engine from loading.
       }
       if (!disposed) {
-        // Phase 1: force-fetch lightweight live data (TOMZN + inverter only) so
-        // the hero section renders instantly with fresh data on app open.
-        void fetchLive(true);
-        // Phase 2: fetch the full dashboard (meters, energy, forecasts, flow history)
-        // right after — this takes longer due to DB aggregation queries.
-        void refreshAll();
-        void loadFlowHistory();
+        // Phase 1: force-fetch fresh live data from the backend (bypasses the
+        // backend's in-memory cache so Tuya/inverter are polled directly).
+        // The cached AsyncStorage snapshot is already displayed instantly
+        // above, so the user sees something immediately while fresh data loads.
+        let initialFetchOk = false;
+        try {
+          await fetchLive(true);
+          initialFetchOk = true;
+        } catch {
+          // Internet not available yet — retry loop will handle it
+        }
+        // Phase 2: full dashboard sync. Reset dataVersionRef to 0 so the
+        // delta sync always returns the full dashboard on app open (not a
+        // stale "changed: false" that would keep old meters/home/energy).
+        if (initialFetchOk) {
+          dataVersionRef.current = 0;
+          void syncDashboard();
+          void loadFlowHistory();
+        }
+        // Start retry loop if initial fetch failed (no internet on app open)
+        if (!initialFetchOk) {
+          startRetryLoopRef.current?.();
+        }
       }
     };
     void bootstrap();
@@ -545,12 +579,13 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     let liveEs: RNEventSource | null = null;
     let syncInterval: ReturnType<typeof setInterval> | null = null;
     let flowInterval: ReturnType<typeof setInterval> | null = null;
+    let idleLiveInterval: ReturnType<typeof setInterval> | null = null;
 
     const startLiveStream = () => {
       stopLiveStream();
       try {
         liveEs = new RNEventSource(`${API_URL}/live/stream`, {
-          pollingInterval: 5000, // auto-reconnect 5s after a disconnect
+          pollingInterval: 3000, // auto-reconnect 3s after a disconnect
           timeout: 0, // no activity timeout — connection stays open indefinitely
         });
         liveEs.addEventListener("message", (event) => {
@@ -582,30 +617,102 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       flowInterval = setInterval(() => void loadFlowHistory(), FLOW_INTERVAL_MS);
     };
 
+    const startIdlePolling = () => {
+      stopLiveStream();
+      if (syncInterval) clearInterval(syncInterval);
+      if (flowInterval) clearInterval(flowInterval);
+      if (idleLiveInterval) clearInterval(idleLiveInterval);
+      // 5s: lightweight live poll (replaces SSE, keeps hero data fresh)
+      idleLiveInterval = setInterval(() => void fetchLive(false), IDLE_LIVE_INTERVAL_MS);
+      // 60s: slower dashboard sync
+      syncInterval = setInterval(() => void syncDashboard(), IDLE_SYNC_INTERVAL_MS);
+      // 120s: slower flow history
+      flowInterval = setInterval(() => void loadFlowHistory(), IDLE_FLOW_INTERVAL_MS);
+    };
+
+    const stopIdlePolling = () => {
+      if (idleLiveInterval) { clearInterval(idleLiveInterval); idleLiveInterval = null; }
+    };
+
     const onAppStateChange = (state: AppStateStatus) => {
       if (state === "active") {
-        // App came to foreground — force-fetch live data (bypasses backend cache)
-        // for instant fresh hero section, then delta sync for the rest.
+        // App came to foreground — force-fetch fresh live data immediately
+        // (bypasses backend cache so Tuya/inverter are polled directly).
+        // Reset dataVersionRef so the dashboard sync returns the full
+        // dashboard instead of a stale "changed: false".
+        dataVersionRef.current = 0;
         void fetchLive(true);
         void syncDashboard();
         void loadFlowHistory();
         // Reconnect SSE in case it dropped while JS was suspended in the background
         startLiveStream();
         startDashboardPolling();
+        // Restart retry loop in case internet was restored while backgrounded
+        startRetryLoopRef.current?.();
       }
     };
     const subscription = AppState.addEventListener("change", onAppStateChange);
     startLiveStream();
     startDashboardPolling();
 
+    // Fast retry loop: when offline, retry every 3s instead of waiting 30s.
+    // Stops as soon as a request succeeds (internet restored).
+    let retryInterval: ReturnType<typeof setInterval> | null = null;
+    const startRetryLoop = () => {
+      if (retryInterval) return;
+      retryInterval = setInterval(async () => {
+        try {
+          await fetchLive(true);
+          // Success — internet is back, stop retrying and do a full sync
+          if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
+          dataVersionRef.current = 0;
+          void syncDashboard();
+          void loadFlowHistory();
+          startLiveStream();
+        } catch {
+          // Still offline — keep retrying
+        }
+      }, 3_000);
+    };
+    // Expose so onAppStateChange can restart it if needed
+    startRetryLoopRef.current = startRetryLoop;
+
+    // Expose polling controllers to the idle effect
+    startLiveStreamRef.current = startLiveStream;
+    startDashboardPollingRef.current = startDashboardPolling;
+    startIdlePollingRef.current = startIdlePolling;
+    stopIdlePollingRef.current = stopIdlePolling;
+
     return () => {
       disposed = true;
       stopLiveStream();
+      stopIdlePolling();
       if (syncInterval) clearInterval(syncInterval);
       if (flowInterval) clearInterval(flowInterval);
+      if (retryInterval) clearInterval(retryInterval);
       subscription.remove();
+      startLiveStreamRef.current = null;
+      startDashboardPollingRef.current = null;
+      startIdlePollingRef.current = null;
+      stopIdlePollingRef.current = null;
+      startRetryLoopRef.current = null;
     };
   }, []);
+
+  // Idle mode: switch from SSE (5s push) to 15s HTTP polling to save battery.
+  // On wake: restore SSE + normal intervals + force-fetch fresh data.
+  useEffect(() => {
+    if (isIdle) {
+      startIdlePollingRef.current?.();
+    } else {
+      stopIdlePollingRef.current?.();
+      dataVersionRef.current = 0;
+      void fetchLive(true);
+      void syncDashboard();
+      startLiveStreamRef.current?.();
+      startDashboardPollingRef.current?.();
+    }
+  }, [isIdle]);
 
   const activeMeter = snapshot?.activeMeter || "meter1";
   const meters = snapshot?.meters || EMPTY_METERS;

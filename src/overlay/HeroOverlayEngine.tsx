@@ -1,20 +1,18 @@
-import { memo, useEffect, useMemo } from "react";
-import { StyleSheet, View } from "react-native";
 import {
     BlurMask,
     Canvas,
+    DashPathEffect,
     Circle as SkiaCircle,
     Path as SkiaPath,
-    DashPathEffect,
 } from "@shopify/react-native-skia";
+import { memo, useEffect, useMemo } from "react";
+import { StyleSheet, View } from "react-native";
 import {
-    Easing,
-    cancelAnimation,
     useDerivedValue,
     useFrameCallback,
     useSharedValue,
     withTiming,
-    type SharedValue,
+    type SharedValue
 } from "react-native-reanimated";
 
 import {
@@ -41,6 +39,7 @@ type WireStreamProps = {
   flow: WireFlowState;
   isVisible: boolean;
   hidden?: boolean;
+  isIdleShared?: SharedValue<number>;
 };
 
 function parseDashArray(s: string | undefined, fallback: string): number[] {
@@ -61,6 +60,7 @@ function WireStream({
   flow,
   isVisible,
   hidden = false,
+  isIdleShared,
 }: WireStreamProps) {
   const pathD = useMemo(
     () => pointsToPathD(points, viewBox, width, height),
@@ -134,6 +134,7 @@ function WireStream({
   useFrameCallback((info) => {
     "worklet";
     if (!isVisible) return;
+    if (isIdleShared && isIdleShared.value === 1) return;
 
     // Lerp smoothPower toward flow.power (target)
     const target = flow.power;
@@ -248,6 +249,7 @@ function WireStream({
           isVisible={isVisible}
           wireStyle={wireStyle}
           reverse={flow.reverse}
+          isIdleShared={isIdleShared}
         />
       ))}
     </>
@@ -268,6 +270,7 @@ function WireParticle({
   isVisible,
   wireStyle,
   reverse,
+  isIdleShared,
 }: {
   points: HeroOverlayConfig["solarPath"];
   viewBox: HeroOverlayConfig["viewBox"];
@@ -282,6 +285,7 @@ function WireParticle({
   isVisible: boolean;
   wireStyle: OverlayWireStyle;
   reverse?: boolean;
+  isIdleShared?: SharedValue<number>;
 }) {
   const progress = useSharedValue(0);
   const smoothPower = useSharedValue(power);
@@ -291,6 +295,7 @@ function WireParticle({
   useFrameCallback((info) => {
     "worklet";
     if (!isVisible) return;
+    if (isIdleShared && isIdleShared.value === 1) return;
     smoothPower.value += (power - smoothPower.value) * 0.08;
     const dur = flowDurationFromPower(
       smoothPower.value,
@@ -361,6 +366,7 @@ export type HeroOverlayEngineProps = {
   /** When set, renders a second grid wire (grid → DB bypass path) alongside the normal grid path. */
   gridBypassFlow?: WireFlowState;
   isVisible?: boolean;
+  isIdleShared?: SharedValue<number>;
   /** When true, the solar wire stream is not rendered at all. */
   solarHidden?: boolean;
   /** When true, the grid wire stream is not rendered at all. */
@@ -379,6 +385,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
   inverterOutputFlow,
   gridBypassFlow,
   isVisible = true,
+  isIdleShared,
   solarHidden = false,
   gridHidden = false,
   inverterOutputHidden = false,
@@ -412,6 +419,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           flow={gridFlow}
           isVisible={isVisible}
           hidden={gridHidden}
+          isIdleShared={isIdleShared}
         />
         {gridBypassFlow && config.gridBypassPath && (
           <WireStream
@@ -424,6 +432,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
             flow={gridBypassFlow}
             isVisible={isVisible}
             hidden={false}
+            isIdleShared={isIdleShared}
           />
         )}
         <WireStream
@@ -436,6 +445,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           flow={solarFlow}
           isVisible={isVisible}
           hidden={solarHidden}
+          isIdleShared={isIdleShared}
         />
         <WireStream
           wireId="inverterOutput"
@@ -447,6 +457,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           flow={inverterFlow}
           isVisible={isVisible}
           hidden={inverterOutputHidden}
+          isIdleShared={isIdleShared}
         />
       </Canvas>
     </View>

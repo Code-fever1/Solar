@@ -9,21 +9,35 @@
 
 const http = require("http");
 const https = require("https");
+const { execFile } = require("child_process");
+const path = require("path");
 
 const PRIMARY_STATE_ID = "primary";
 const METER_IDS = new Set(["meter1", "meter2"]);
 const PAKISTAN_OFFSET = "+05:00";
-const INVERTERZONE_HOST = "inverterzone.com";
-const INVERTER_POLL_MAX_AGE_MS = 5_000;
-// Live cache is refreshed at most every 5s so the dashboard stays responsive
+const INVERTER_LOCAL_HOST = "113.203.197.44";
+const INVERTER_LOCAL_PORT = 3286;
+const INVERTER_POLL_MAX_AGE_MS = 3_000;
+// Live cache is refreshed at most every 3s so the dashboard stays responsive
 // without hitting Tuya on every frontend poll.
-const TOMZN_LIVE_MAX_AGE_MS = 5_000;
-// Stale-data detection: when TOMZN's WiFi dies, Tuya cloud keeps returning the
-// last cached datapoint values (including online_state: "online") indefinitely.
-// We fingerprint key values across consecutive polls — if they stay identical
-// for this many polls, we override isOnline to false until values change again.
+const TOMZN_LIVE_MAX_AGE_MS = 3_000;
+// Stale-data detection: when TOMZN's WiFi dies, the local Tuya poll fails.
+// We track consecutive poll failures — after TOMZN_FAIL_THRESHOLD failures,
+// we mark the device offline. The fingerprint approach also catches the case
+// where the poll succeeds but returns identical cached values.
+// Secondary signal: when the inverter switches to battery mode (QMOD="B"),
+// the grid is down, which means TOMZN (grid meter) is also offline.
+//
+// STANDBY EXEMPTION: When the user manually turns the TOMZN switch OFF
+// (standby / intentional grid cut), the device stays accessible and replies
+// to polls — it just reports 0V/0A/0W. Both the fingerprint detection and
+// the inverter battery-mode cross-check are SKIPPED when switchOn is false,
+// so the device remains "online" and the frontend shows "Standby" (yellow)
+// instead of "Offline" (red). True offline only triggers after 10 consecutive
+// poll failures (device truly unreachable).
 const TOMZN_STALE_THRESHOLD = 10;
-const tomznStaleTracker = { fingerprint: null, count: 0 };
+const TOMZN_FAIL_THRESHOLD = 10;
+const tomznStaleTracker = { fingerprint: null, count: 0, failCount: 0 };
 // Seed the stale tracker from the database on startup so we don't restart the
 // 10-count from zero every time the backend restarts or the app reopens.
 // Checks the last N stored snapshots — if their fingerprints are identical,
@@ -32,6 +46,14 @@ async function seedStaleTrackerFromDb(snapshots) {
   try {
     const recent = await snapshots.find({}).sort({ timestamp: -1 }).limit(TOMZN_STALE_THRESHOLD).toArray();
     if (recent.length === 0) return;
+    // STANDBY EXEMPTION: If the latest snapshot has switchOn === false, the
+    // device was intentionally put in standby (manual grid cut). Identical
+    // zero readings are expected in standby — don't seed the stale counter,
+    // otherwise the device would be marked offline immediately on restart.
+    if (recent[0].switchOn === false) {
+      console.log("[Solar Engine] stale tracker: latest snapshot is standby (switchOff) — skipping seed");
+      return;
+    }
     const fp = (s) => `${s.energyKwh}|${s.powerW}|${s.voltageV}|${s.currentA}`;
     const latestFp = fp(recent[0]);
     let identicalCount = 0;
@@ -170,6 +192,14 @@ function updateOnGridDirection(inverter, solarW, tomznW, state, now) {
     return "import";
   }
 
+  // When tomznW is 0, TOMZN might be offline (not zero draw). In that case,
+  // gridWRaw is unreliable — the grid may be down. Default to import (safe).
+  if (tomznW <= 0) {
+    state.lastDirection = "import";
+    state.atCrossing = false;
+    return "import";
+  }
+
   // SIGNAL 2 — INVERTER GRID DIRECTION: direct signal from the inverter.
   // Trustworthy here because Signal 1 already caught the dangerous case
   // (tomzn > solar). Now tomzn ≤ solar, so solar is at least as big as the
@@ -282,8 +312,24 @@ function determineGridFlow(inverter, tomznPowerW, flowState, now) {
       return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: balance, isExporting: false };
     }
     if (balance < -ENERGY_BALANCE_THRESHOLD_W) {
-      if (flowState) { flowState.lastDirection = "export"; flowState.atCrossing = false; }
-      return { mode: "hybrid", direction: "export", homeW: loadW, gridExchangeW: balance, isExporting: true };
+      // Excess solar (solarW > loadW). Check inverter's grid signal for direction.
+      // TOMZN powerW is always positive (counts both import and export), so we
+      // can't use it for direction — rely on the inverter's gridWRaw/gridDirection.
+      const gridWRaw = finiteNumber(inverter?.gridWRaw, 0);
+      const gridDirection = inverter?.gridDirection || "import";
+      if (gridDirection === "export" || gridWRaw < -50) {
+        if (flowState) { flowState.lastDirection = "export"; flowState.atCrossing = false; }
+        return { mode: "hybrid", direction: "export", homeW: loadW, gridExchangeW: balance, isExporting: true };
+      }
+      // Inverter doesn't confirm export. If TOMZN is online with power flowing,
+      // it's likely import (home drawing from grid despite high solar).
+      if (tomznW > 0) {
+        if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
+        return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: Math.max(0, loadW - solarW), isExporting: false };
+      }
+      // TOMZN offline, inverter doesn't confirm export — idle (solar covering home)
+      if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
+      return { mode: "hybrid", direction: "idle", homeW: loadW, gridExchangeW: 0, isExporting: false };
     }
     if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
     return { mode: "hybrid", direction: "idle", homeW: loadW, gridExchangeW: 0, isExporting: false };
@@ -328,7 +374,10 @@ function buildExportBuckets(inverterSamples, tomznSamples, bucketMs) {
     if (!prev || s.timestamp > prev.timestamp) tomznByBucket.set(bucket, { powerW: s.powerW, timestamp: s.timestamp });
   }
   // Sort online inverter samples chronologically and determine direction for each.
-  const online = (inverterSamples || []).filter((s) => s.isOnline !== false).sort((a, b) => a.timestamp - b.timestamp);
+  // Skip samples where inverter is in battery mode (B) — no grid to export to.
+  const online = (inverterSamples || [])
+    .filter((s) => s.isOnline !== false && s.inverterMode !== "B" && s.inverterMode !== "offline")
+    .sort((a, b) => a.timestamp - b.timestamp);
   for (const sample of online) {
     const bucket = Math.floor(sample.timestamp / bucketMs);
     const tomznEntry = tomznByBucket.get(bucket);
@@ -351,8 +400,9 @@ function parseInverterRealTime(str) {
 }
 
 function requestJson(options, body) {
+  const transport = (options.protocol === "http:" || options.port) ? http : https;
   return new Promise((resolve, reject) => {
-    const request = https.request(options, (response) => {
+    const request = transport.request(options, (response) => {
       let raw = "";
       response.on("data", (chunk) => { raw += chunk; });
       response.on("end", () => {
@@ -369,83 +419,129 @@ function requestJson(options, body) {
   });
 }
 
+// ── Local inverter poller ──
+// Connects directly to the Fronus inverter's web API at 113.203.197.44:3286
+// (port-forwarded to 10.1.10.4:80). Returns real-time data every 3s instead of
+// the 15s cloud delay from InverterZone.
+// QPIGS format (InverterZone dongle firmware parseLive() mapping):
+//   [0]AC_in_V  [1]AC_in_Hz  [2]AC_out_V  [3]AC_out_Hz
+//   [4]AC_out_VA  [5]AC_out_W  [6]AC_out_load%  [7]home_load_W (not used by IZ FW)
+//   [8]Bat_V  [9]Bat_Charge_A  [10]Bat_%  [11]Inv_Bus_Temp_C
+//   [12]PV_Input_A  [13]PV_Input_V  [14](unused)  [15]Bat_Discharge_A
+//   [16-18](unused)  [19]status_bitmask (NOT PV power despite IZ FW label)
+// PVPOWER format (dual MPPT): pv1V pv1A pv1W pv2V pv2A pv2W ...
+// QMOD: L=Line, B=Battery, S=Standby, F=Fault, P=PowerOn
+const INVERTER_RATED_W = 10000;
+
 async function requestInverterZone() {
-  const deviceId = process.env.INVERTERZONE_DEVICE_ID;
-  if (!deviceId) return null;
-  const body = new URLSearchParams({ deviceId }).toString();
   const response = await requestJson({
-    hostname: INVERTERZONE_HOST,
-    path: "/api/getRealtimeData",
-    method: "POST",
-    headers: {
-      Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-      "Content-Length": Buffer.byteLength(body),
-      Origin: `https://${INVERTERZONE_HOST}`,
-      Referer: `https://${INVERTERZONE_HOST}/device/${encodeURIComponent(deviceId)}`,
-    },
-  }, body);
-  const data = response?.dataDTO;
-  // Device is offline or InverterZone has no realtime data for it — return an
-  // offline snapshot so the dashboard's "last fetched" keeps updating and the
-  // user can see we're still polling. Don't throw; throwing causes pollInverter
-  // to return stale data and "last fetched" never updates.
-  if (!data || data.deviceId !== deviceId) {
+    hostname: INVERTER_LOCAL_HOST,
+    port: INVERTER_LOCAL_PORT,
+    path: "/livejson",
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!response || !response.LiveData) {
     return makeOfflineInverterSnapshot();
   }
-  // Staleness check: if the inverter's realTime is more than 3 minutes behind
-  // the server time, the inverter is not communicating properly — mark offline.
-  // realTime format: "DD-MM-YYYY HH:mm" (e.g. "06-08-2026 01:30")
-  // Threshold is 3 minutes because the inverter hardware updates its realTime
-  // via InverterZone's cloud API every 1-2 minutes; a 1-minute threshold caused
-  // false "offline" flickering during normal polling gaps.
-  const sourceTimeStr = typeof data.realTime === "string" ? data.realTime : null;
-  if (sourceTimeStr) {
-    const parsed = parseInverterRealTime(sourceTimeStr);
-    if (parsed !== null && Date.now() - parsed > 3 * 60 * 1000) {
-      return makeOfflineInverterSnapshot();
-    }
+  const live = response.LiveData;
+  const esp = response.EspData || {};
+  const dev = response.DeviceData || {};
+  const qpigs = (live.QPIGS || "").split(/\s+/);
+  const pvpower = (live.PVPOWER || "").split(/\s+/);
+
+  if (qpigs.length < 16) {
+    return makeOfflineInverterSnapshot();
   }
+
+  const gridV = finiteNumber(qpigs[0], 0);
+  const gridHz = finiteNumber(qpigs[1], 0);
+  const acOutV = finiteNumber(qpigs[2], 0);
+  const acOutHz = finiteNumber(qpigs[3], 0);
+  const acOutVA = finiteNumber(qpigs[4], 0);
+  const acOutW = finiteNumber(qpigs[5], 0);
+  const loadPercent = finiteNumber(qpigs[6], 0);  // AC_out_load%
+  const busV = finiteNumber(qpigs[7], 0);         // DC bus voltage (NOT home load!)
+  const batteryV = finiteNumber(qpigs[8], 0);
+  const batteryChargeA = finiteNumber(qpigs[9], 0);
+  const batteryPerc = finiteNumber(qpigs[10], 0);
+  const temperatureC = finiteNumber(qpigs[11], 0);  // heatsink temp
+  const pvInputA = finiteNumber(qpigs[12], 0);      // PV1 input current
+
+  // Dual MPPT solar from PVPOWER
+  // Below 20W total, panels are effectively disconnected (phantom readings).
+  const SOLAR_STANDBY_W = 20;
+  const pv1W_raw = finiteNumber(pvpower[2], 0);
+  const pv2W_raw = finiteNumber(pvpower[5], 0);
+  const pv1V = finiteNumber(pvpower[0], 0);
+  const pv2V = finiteNumber(pvpower[3], 0);
+  const pv1A = finiteNumber(pvpower[1], 0);
+  const pv2A = finiteNumber(pvpower[4], 0);
+  const solarW_raw = pv1W_raw + pv2W_raw;
+  const solarStandby = solarW_raw < SOLAR_STANDBY_W;
+  const pv1W = solarStandby ? 0 : pv1W_raw;
+  const pv2W = solarStandby ? 0 : pv2W_raw;
+  const solarW = solarStandby ? 0 : solarW_raw;
+  const solarV = solarStandby ? 0 : (pv1V + pv2V) / 2;
+  const solarA = solarStandby ? 0 : pv1A + pv2A;
+
+  // Grid power calculation:
+  // HYBRID (acOutW >= 25W): inverter AC output powers the home.
+  //   acOutW = home load. Grid flow = acOutW - solarW.
+  //   If acOutW > solarW → import (grid supplies deficit).
+  //   If acOutW < solarW → export (excess solar to grid).
+  // ON-GRID (acOutW < 25W): home on changeover (WAPDA), inverter LOAD port
+  //   disconnected (acOutW ≈ 0). Solar feeds GRID port directly.
+  //   Grid flow = -solarW (all solar exports, home load is on grid separately).
+  //   TOMZN meter measures the actual home draw from grid.
+  const rawGridW = acOutW >= ON_GRID_LOAD_THRESHOLD_W
+    ? acOutW - solarW    // hybrid: home load vs solar
+    : -solarW;           // on-grid: solar exports to grid
+  const gridW = (gridV > 0 && Math.abs(rawGridW) >= 200) ? Math.max(0, rawGridW) : 0;
+
+  // QMOD mode mapping
+  const modeMap = { L: "L", B: "B", S: "S", F: "F", P: "P" };
+  const inverterMode = modeMap[live.QMOD] || "unknown";
+
+  // Fault detection: QMOD="F" means the inverter is in fault state.
+  // QPIWS contains warning/status bits that are non-zero during normal operation,
+  // so we can't use it as a simple fault flag.
+  const hasFault = live.QMOD === "F";
+
+  // loadPercent from QPIGS[6] is the inverter's own load percentage
+
   const timestamp = Date.now();
-  const gridV = Math.max(0, finiteNumber(data.gridV, 0));
-  // When gridV is 0, the grid relay is open (standby/disconnected).
-  // The InverterZone API may still report a small gridW value (leakage/artifact);
-  // force it to 0 so the graph doesn't show phantom grid import during solar-only mode.
-  // Also zero out readings < 200W that appear even when gridV is non-zero but relay is off
-  // (the inverter reports tiny phantom grid feed during high solar production).
-  // rawGridW: the raw grid power reading from InverterZone, preserving the sign
-  // (negative = exporting to grid, positive = importing from grid).
-  // gridW (sanitized) clamps to >= 0 and filters phantom readings for the dashboard.
-  const rawGridW = finiteNumber(data.gridW, 0);
-  const gridW = (gridV > 0 && rawGridW >= 200) ? rawGridW : 0;
-  // gridWRaw: the unfiltered, signed grid power reading straight from the
-  // InverterZone API. Kept separate from `gridW` (which is zeroed for phantom
-  // readings) so the Fronus summary tab can display the actual reported value
-  // (including negative export values) while the dashboard/graph still use the
-  // sanitized `gridW`.
   return {
     timestamp,
+    fetchedAt: new Date(timestamp).toISOString(),
     isOnline: true,
-    solarW: Math.max(0, finiteNumber(data.solarW, 0)),
-    solarV: Math.max(0, finiteNumber(data.solarV, 0)),
-    solarA: Math.max(0, finiteNumber(data.solarA, 0)),
+    solarW: Math.max(0, solarW),
+    solarV: Math.max(0, solarV),
+    solarA: Math.max(0, solarA),
+    pv1V: Math.max(0, pv1V),
+    pv1A: Math.max(0, pv1A),
+    pv1W: Math.max(0, pv1W),
+    pv2V: Math.max(0, pv2V),
+    pv2A: Math.max(0, pv2A),
+    pv2W: Math.max(0, pv2W),
     gridW,
     gridWRaw: rawGridW,
     gridV,
-    gridHz: Math.max(0, finiteNumber(data.gridHz, 0)),
-    gridConnected: Boolean(data.grid),
-    gridDirection: finiteNumber(data.gridFeed, 0) > 0 ? "export" : "import",
-    loadW: Math.max(0, finiteNumber(data.acOutW, 0)),
-    loadVa: Math.max(0, finiteNumber(data.acOutVa, 0)),
-    loadPercent: Math.max(0, finiteNumber(data.acOutPercent, 0)),
-    acOutV: Math.max(0, finiteNumber(data.acOutV, 0)),
-    acOutHz: Math.max(0, finiteNumber(data.acOutHz, 0)),
-    inverterMode: typeof data.iv_mode === "string" ? data.iv_mode : "unknown",
-    inverterFault: typeof data.fault === "string" ? data.fault : "UNKNOWN",
-    temperatureC: finiteNumber(data.heatSinkDegC, 0),
-    ratedOutputW: Math.max(0, finiteNumber(data.acOutRatingW, 0)),
-    signal: finiteNumber(data.signal),
-    sourceTime: typeof data.realTime === "string" ? data.realTime : null,
+    gridHz,
+    gridConnected: gridV > 0,
+    gridDirection: rawGridW < 0 ? "export" : "import",
+    loadW: Math.max(0, acOutW),       // inverter AC output = home load (hybrid mode)
+    loadVa: Math.max(0, acOutVA),
+    loadPercent: Math.max(0, loadPercent),
+    acOutV,
+    acOutHz,
+    inverterMode,
+    inverterFault: hasFault ? "FAULT" : "NO",
+    temperatureC,
+    ratedOutputW: INVERTER_RATED_W,
+    signal: finiteNumber(esp.Wifi_RSSI),
+    firmware: dev.QVFW || null,
+    sourceTime: null,
   };
 }
 
@@ -453,8 +549,10 @@ async function requestInverterZone() {
 // when the API request fails (network error, timeout). Keeps "last fetched"
 // updating so the user can see polling is still active.
 function makeOfflineInverterSnapshot() {
+  const ts = Date.now();
   return {
-    timestamp: Date.now(),
+    timestamp: ts,
+    fetchedAt: new Date(ts).toISOString(),
     isOnline: false,
     solarW: 0,
     solarV: 0,
@@ -661,34 +759,36 @@ function makeDefaultState(now = Date.now()) {
   };
 }
 
+// Local Tuya poller — uses Python tinytuya to communicate directly with the
+// TOMZN device over TCP (protocol v3.5), bypassing the Tuya cloud API entirely.
+// This avoids IoT Core quota limits and provides unlimited local polling.
+const TUYA_LOCAL_POLL_SCRIPT = path.join(__dirname, "tuya_local_poll.py");
+
 function requestTomzn() {
   return new Promise((resolve, reject) => {
-    const request = http.get("http://127.0.0.1:3001/api/tuya/device", { timeout: 12_000 }, (response) => {
-      let body = "";
-      response.on("data", (chunk) => { body += chunk; });
-      response.on("end", () => {
-        try {
-          const data = JSON.parse(body);
-          const dps = Array.isArray(data.dps) ? data.dps : [];
-          const find = (code) => dps.find((dp) => dp.code === code);
-          const energy = find("forward_energy_total") || find("total_forward_energy");
-          if (!data.configured || !energy) return reject(new Error("TOMZN total-energy datapoint is unavailable"));
-          resolve({
-            energyKwh: finiteNumber(energy.displayValue),
-            voltageV: finiteNumber(find("voltage")?.displayValue, 0),
-            currentA: finiteNumber(find("current")?.displayValue, 0),
-            powerW: finiteNumber(find("power")?.value, 0),
-            frequencyHz: finiteNumber(find("supply_frequency")?.displayValue, 50),
-            isOnline: find("online_state")?.displayValue === "online",
-            switchOn: find("switch")?.value === true,
-            faultCode: finiteNumber(find("fault")?.value, 0),
-            fetchedAt: data.fetchedAt || new Date().toISOString(),
-          });
-        } catch (error) { reject(error); }
-      });
+    execFile("python3", [TUYA_LOCAL_POLL_SCRIPT], { timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        const msg = stderr.trim() || error.message;
+        return reject(new Error(`TOMZN local poll failed: ${msg}`));
+      }
+      try {
+        const data = JSON.parse(stdout.trim());
+        if (data.error) return reject(new Error(`TOMZN local poll: ${data.error}`));
+        resolve({
+          energyKwh: data.energyKwh,
+          voltageV: data.voltageV || 0,
+          currentA: data.currentA || 0,
+          powerW: data.powerW || 0,
+          frequencyHz: data.frequencyHz || 50,
+          isOnline: data.isOnline,
+          switchOn: data.switchOn,
+          faultCode: data.faultCode || 0,
+          fetchedAt: data.fetchedAt,
+        });
+      } catch (parseErr) {
+        reject(new Error(`TOMZN local poll: invalid JSON output`));
+      }
     });
-    request.on("timeout", () => request.destroy(new Error("TOMZN request timed out")));
-    request.on("error", reject);
   });
 }
 
@@ -985,20 +1085,22 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     allocations.find({}).sort({ timestamp: 1 }).limit(1).next(),
     allocations.find({ timestamp: { $gte: todayStart - 7 * 86_400_000, $lte: now } }).sort({ timestamp: 1 }).toArray(),
     snapshots.find({ timestamp: { $gte: now - 30 * 86_400_000 } }).sort({ timestamp: -1 }).limit(5_000).toArray(),
-    // Flow graph is today-only (resets at Pakistan midnight) — don't query 24h.
+    // 7 days of inverter snapshots — used for the 24h flow graph (filtered
+    // later) AND export subtraction on the 7-day daily usage chart.
     // Limit 20,000 is a safety net — with the 60s persist throttle, only ~1,440
-    // snapshots/day are saved. The downsample also cleans up legacy high-freq data.
-    inverterSnapshots.find({ timestamp: { $gte: todayStart, $lte: now } }).sort({ timestamp: 1 }).limit(20_000).toArray(),
+    // snapshots/day are saved (10,080 for 7 days). The downsample also cleans
+    // up legacy high-freq data.
+    inverterSnapshots.find({ timestamp: { $gte: now - 7 * 86_400_000, $lte: now } }).sort({ timestamp: 1 }).limit(20_000).toArray(),
     // Query the latest inverter snapshot separately — the inverterHistory query
     // above sorts ascending, so without a separate query the most recent snapshot
     // could be cut off if the limit is ever reached.
     inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next(),
     weatherSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next(),
     usageByMeter(allocations, prevCycleStart, cycleStart),
-    // Today's TOMZN snapshots — used to supplement energy calculations and flow
+    // Last 24h TOMZN snapshots — used to supplement energy calculations and flow
     // history when the inverter is off (bypass mode). TOMZN powerW sees all power
     // flowing to the home whether from solar or grid, so it fills the gaps.
-    snapshots.find({ timestamp: { $gte: todayStart - 5 * 60_000, $lte: now } }).sort({ timestamp: 1 }).limit(5_000).toArray(),
+    snapshots.find({ timestamp: { $gte: now - 24 * 60 * 60 * 1000, $lte: now } }).sort({ timestamp: 1 }).limit(5_000).toArray(),
   ]);
   const latestInverter = latestInverterSnapshot || inverterHistory[inverterHistory.length - 1] || null;
   // Staleness check: inverter is live only if the server fetched data recently
@@ -1063,6 +1165,9 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       ...s,
       gridW: (s.gridV > 0 && s.gridW >= 200) ? s.gridW : 0,
     }));
+  // 24h-filtered version for the flow graph (the query returns 7 days for
+  // export subtraction on the daily usage chart).
+  const flow24hInverterHistory = sanitizedInverterHistory.filter((s) => s.timestamp >= now - 24 * 60 * 60 * 1000);
   const todaySanitized = sanitizedInverterHistory.filter((sample) => sample.timestamp >= todayStart - 5 * 60_000);
   // Build a set of 5-minute buckets where the home was genuinely exporting.
   // TOMZN can't distinguish import vs export — its powerW increases in both
@@ -1071,7 +1176,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   // samples in chronological order with the on-grid direction state machine,
   // so zero-crossings (import→export, export→import) are tracked correctly.
   const FLOW_BUCKET_MS = 5 * 60_000;
-  const exportBuckets = buildExportBuckets(sanitizedInverterHistory, todayTomznSnapshots, FLOW_BUCKET_MS);
+  const exportBuckets = buildExportBuckets(todaySanitized, todayTomznSnapshots, FLOW_BUCKET_MS);
   // ── TOMZN cumulative counter is the PRIMARY source for usage calculations ──
   // The allocation sum (delta-based) is a fallback when TOMZN is offline or reset.
   // TOMZN's energyKwh is a cumulative counter that never decreases (unless reset),
@@ -1079,27 +1184,52 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   const rawTodayTomzn = (todayTomznSnapshots || [])
     .filter((s) => s.energyKwh != null && s.energyKwh >= 0 && s.timestamp >= todayStart)
     .sort((a, b) => a.timestamp - b.timestamp);
-  const todayStartEnergyKwh = rawTodayTomzn.length > 0 ? finiteNumber(rawTodayTomzn[0].energyKwh) : null;
-  const currentEnergyKwh = tomznSource?.energyKwh != null ? finiteNumber(tomznSource.energyKwh) : null;
+  // Midnight baseline: pick the first NON-ZERO reading. TOMZN reports energyKwh=0
+  // when offline, so a 0 at midnight would make today's usage = the entire
+  // cumulative counter (e.g. 200), not just today's consumption. This mirrors the
+  // export-skip loop below which already skips 0 readings for the same reason.
+  const todayStartEnergyKwh = rawTodayTomzn.length > 0
+    ? finiteNumber((rawTodayTomzn.find((s) => s.energyKwh > 0) || rawTodayTomzn[0]).energyKwh)
+    : null;
+  const currentEnergyKwh = (tomznSource?.energyKwh != null && finiteNumber(tomznSource.energyKwh) > 0)
+    ? finiteNumber(tomznSource.energyKwh)
+    : null;
   // Export skip: sum of energyKwh increases during export periods today.
   // TOMZN's counter increases during both import and export; we must exclude export.
+  // Skip steps where either reading is 0 — TOMZN reports energyKwh=0 when offline,
+  // and the jump from 0 back to the real cumulative value (e.g. 0→193) is not real
+  // energy flow. Also cap each step at 1 kWh (12 kW over 5 min) to guard against
+  // any other spurious jumps.
   let exportSkipToday = 0;
   for (let i = 1; i < rawTodayTomzn.length; i += 1) {
     const prev = rawTodayTomzn[i - 1];
     const curr = rawTodayTomzn[i];
+    if (prev.energyKwh === 0 || curr.energyKwh === 0) continue;
     const bucket = Math.floor(curr.timestamp / FLOW_BUCKET_MS);
     if (exportBuckets.has(bucket)) {
-      exportSkipToday += Math.max(0, finiteNumber(curr.energyKwh, 0) - finiteNumber(prev.energyKwh, 0));
+      exportSkipToday += Math.min(1, Math.max(0, finiteNumber(curr.energyKwh, 0) - finiteNumber(prev.energyKwh, 0)));
     }
   }
   exportSkipToday = round(exportSkipToday, 3);
+  // Clamp export skip to the actual energyKwh increase — false export detection
+  // (e.g. TOMZN offline with tomznW=0 misread as "no grid draw") can cause
+  // exportSkip to exceed the real consumption, zeroing out homeKwh/gridKwh.
+  const actualIncrease = (currentEnergyKwh != null && todayStartEnergyKwh != null)
+    ? Math.max(0, currentEnergyKwh - todayStartEnergyKwh) : 0;
+  if (exportSkipToday > actualIncrease) exportSkipToday = round(actualIncrease, 3);
   // Counter reset detection: if current < start by > 1 unit, TOMZN was reset.
   // In that case, don't use the direct calculation — fall back to allocation algorithm.
   const tomznResetToday = currentEnergyKwh != null && todayStartEnergyKwh != null
     && currentEnergyKwh < todayStartEnergyKwh - 1;
   // Primary: TOMZN direct today usage (current − midnight − export skip).
-  const tomznDirectTodayUsage = (currentEnergyKwh != null && todayStartEnergyKwh != null && !tomznResetToday)
+  // Plausibility guard: a household exceeding 80 kWh in a single day is almost
+  // certainly a bad baseline (e.g. TOMZN offline at midnight reporting 0), not
+  // real consumption. Fall back to the allocation/integration algorithm instead.
+  const rawTomznDirectToday = (currentEnergyKwh != null && todayStartEnergyKwh != null && !tomznResetToday)
     ? round(Math.max(0, currentEnergyKwh - todayStartEnergyKwh - exportSkipToday), 3)
+    : null;
+  const tomznDirectTodayUsage = (rawTomznDirectToday != null && rawTomznDirectToday <= 80)
+    ? rawTomznDirectToday
     : null;
   // ── TOMZN direct since anchor (for meter reading after manual log) ──
   // When a manual reading is logged, anchorEnergyKwh stores the TOMZN cumulative
@@ -1118,9 +1248,10 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     for (let i = 1; i < sinceAnchor.length; i += 1) {
       const prev = sinceAnchor[i - 1];
       const curr = sinceAnchor[i];
+      if (prev.energyKwh === 0 || curr.energyKwh === 0) continue;
       const bucket = Math.floor(curr.timestamp / FLOW_BUCKET_MS);
       if (exportBuckets.has(bucket)) {
-        exportSkip += Math.max(0, finiteNumber(curr.energyKwh, 0) - finiteNumber(prev.energyKwh, 0));
+        exportSkip += Math.min(1, Math.max(0, finiteNumber(curr.energyKwh, 0) - finiteNumber(prev.energyKwh, 0)));
       }
     }
     return round(Math.max(0, currentEnergyKwh - anchorEnergyKwh - exportSkip), 3);
@@ -1163,7 +1294,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   // Downsample flow history to 1 point per 5-minute bucket (max 288 points/24h).
   // This prevents the frontend graph from rendering thousands of duplicate path segments.
   const flowBuckets = new Map();
-  for (const sample of sanitizedInverterHistory) {
+  for (const sample of flow24hInverterHistory) {
     const bucket = Math.floor(sample.timestamp / FLOW_BUCKET_MS) * FLOW_BUCKET_MS;
     const existing = flowBuckets.get(bucket);
     // Keep the latest sample within each 5-minute bucket.
@@ -1329,30 +1460,56 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   // ── Override dailyUsage with accurate TOMZN counter-based values ──
   // The allocation-based sum above doesn't subtract solar export energy and
   // applies meter calibration factors, causing it to drift from actual
-  // consumption (e.g., today showed 6.77 vs the accurate 5.84). For each day,
-  // compute usage from the TOMZN cumulative counter (last − first reading of
-  // the day). For today, use tomznDirectTodayUsage which also subtracts export.
+  // consumption. For each day, compute usage from the TOMZN cumulative counter
+  // (last − first reading of the day) MINUS export energy (counter increases
+  // during both import and export — export must be excluded).
   {
-    const byDay = new Map();
+    // Group TOMZN snapshots by Pakistan day.
+    const tomznByDay = new Map();
     for (const s of (recentSnapshots || [])) {
       if (s.energyKwh == null || s.energyKwh < 0) continue;
       const key = pakistanDateKey(s.timestamp);
-      if (!byDay.has(key)) byDay.set(key, []);
-      byDay.get(key).push(s);
+      if (!tomznByDay.has(key)) tomznByDay.set(key, []);
+      tomznByDay.get(key).push(s);
+    }
+    // Group inverter snapshots by Pakistan day (for export detection).
+    const invByDay = new Map();
+    for (const s of sanitizedInverterHistory) {
+      const key = pakistanDateKey(s.timestamp);
+      if (!invByDay.has(key)) invByDay.set(key, []);
+      invByDay.get(key).push(s);
     }
     for (const day of dailyUsage) {
       const key = pakistanDateKey(day.timestamp);
-      const daySnapshots = byDay.get(key);
+      const daySnapshots = tomznByDay.get(key);
       if (!daySnapshots || daySnapshots.length === 0) continue;
       daySnapshots.sort((a, b) => a.timestamp - b.timestamp);
       const first = finiteNumber(daySnapshots[0].energyKwh);
       const last = finiteNumber(daySnapshots[daySnapshots.length - 1].energyKwh);
       if (first == null || last == null) continue;
       if (last < first - 1) continue; // counter reset — keep allocation value
-      day.usage = round(Math.max(0, last - first), 2);
+      // Compute export skip for this day: sum of counter increases during
+      // export periods. Uses the same buildExportBuckets + skip logic as today.
+      const dayInv = invByDay.get(key) || [];
+      const dayExportBuckets = buildExportBuckets(dayInv, daySnapshots, FLOW_BUCKET_MS);
+      let dayExportSkip = 0;
+      for (let i = 1; i < daySnapshots.length; i += 1) {
+        const prev = daySnapshots[i - 1];
+        const curr = daySnapshots[i];
+        if (prev.energyKwh === 0 || curr.energyKwh === 0) continue;
+        const bucket = Math.floor(curr.timestamp / FLOW_BUCKET_MS);
+        if (dayExportBuckets.has(bucket)) {
+          dayExportSkip += Math.min(1, Math.max(0, finiteNumber(curr.energyKwh, 0) - finiteNumber(prev.energyKwh, 0)));
+        }
+      }
+      // Clamp export skip to the actual counter increase (safety net).
+      const dayIncrease = Math.max(0, last - first);
+      if (dayExportSkip > dayIncrease) dayExportSkip = dayIncrease;
+      day.usage = round(Math.max(0, dayIncrease - dayExportSkip), 2);
     }
   }
-  // Today: use the most accurate value (counter + export subtraction)
+  // Today: use the most accurate value (counter + export subtraction with
+  // live in-memory data, not just DB snapshots).
   if (tomznDirectTodayUsage != null && dailyUsage.length > 0) {
     dailyUsage[dailyUsage.length - 1].usage = tomznDirectTodayUsage;
   }
@@ -1601,19 +1758,21 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       const tomznSinceAnchor = computeTomznSinceAnchor(config.anchorAt, finiteNumber(config.anchorEnergyKwh));
       if (tomznSinceAnchor != null) {
         rawAfterAnchor = tomznSinceAnchor;
-        // For today's usage display: TOMZN direct since midnight is the right value.
-        meterTodayUncalibrated = tomznDirectTodayUsage != null
-          ? Math.max(0, tomznDirectTodayUsage - Array.from(METER_IDS).reduce((sum, id) =>
-              id !== meterId ? sum + (todayUsage[id] || 0) : sum, 0))
-          : meterTodayUncalibrated;
+        // For today's usage display: start from this meter's allocation-based usage
+        // (which correctly captures only the periods this meter was active today),
+        // then add any TOMZN direct excess over total allocations (live unallocated).
+        if (tomznDirectTodayUsage != null) {
+          const totalAllocationToday = Array.from(METER_IDS).reduce((sum, id) => sum + (todayUsage[id] || 0), 0);
+          const tomznDirectExcess = Math.max(0, tomznDirectTodayUsage - totalAllocationToday);
+          meterTodayUncalibrated = (todayUsage[meterId] || 0) + tomznDirectExcess;
+        }
       } else if (tomznDirectTodayUsage != null) {
         // No anchorEnergyKwh (old manual reading before this feature) — use midnight-based.
+        const totalAllocationToday = Array.from(METER_IDS).reduce((sum, id) => sum + (todayUsage[id] || 0), 0);
+        const tomznDirectExcess = Math.max(0, tomznDirectTodayUsage - totalAllocationToday);
         const allocationTodayForMeter = todayUsage[meterId] || 0;
-        const otherMetersTodayAllocation = Array.from(METER_IDS).reduce((sum, id) =>
-          id !== meterId ? sum + (todayUsage[id] || 0) : sum, 0);
-        const tomznDirectForMeter = Math.max(0, tomznDirectTodayUsage - otherMetersTodayAllocation);
-        rawAfterAnchor = rawAfterAnchor - allocationTodayForMeter + tomznDirectForMeter;
-        meterTodayUncalibrated = tomznDirectForMeter;
+        meterTodayUncalibrated = allocationTodayForMeter + tomznDirectExcess;
+        rawAfterAnchor = rawAfterAnchor - allocationTodayForMeter + meterTodayUncalibrated;
       } else if (unallocatedDelta > 0) {
         // Fallback: TOMZN offline or reset — add live unallocated consumption
         rawAfterAnchor += unallocatedDelta;
@@ -1865,6 +2024,9 @@ function registerUnifiedSolarRoutes(app, db) {
   // In-memory live cache: holds the freshest TOMZN reading for dashboard display
   // without requiring a database write on every 5s poll. Reset to null on restart.
   const liveTomznRef = { value: null };
+  // In-memory live inverter cache — same pattern as liveTomznRef, keeps the
+  // freshest inverter reading for the live payload without DB reads every 3s.
+  const liveInverterRef = { value: null };
   // Grid-flow state trackers for the on-grid direction state machine. These
   // persist between polls (in-memory, reset on restart) so the import↔export
   // zero-crossing detection works across the 5s live polls. billingFlowState is
@@ -1872,9 +2034,14 @@ function registerUnifiedSolarRoutes(app, db) {
   // dashboard display endpoints.
   const billingFlowState = createGridFlowState();
   const liveFlowState = createGridFlowState();
-  // UPS check cache — pingHome() is cached for 30s to avoid pinging on every
-  // 5s broadcast. Reset to null on restart.
+  // UPS check cache — pingHome() is cached for 10s to avoid pinging on every
+  // 2s broadcast. Reset to null on restart.
   let upsCache = null;
+  // Weather cache — the DB read for the latest weather snapshot is cached for
+  // 60s (weather changes slowly, polled every 30 min) to avoid a query on
+  // every 2s live broadcast. Included in the live payload so the frontend can
+  // auto-shift day/night/weather scenes in real time.
+  let weatherCache = { value: null, timestamp: 0 };
 
   const context = { stateCollection, snapshots, allocations, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef, billingFlowState, liveFlowState };
   const pollTomzn = async ({ forcePersist = false, force = false } = {}) => {
@@ -1886,27 +2053,62 @@ function registerUnifiedSolarRoutes(app, db) {
     }
     if (pollInFlight) return pollInFlight;
     pollInFlight = (async () => {
-      const snapshot = await requestTomzn();
-      // ── Stale-data detection ──
-      // Tuya cloud returns cached values when the TOMZN device goes offline (WiFi
-      // dies). The online_state datapoint stays "online" even though the device is
-      // unreachable. We fingerprint key values (energy, power, voltage, current)
-      // across consecutive polls. If they're identical for TOMZN_STALE_THRESHOLD
-      // polls, override isOnline to false.
+      let snapshot;
+      try {
+        snapshot = await requestTomzn();
+        // Poll succeeded — reset fail counter
+        tomznStaleTracker.failCount = 0;
+      } catch (pollErr) {
+        // ── Poll failure detection ──
+        // Local Tuya poll failed (WiFi dead, device unreachable). Increment fail
+        // counter. After TOMZN_FAIL_THRESHOLD consecutive failures, mark offline.
+        tomznStaleTracker.failCount += 1;
+        console.error(`[Solar Engine] TOMZN poll failed (${tomznStaleTracker.failCount}/${TOMZN_FAIL_THRESHOLD}):`, pollErr.message);
+        if (tomznStaleTracker.failCount >= TOMZN_FAIL_THRESHOLD) {
+          // Build an offline snapshot from the last known values
+          const lastKnown = liveTomznRef.value;
+          snapshot = {
+            energyKwh: lastKnown?.energyKwh ?? 0,
+            voltageV: 0,
+            currentA: 0,
+            powerW: 0,
+            frequencyHz: lastKnown?.frequencyHz ?? 50,
+            isOnline: false,
+            switchOn: lastKnown?.switchOn ?? false,
+            faultCode: lastKnown?.faultCode ?? 0,
+            fetchedAt: new Date().toISOString(),
+          };
+        } else {
+          // Not enough failures yet — return last known good data
+          if (liveTomznRef.value) {
+            return { record: { ...liveTomznRef.value, timestamp: now }, allocatedDelta: 0 };
+          }
+          throw pollErr;
+        }
+      }
+      // ── Stale-data detection (fingerprint) ──
+      // Even when the local poll succeeds, the device-sharing SDK may return
+      // cached phase_a values. We fingerprint key values across consecutive
+      // polls. If they're identical for TOMZN_STALE_THRESHOLD polls, override
+      // isOnline to false.
       //
-      // After ~30 minutes Tuya cloud eventually reports online_state: "offline"
-      // for real. When that happens, we trust it directly and drop the fingerprint
-      // approach — no need to count anymore. When online_state returns to "online",
-      // fingerprint detection resumes automatically.
+      // STANDBY EXEMPTION: When the user manually turns the TOMZN switch OFF
+      // (standby / intentional grid cut), the device is still accessible and
+      // replies to polls — it just reports 0V/0A/0W because no power flows.
+      // Identical zero readings are EXPECTED in standby, not a sign of stale
+      // cached data. Skip fingerprint detection when switchOn is false so the
+      // device stays "online" and the frontend shows "Standby" instead of
+      // "Offline". True offline is handled by the fail counter (10 consecutive
+      // poll failures → unreachable).
       const tuyaReportsOnline = snapshot.isOnline;
+      const switchOn = snapshot.switchOn;
       const fingerprint = `${snapshot.energyKwh}|${snapshot.powerW}|${snapshot.voltageV}|${snapshot.currentA}`;
-      if (!tuyaReportsOnline) {
-        // Tuya cloud says offline — trust this directly, reset fingerprint tracking
+      if (!tuyaReportsOnline || !switchOn) {
+        // Device reported offline, OR switch is off (standby) — reset fingerprint
+        // counter. In standby, identical readings are normal, not stale.
         tomznStaleTracker.fingerprint = null;
         tomznStaleTracker.count = 0;
-        // snapshot.isOnline is already false from the API
       } else {
-        // Tuya cloud says online — check for stale cached data via fingerprint
         if (fingerprint === tomznStaleTracker.fingerprint) {
           tomznStaleTracker.count += 1;
         } else {
@@ -1917,8 +2119,29 @@ function registerUnifiedSolarRoutes(app, db) {
           snapshot.isOnline = false;
         }
       }
-      const energyKwh = finiteNumber(snapshot.energyKwh);
-      if (energyKwh == null || energyKwh < 0) throw new Error("TOMZN returned an invalid cumulative energy value");
+      // ── Inverter mode cross-check ──
+      // When the inverter switches to battery mode (QMOD="B"), the grid is down.
+      // TOMZN (grid meter) can't be online if there's no grid. Use this as a
+      // secondary offline signal.
+      //
+      // STANDBY EXEMPTION: When the user manually turned the TOMZN switch OFF,
+      // they intentionally cut the grid — the inverter switching to battery
+      // mode is the expected consequence, not a fault. The TOMZN device itself
+      // is still accessible and replying to polls. Skip this cross-check when
+      // switchOn is false.
+      const invSnap = liveInverterRef.value;
+      if (invSnap && invSnap.inverterMode === "B" && snapshot.isOnline && switchOn) {
+        snapshot.isOnline = false;
+        snapshot.voltageV = 0;
+        snapshot.currentA = 0;
+        snapshot.powerW = 0;
+      }
+      // If energyKwh is null (datapoint unavailable), fall back to last known value
+      let energyKwh = finiteNumber(snapshot.energyKwh);
+      if (energyKwh == null || energyKwh < 0) {
+        energyKwh = liveTomznRef.value?.energyKwh ?? 0;
+        snapshot.energyKwh = energyKwh;
+      }
       // Only persist to the database once per minute (or when explicitly forced by
       // changeover/manual-reading endpoints that need to close the billing interval).
       const latestStored = await snapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
@@ -1940,8 +2163,7 @@ function registerUnifiedSolarRoutes(app, db) {
   };
   const pollInverter = async ({ force = false } = {}) => {
     const latest = await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
-    // `force` bypasses the 5s max-age guard so manual refresh / app-open always hits InverterZone.
-    if (!process.env.INVERTERZONE_DEVICE_ID || (!force && latest && Date.now() - latest.timestamp < INVERTER_POLL_MAX_AGE_MS)) return latest;
+    if (!force && latest && Date.now() - latest.timestamp < INVERTER_POLL_MAX_AGE_MS) return latest;
     if (inverterPollInFlight) return inverterPollInFlight;
     inverterPollInFlight = requestInverterZone()
       .then(async (snapshot) => {
@@ -1960,6 +2182,7 @@ function registerUnifiedSolarRoutes(app, db) {
             { upsert: true }
           );
         }
+        liveInverterRef.value = snapshot;
         return snapshot;
       })
       .catch(async (error) => {
@@ -1977,6 +2200,7 @@ function registerUnifiedSolarRoutes(app, db) {
             { upsert: true }
           );
         }
+        liveInverterRef.value = offline;
         return offline;
       })
       .finally(() => { inverterPollInFlight = null; });
@@ -1987,7 +2211,13 @@ function registerUnifiedSolarRoutes(app, db) {
     if (latest && Date.now() - latest.timestamp < WEATHER_POLL_MAX_AGE_MS) return latest;
     if (weatherPollInFlight) return weatherPollInFlight;
     weatherPollInFlight = requestWeather()
-      .then(async (snapshot) => { await weatherSnapshots.insertOne(snapshot); return snapshot; })
+      .then(async (snapshot) => {
+        await weatherSnapshots.insertOne(snapshot);
+        // Invalidate weatherCache so the next buildLivePayload reads the
+        // fresh snapshot (sunrise/sunset for the current day).
+        weatherCache = { value: null, timestamp: 0 };
+        return snapshot;
+      })
       .catch(() => latest)
       .finally(() => { weatherPollInFlight = null; });
     return weatherPollInFlight;
@@ -2017,11 +2247,17 @@ function registerUnifiedSolarRoutes(app, db) {
     const tomznSource = (liveOverride && (!state.lastTomzn || liveOverride.timestamp >= state.lastTomzn.timestamp))
       ? liveOverride
       : state.lastTomzn;
-    const latestInverter = await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
+    const latestInverter = liveInverterRef.value || await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
     const inverter = latestInverter ? {
       solarW: latestInverter.solarW || 0,
       solarV: latestInverter.solarV || 0,
       solarA: latestInverter.solarA || 0,
+      pv1V: latestInverter.pv1V || 0,
+      pv1A: latestInverter.pv1A || 0,
+      pv1W: latestInverter.pv1W || 0,
+      pv2V: latestInverter.pv2V || 0,
+      pv2A: latestInverter.pv2A || 0,
+      pv2W: latestInverter.pv2W || 0,
       gridW: latestInverter.gridW || 0,
       gridWRaw: latestInverter.gridWRaw || 0,
       gridV: latestInverter.gridV || 0,
@@ -2035,10 +2271,14 @@ function registerUnifiedSolarRoutes(app, db) {
       acOutHz: latestInverter.acOutHz || 0,
       inverterMode: latestInverter.inverterMode || "unknown",
       inverterFault: latestInverter.inverterFault || "UNKNOWN",
+      temperatureC: latestInverter.temperatureC || 0,
+      ratedOutputW: latestInverter.ratedOutputW || 0,
+      signal: latestInverter.signal ?? null,
+      firmware: latestInverter.firmware || null,
       isOnline: latestInverter.isOnline !== false,
       isLive: Date.now() - latestInverter.timestamp < 10 * 60 * 1000,
-      fetchedAt: latestInverter.fetchedAt || "",
-    } : { solarW: 0, solarV: 0, solarA: 0, gridW: 0, gridWRaw: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", isOnline: false, isLive: false, fetchedAt: "" };
+      fetchedAt: latestInverter.fetchedAt || new Date(latestInverter.timestamp).toISOString(),
+    } : { solarW: 0, solarV: 0, solarA: 0, pv1V: 0, pv1A: 0, pv1W: 0, pv2V: 0, pv2A: 0, pv2W: 0, gridW: 0, gridWRaw: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, firmware: null, isOnline: false, isLive: false, fetchedAt: "" };
     // Compute grid flow (mode + direction + computed home) for the live hero.
     // Uses liveFlowState for on-grid zero-crossing tracking across 5s polls.
     // When the TOMZN meter is offline (WAPDA cut off, WiFi dead), Tuya cloud
@@ -2048,31 +2288,57 @@ function registerUnifiedSolarRoutes(app, db) {
     const tomznFault = tomznSource?.faultCode || 0;
     const tomznPowerForFlow = (!tomznOnline || tomznFault === 2048 || tomznFault === 8192) ? 0 : tomznSource?.powerW;
     const liveFlow = determineGridFlow(latestInverter, tomznPowerForFlow, liveFlowState, Date.now());
+    // When the grid is down (TOMZN offline or inverter in battery mode), there's
+    // no grid to export to. Force direction to "idle" to prevent phantom export.
+    const inverterOnBattery = latestInverter?.inverterMode === "B";
+    const gridDown = !tomznOnline || inverterOnBattery;
     const gridFlow = {
-      mode: liveFlow.mode,
-      direction: liveFlow.direction,
+      mode: gridDown ? (inverterOnBattery ? "battery" : liveFlow.mode) : liveFlow.mode,
+      direction: gridDown ? "idle" : liveFlow.direction,
       homeW: Math.round(liveFlow.homeW),
-      gridExchangeW: Math.round(liveFlow.gridExchangeW),
+      gridExchangeW: gridDown ? 0 : Math.round(liveFlow.gridExchangeW),
       solarW: Math.round(finiteNumber(latestInverter?.solarW, 0)),
       loadW: Math.round(finiteNumber(latestInverter?.loadW, 0)),
     };
     // UPS check: when BOTH inverter AND grid are offline (no power source),
     // ping the home IP to determine if the router is still on UPS backup.
-    // Cached for 30s to avoid pinging on every 5s broadcast.
+    // Cached for 10s to avoid pinging on every 2s broadcast.
+    // Mode "B" (Battery) means the inverter is actively powering the home from
+    // battery + solar — NOT offline, so UPS check should NOT trigger.
     const inverterOffline = !latestInverter || latestInverter.isOnline === false ||
-      latestInverter.inverterMode === "S" ||
+      latestInverter.inverterMode === "S" || latestInverter.inverterMode === "offline" ||
       (latestInverter.gridV === 0 && latestInverter.solarW === 0 && latestInverter.gridW === 0 && latestInverter.loadW === 0);
     const gridOffline = !tomznOnline || tomznFault === 2048 || tomznFault === 8192;
     let ups = null;
     if (inverterOffline && gridOffline) {
       const now = Date.now();
-      if (!upsCache || now - upsCache.timestamp > 30_000) {
+      if (!upsCache || now - upsCache.timestamp > 10_000) {
         const reachable = await pingHome();
         upsCache = { active: reachable, label: reachable ? "UPS" : "Power Down", timestamp: now };
       }
       ups = { active: upsCache.active, label: upsCache.label };
     }
-    return { tomznLive: publicTomzn(tomznSource), inverter, gridFlow, ups };
+    // Include weather in the live payload so the frontend can auto-shift
+    // day/night/weather scenes without waiting for a full dashboard sync.
+    // Weather changes slowly (polluted every 30 min), so cache the DB read
+    // for 60s to avoid a query on every 2s broadcast.
+    let weather = weatherCache.value;
+    if (!weather || Date.now() - weatherCache.timestamp > 60_000) {
+      const latestWeather = await weatherSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
+      weather = latestWeather ? {
+        code: latestWeather.code,
+        isDay: latestWeather.isDay,
+        cloudCover: latestWeather.cloudCover,
+        precipitation: latestWeather.precipitation,
+        temperatureC: latestWeather.temperatureC,
+        sunrise: latestWeather.sunrise || null,
+        sunset: latestWeather.sunset || null,
+        fetchedAt: new Date(latestWeather.timestamp).toISOString(),
+        isLive: Date.now() - latestWeather.timestamp < WEATHER_POLL_MAX_AGE_MS * 2,
+      } : { code: 0, isDay: pakistanHour(Date.now()) >= 6 && pakistanHour(Date.now()) < 19, cloudCover: 0, precipitation: 0, temperatureC: 0, sunrise: null, sunset: null, fetchedAt: "", isLive: false };
+      weatherCache = { value: weather, timestamp: Date.now() };
+    }
+    return { tomznLive: publicTomzn(tomznSource), inverter, gridFlow, ups, weather };
   };
 
   // SSE subscribers for /live/stream — pushed instantly after each 5s
@@ -2116,9 +2382,15 @@ function registerUnifiedSolarRoutes(app, db) {
     res.flushHeaders();
 
     liveClients.add(res);
-    // Send current state immediately so the client doesn't wait up to 5s
+    // Send current cached state immediately so the client doesn't wait
     // for the next background poll.
     void broadcastLive();
+    // Trigger a non-blocking fresh poll so the client gets truly fresh
+    // data from Tuya/InverterZone within 1-3s via SSE push (without
+    // blocking the initial cached response above).
+    void Promise.all([pollTomzn({ force: true }), pollInverter({ force: true })])
+      .then(() => broadcastLive())
+      .catch(() => {});
 
     // SSE keep-alive comment every 25s (prevents proxy/load-balancer timeouts)
     const ping = setInterval(() => {
@@ -2441,23 +2713,45 @@ function registerUnifiedSolarRoutes(app, db) {
       .catch((error) => console.error("[Solar Engine] initial inverter downsample failed:", error.message));
   }, 5_000);
 
-  // Unified 5s background poll loop — polls both TOMZN + inverter then
-  // broadcasts to all SSE clients. pollTomzn/pollInverter use pollInFlight
-  // deduplication so concurrent force=true requests (e.g. /live?force=true on
-  // app open) won't double-poll Tuya/InverterZone.
+  // Unified 2s background poll loop — polls both TOMZN + inverter in parallel
+  // and broadcasts to all SSE clients after EACH individual poll completes (not
+  // waiting for both). This cuts tag-change latency significantly: TOMZN-dependent
+  // tags (import/standby/offline) update ~1-2s after the device state changes,
+  // instead of waiting for the slower inverter poll to finish first.
+  // pollTomzn/pollInverter use pollInFlight deduplication so concurrent force=true
+  // requests (e.g. /live?force=true on app open) won't double-poll Tuya/InverterZone.
   setInterval(async () => {
     try {
-      await Promise.all([
-        pollTomzn({ force: true }).catch((e) => console.error("[Solar Engine] TOMZN poll failed:", e.message)),
-        pollInverter({ force: true }).catch((e) => console.error("[Solar Engine] inverter poll failed:", e.message)),
-      ]);
+      // Broadcast after each poll completes so subscribers get fresh data
+      // as soon as it's available, instead of waiting for both to finish.
+      const tomznP = pollTomzn({ force: true })
+        .then(() => broadcastLive())
+        .catch((e) => console.error("[Solar Engine] TOMZN poll failed:", e.message));
+      const inverterP = pollInverter({ force: true })
+        .then(() => broadcastLive())
+        .catch((e) => console.error("[Solar Engine] inverter poll failed:", e.message));
+      await Promise.all([tomznP, inverterP]);
+      // Final broadcast with both fresh — ensures gridFlow uses latest from both.
       await broadcastLive();
-    } catch (e) { console.error("[Solar Engine] 5s poll loop failed:", e.message); }
-  }, 5_000);
+    } catch (e) { console.error("[Solar Engine] 2s poll loop failed:", e.message); }
+  }, 2_000);
 
-  // Cleanup: delete inverter snapshots older than today's start (flow graph is
-  // today-only, resets at Pakistan midnight). Old inverter data is not used
-  // anywhere else, so it's safe to delete.
+  // Weather poll loop — polls weather every 10 minutes so sunrise/sunset are
+  // always for the current day (not stale from yesterday). Without this, the
+  // scene resolver compares Date.now() against yesterday's sunset, which makes
+  // it think it's permanently night after the first sunset. pollWeather() has
+  // a 30-min cache built in, so the Open-Meteo API is only hit every 30 min.
+  // Broadcasts after each poll so SSE clients get the fresh weather + scene.
+  setInterval(async () => {
+    try {
+      await pollWeather();
+      await broadcastLive();
+    } catch (e) { console.error("[Solar Engine] weather poll loop failed:", e.message); }
+  }, 10 * 60_000);
+
+  // Cleanup: delete inverter snapshots older than 7 days (needed for export
+  // subtraction on the 7-day daily usage chart). Old inverter data beyond 7
+  // days is not used anywhere else, so it's safe to delete.
   // TOMZN snapshots are kept for 30 days — they're needed for billing cycle calculations,
   // load status history, daily/hourly summaries, and the /tomzn/history endpoint.
   // Weather snapshots older than 7 days are also pruned (only the latest is ever used).
@@ -2465,7 +2759,7 @@ function registerUnifiedSolarRoutes(app, db) {
   // was written before the throttling took effect.
   setInterval(async () => {
     try {
-      const inverterCutoff = startOfPakistanDay(Date.now());
+      const inverterCutoff = Date.now() - 7 * 86_400_000;
       const tomznCutoff = Date.now() - 30 * 86_400_000;
       const weatherCutoff = Date.now() - 7 * 86_400_000;
       await inverterSnapshots.deleteMany({ timestamp: { $lt: inverterCutoff } });

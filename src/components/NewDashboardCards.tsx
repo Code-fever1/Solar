@@ -62,7 +62,7 @@ function useCardTheme(isLight: boolean): CardTheme {
 // text. Text colors are brightened (vs the base dark theme) to guarantee
 // WCAG AA contrast (≥3:1 muted, ≥4.5:1 secondary/primary) even for the
 // lightest scene (morning-cloud, seam 148,142,140 → card rgb(62,60,59)).
-export function makeSceneCardTheme(seam: [number, number, number]): CardTheme {
+function makeSceneCardTheme(seam: [number, number, number]): CardTheme {
   const d = (v: number) => Math.round(v * 0.42);
   const [r, g, b] = seam;
   // Adapt text/overlay colors for light scenes (fog, morning-cloud) where

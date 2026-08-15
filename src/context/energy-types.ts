@@ -26,6 +26,12 @@ export type InverterTelemetry = {
   solarW: number;
   solarV: number;
   solarA: number;
+  pv1V: number;
+  pv1A: number;
+  pv1W: number;
+  pv2V: number;
+  pv2A: number;
+  pv2W: number;
   gridW: number;
   gridWRaw: number;
   gridV: number;
@@ -42,6 +48,7 @@ export type InverterTelemetry = {
   temperatureC: number;
   ratedOutputW: number;
   signal: number | null;
+  firmware: string | null;
   sourceTime: string | null;
   fetchedAt: string;
   isLive: boolean;

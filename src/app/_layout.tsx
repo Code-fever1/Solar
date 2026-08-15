@@ -9,11 +9,12 @@ import { useFonts } from "expo-font";
 import { DarkTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useRef } from "react";
-import { AppState, Platform } from "react-native";
+import { AppState, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { EnergyProvider } from "@/context/EnergyContext";
+import { IdleProvider, useIdle } from "@/context/IdleContext";
 import { SceneThemeProvider } from "@/context/SceneThemeContext";
 import { ensureOverlayPermission, startOverlay, stopOverlay } from "@/native/FloatingOverlay";
 
@@ -101,17 +102,34 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
     <SafeAreaProvider>
       <ThemeProvider value={DarkTheme}>
+        <IdleProvider>
           <EnergyProvider>
           <SceneThemeProvider>
+            <IdleTouchGate>
             <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0B0F1A" } }}>
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="overlay-editor" options={{ animation: "slide_from_right" }} />
               <Stack.Screen name="+not-found" />
             </Stack>
+            </IdleTouchGate>
           </SceneThemeProvider>
           </EnergyProvider>
+        </IdleProvider>
       </ThemeProvider>
     </SafeAreaProvider>
     </GestureHandlerRootView>
+  );
+}
+
+function IdleTouchGate({ children }: { children: React.ReactNode }) {
+  const { resetIdleTimer } = useIdle();
+  return (
+    <View
+      style={{ flex: 1 }}
+      onTouchStart={resetIdleTimer}
+      onTouchMove={resetIdleTimer}
+    >
+      {children}
+    </View>
   );
 }

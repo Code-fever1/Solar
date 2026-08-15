@@ -2550,7 +2550,6 @@ async function startServer() {
     });
     // ────────────────────────────────────────────────────────────────────────
 
-    require("./tuya_routes.js").registerTuyaRoutes(app);
     require("./unified_solar_routes.js").registerUnifiedSolarRoutes(app, client.db(dbName));
 
     app.listen(port, () => {
