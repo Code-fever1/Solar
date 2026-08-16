@@ -10,11 +10,13 @@ import { withAlpha } from "@/utils/ColorInterpolation";
 export function UsageSummaryCard() {
   const { home } = useEnergy();
   const theme = useSceneTheme();
-  const dailyData = (home.dailyUsage || []).map((item, index, all) => ({
-    day: item.label,
-    val: item.usage,
-    active: index === all.length - 1,
-  }));
+  const dailyData = (home.dailyUsage || []).map((item, index, all) => {
+    const isToday = index === all.length - 1;
+    // Today in the 7-day series can be 0 or stale when TOMZN is offline at
+    // dashboard-build time. Always prefer the live home.todayUsage for today.
+    const val = isToday && (home.todayUsage || 0) > 0 ? home.todayUsage : item.usage;
+    return { day: item.label, val, active: isToday };
+  });
   const maxVal = Math.max(1, ...dailyData.map((item) => item.val));
 
   const periodDay            = home.periodDay            || 0;

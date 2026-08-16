@@ -254,10 +254,12 @@ export const NewDashboard = memo(function NewDashboard() {
   // the "suddenly dim at 436W" bug. The checks below catch genuinely-off states:
   //   isOnline === false  → backend returned an offline snapshot
   //   inverterMode === "S" → inverter reports standby
-  //   all readings zero    → inverter is on but producing nothing
+  //   inverterMode === "offline" → backend confirmed the inverter is unreachable
+  // All-zero readings alone are not enough — a single poll timeout used to
+  // zero the snapshot and flash Offline / UPS over Solar Only.
   const rawInverterOff = inverter.isOnline === false ||
     inverter.inverterMode === "S" ||
-    (inverter.gridV === 0 && inverter.solarW === 0 && inverter.gridW === 0 && inverter.loadW === 0);
+    inverter.inverterMode === "offline";
   // Debounce online→offline transitions by 20 seconds to suppress transient
   // 2-5s flicker caused by the inverter's 1-2 min update interval. Offline→online
   // transitions are immediate so recovery shows without delay.

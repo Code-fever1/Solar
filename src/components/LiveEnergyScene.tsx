@@ -683,9 +683,15 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     : "On Pace";
   const { modeLabel, modeColor } = (() => {
     if (offline) return { modeLabel: "System Offline", modeColor: "#EF4C4C" };
-    // UPS takes priority over wapda cutoff — when both inverter AND grid are down,
-    // the backend pings the home IP. UPS active = "UPS" (orange), failed = "Power Down" (red).
-    if (ups) return { modeLabel: ups.active ? "UPS" : "Power Down", modeColor: ups.active ? "#F8C653" : "#EF4C4C" };
+    // Solar / Hybrid / On-Grid take priority over UPS. A leftover `ups` object
+    // from a stale cache or a single inverter timeout must never cover a
+    // still-producing inverter (the Solar Only → UPS flicker).
+    if (solarProducing && gridImporting) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
+    if (solarProducing && relayOnIdle) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
+    if (solarProducing && !gridImporting) return { modeLabel: "Solar Only", modeColor: "#F9C641" };
+    // UPS only when the inverter is actually off AND the backend confirmed
+    // both sources are down. Transient poll failures never reach here now.
+    if (ups && inverterOff) return { modeLabel: ups.active ? "UPS" : "Power Down", modeColor: ups.active ? "#F8C653" : "#EF4C4C" };
     if (wapdaCutOff) return { modeLabel: "Wapda Cut Off", modeColor: "#EF4C4C" };
     if (inverterOff && gridImporting) return { modeLabel: "Bypass Mode", modeColor: "#F8C653" };
     // On-grid mode: changeover on WAPDA, loadW ≈ 0, solar injecting to grid bus.
@@ -695,12 +701,6 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     if (onGridMode && gridImporting) return { modeLabel: "On-Grid · Importing", modeColor: "#6E9BFF" };
     if (onGridMode) return { modeLabel: "On-Grid", modeColor: "#6E9BFF" };
     if (isExporting && canExport) return { modeLabel: "Exporting", modeColor: "#6E9BFF" };
-    if (solarProducing && gridImporting) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
-    // Solar producing, relay ON but no power flowing → still "Hybrid" mode,
-    // but pace label will show "Idle" instead of High/Low/On Pace.
-    if (solarProducing && relayOnIdle) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
-    // Solar producing, relay OFF (standby/cutoff) → true Solar Only
-    if (solarProducing && !gridImporting) return { modeLabel: "Solar Only", modeColor: "#F9C641" };
     if (solarLow && gridImporting) return { modeLabel: "Wapda Importing", modeColor: paceColor };
     if (gridImporting) return { modeLabel: "Wapda Importing", modeColor: paceColor };
     if (wapdaStandby) return { modeLabel: solarProducing ? "Solar Only" : "Wapda Standby", modeColor: solarProducing ? "#F9C641" : "#F8C653" };

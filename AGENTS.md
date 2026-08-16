@@ -70,8 +70,10 @@ Files to deploy (depending on what changed):
 | 30s | `/api/solar/dashboard/sync?since=N` | 551 bytes (no change) or ~50KB (changed) | Full dashboard delta |
 | 60s | `/api/solar/flow-history` | varies | Chart data |
 
-- On app open / foreground: `fetchLive(true)` forces fresh Tuya/inverter poll for instant hero
+- On app open / foreground: `fetchLive(false)` first (cached live payload, ~100ms) so hero + Solar Only/UPS tag paint immediately, then `fetchLive(true)` + dashboard sync + flow history in the background
 - `dataVersion` tracking: backend increments on every data mutation, frontend sends its version, backend returns `{changed:false}` if match
+- Inverter offline requires 4 consecutive poll failures (~20s). A single timeout/hang-up keeps the last good snapshot. UPS only when inverter is actually offline (not mode B / not producing)
+- TOMZN `energyKwh=0` is treated as offline garbage, never as a real counter. Last known positive kWh is recovered from DB on restart so today's usage cannot become 0 or ~200
 
 ## Build Configuration
 

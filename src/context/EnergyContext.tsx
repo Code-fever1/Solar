@@ -427,7 +427,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   // Apply live data (tomznLive + inverter + gridFlow) to the snapshot. Shared
   // by both fetchLive() and the SSE subscription handler so the merge logic
   // stays DRY.
-  const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any } | null | undefined) => {
+  const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any } | null | undefined) => {
     if (!data || (!data.tomznLive && !data.inverter)) return;
     setSnapshot((prev) => {
       if (!prev) return prev;
@@ -437,8 +437,12 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         inverter: data.inverter ?? prev.inverter,
         gridFlow: data.gridFlow ?? prev.gridFlow,
         weather: data.weather ?? prev.weather,
+        // Live payload owns the UPS tag. A leftover cache value from last night's
+        // outage must not keep showing "UPS" until the 30s dashboard sync.
+        ups: data.ups !== undefined ? data.ups : prev.ups,
       };
     });
+    setLastSyncedAt(Date.now());
     setIsOffline(false);
     setError(null);
     setLoading(false);
@@ -448,12 +452,13 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   // backend cache and get truly fresh data from Tuya/inverter APIs instantly.
   // During normal operation the SSE subscription (startLiveStream) handles
   // updates — this is only for the initial foreground burst.
-  const fetchLive = async (force = false) => {
+  const fetchLive = async (force = false): Promise<boolean> => {
     try {
       const data = await request(`/live${force ? "?force=true" : ""}`);
       applyLive(data);
+      return true;
     } catch {
-      // Live fetch is best-effort — the full dashboard will follow right after.
+      return false;
     }
   };
 
@@ -477,21 +482,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       } else if (data.tomznLive || data.inverter) {
         // Nothing changed — patch only the live hero data into the existing snapshot
         dataVersionRef.current = data.dataVersion;
-        setSnapshot((prev) => {
-          if (!prev) return prev;
-          const tomznChanged = data.tomznLive && JSON.stringify(data.tomznLive) !== JSON.stringify(prev.tomznLive);
-          const inverterChanged = data.inverter && JSON.stringify(data.inverter) !== JSON.stringify(prev.inverter);
-          if (!tomznChanged && !inverterChanged) return prev; // no change at all — skip re-render
-          return {
-            ...prev,
-            tomznLive: data.tomznLive ?? prev.tomznLive,
-            inverter: data.inverter ?? prev.inverter,
-            gridFlow: data.gridFlow ?? prev.gridFlow,
-          };
-        });
-        setIsOffline(false);
-        setError(null);
-        setLastSyncedAt(Date.now());
+        applyLive(data);
       }
     } catch (cause) {
       // Don't immediately go offline on a single sync failure — the 5s live poll
@@ -531,9 +522,10 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         const cached = raw ? JSON.parse(raw) as StoredDashboard : null;
         if (!disposed && cached?.snapshot?.meters && Number.isFinite(cached.savedAt)) {
           cacheRef.current = { snapshot: normaliseSnapshot(cached.snapshot), savedAt: cached.savedAt };
-          setLastSyncedAt(cached.savedAt);
-          applySnapshot(estimateOfflineDashboard(cacheRef.current.snapshot, cached.savedAt), { persist: false, clearError: false });
-          setIsOffline(true);
+          // Paint the last snapshot instantly so the hero + tag appear on first
+          // frame. Do NOT mark the app offline or stamp lastSyncedAt with the
+          // cache age — that was the "7h ago" flash and the stale UPS tag.
+          applySnapshot(cacheRef.current.snapshot, { persist: false, clearError: false });
           setLoading(false);
         }
         const queued = await readPendingOperations();
@@ -542,27 +534,18 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         // A bad cache must never prevent the fresh server engine from loading.
       }
       if (!disposed) {
-        // Phase 1: force-fetch fresh live data from the backend (bypasses the
-        // backend's in-memory cache so Tuya/inverter are polled directly).
-        // The cached AsyncStorage snapshot is already displayed instantly
-        // above, so the user sees something immediately while fresh data loads.
-        let initialFetchOk = false;
-        try {
-          await fetchLive(true);
-          initialFetchOk = true;
-        } catch {
-          // Internet not available yet — retry loop will handle it
-        }
-        // Phase 2: full dashboard sync. Reset dataVersionRef to 0 so the
-        // delta sync always returns the full dashboard on app open (not a
-        // stale "changed: false" that would keep old meters/home/energy).
+        // Phase 1 (instant): cached in-memory live payload. Backend does not
+        // hit Tuya/inverter, so the hero + Solar Only / UPS tag update in ~100ms.
+        const initialFetchOk = await fetchLive(false);
+        // Phase 2 (background): force a real device poll + full dashboard + chart.
+        // Reset dataVersion so we get the complete snapshot, not {changed:false}.
         if (initialFetchOk) {
           dataVersionRef.current = 0;
+          void fetchLive(true);
           void syncDashboard();
           void loadFlowHistory();
-        }
-        // Start retry loop if initial fetch failed (no internet on app open)
-        if (!initialFetchOk) {
+        } else {
+          setIsOffline(true);
           startRetryLoopRef.current?.();
         }
       }
@@ -636,11 +619,10 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
     const onAppStateChange = (state: AppStateStatus) => {
       if (state === "active") {
-        // App came to foreground — force-fetch fresh live data immediately
-        // (bypasses backend cache so Tuya/inverter are polled directly).
-        // Reset dataVersionRef so the dashboard sync returns the full
-        // dashboard instead of a stale "changed: false".
+        // App came to foreground. Cached live first (hero + tag instantly),
+        // then a forced device poll + full dashboard + chart in the background.
         dataVersionRef.current = 0;
+        void fetchLive(false);
         void fetchLive(true);
         void syncDashboard();
         void loadFlowHistory();
@@ -661,17 +643,14 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     const startRetryLoop = () => {
       if (retryInterval) return;
       retryInterval = setInterval(async () => {
-        try {
-          await fetchLive(true);
-          // Success — internet is back, stop retrying and do a full sync
-          if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
-          dataVersionRef.current = 0;
-          void syncDashboard();
-          void loadFlowHistory();
-          startLiveStream();
-        } catch {
-          // Still offline — keep retrying
-        }
+        const ok = await fetchLive(false);
+        if (!ok) return;
+        if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
+        dataVersionRef.current = 0;
+        void fetchLive(true);
+        void syncDashboard();
+        void loadFlowHistory();
+        startLiveStream();
       }, 3_000);
     };
     // Expose so onAppStateChange can restart it if needed

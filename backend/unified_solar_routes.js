@@ -18,6 +18,11 @@ const PAKISTAN_OFFSET = "+05:00";
 const INVERTER_LOCAL_HOST = "113.203.197.44";
 const INVERTER_LOCAL_PORT = 3286;
 const INVERTER_POLL_MAX_AGE_MS = 3_000;
+// A single InverterZone timeout must NOT flip the inverter to offline.
+// The local port-forward drops packets often (logs show 6s bursts of timeouts).
+// Require several consecutive failures before publishing an offline snapshot,
+// matching TOMZN's fail-threshold pattern. ~20s at the 5s background poll.
+const INVERTER_FAIL_THRESHOLD = 4;
 // Live cache is refreshed at most every 3s so the dashboard stays responsive
 // without hitting Tuya on every frontend poll.
 const TOMZN_LIVE_MAX_AGE_MS = 3_000;
@@ -399,7 +404,7 @@ function parseInverterRealTime(str) {
   return utcMs;
 }
 
-function requestJson(options, body) {
+function requestJson(options, body, timeoutMs = 12_000) {
   const transport = (options.protocol === "http:" || options.port) ? http : https;
   return new Promise((resolve, reject) => {
     const request = transport.request(options, (response) => {
@@ -412,7 +417,7 @@ function requestJson(options, body) {
         try { resolve(JSON.parse(raw)); } catch (error) { reject(error); }
       });
     });
-    request.setTimeout(12_000, () => request.destroy(new Error("Remote request timed out")));
+    request.setTimeout(timeoutMs, () => request.destroy(new Error("Remote request timed out")));
     request.on("error", reject);
     if (body) request.write(body);
     request.end();
@@ -434,13 +439,15 @@ function requestJson(options, body) {
 const INVERTER_RATED_W = 10000;
 
 async function requestInverterZone() {
+  // 4s timeout — a hung inverter must not stall /live or the 5s poller.
+  // Transient timeouts are absorbed by INVERTER_FAIL_THRESHOLD, not shown as offline.
   const response = await requestJson({
     hostname: INVERTER_LOCAL_HOST,
     port: INVERTER_LOCAL_PORT,
     path: "/livejson",
     method: "GET",
     headers: { Accept: "application/json" },
-  });
+  }, null, 4_000);
   if (!response || !response.LiveData) {
     return makeOfflineInverterSnapshot();
   }
@@ -1063,7 +1070,7 @@ async function applyHistoricalChangeover(allocations, fromMeter, toMeter, effect
   }
 }
 
-async function buildDashboard({ stateCollection, allocations, snapshots, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef, liveFlowState }) {
+async function buildDashboard({ stateCollection, allocations, snapshots, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef, liveInverterRef, liveFlowState }) {
   const now = Date.now();
   let state = await ensureState(stateCollection);
   state = await rolloverBillingCycle({ stateCollection, allocations }, state, now);
@@ -1102,7 +1109,12 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     // flowing to the home whether from solar or grid, so it fills the gaps.
     snapshots.find({ timestamp: { $gte: now - 24 * 60 * 60 * 1000, $lte: now } }).sort({ timestamp: 1 }).limit(5_000).toArray(),
   ]);
-  const latestInverter = latestInverterSnapshot || inverterHistory[inverterHistory.length - 1] || null;
+  // Prefer the in-memory live inverter cache (same as TOMZN) so a single
+  // poll timeout that was never written to the live cache can't make the
+  // dashboard report the inverter as offline.
+  const latestInverter = (liveInverterRef?.value && liveInverterRef.value.isOnline !== false)
+    ? liveInverterRef.value
+    : (latestInverterSnapshot || inverterHistory[inverterHistory.length - 1] || null);
   // Staleness check: inverter is live only if the server fetched data recently
   // AND the inverter's own realTime (sourceTime) is not more than 3 min behind.
   // The 3-min threshold matches the poll-time check (line 101) — the inverter
@@ -1484,8 +1496,13 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       const daySnapshots = tomznByDay.get(key);
       if (!daySnapshots || daySnapshots.length === 0) continue;
       daySnapshots.sort((a, b) => a.timestamp - b.timestamp);
-      const first = finiteNumber(daySnapshots[0].energyKwh);
-      const last = finiteNumber(daySnapshots[daySnapshots.length - 1].energyKwh);
+      // Skip energyKwh=0 — TOMZN reports 0 when offline. Using 0 as first/last
+      // either inflates the day to the full cumulative counter (~200) or,
+      // when the last snapshot of today is also 0, zeros the day out.
+      const valid = daySnapshots.filter((s) => finiteNumber(s.energyKwh, 0) > 0);
+      if (valid.length === 0) continue;
+      const first = finiteNumber(valid[0].energyKwh);
+      const last = finiteNumber(valid[valid.length - 1].energyKwh);
       if (first == null || last == null) continue;
       if (last < first - 1) continue; // counter reset — keep allocation value
       // Compute export skip for this day: sum of counter increases during
@@ -1505,13 +1522,16 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       // Clamp export skip to the actual counter increase (safety net).
       const dayIncrease = Math.max(0, last - first);
       if (dayExportSkip > dayIncrease) dayExportSkip = dayIncrease;
-      day.usage = round(Math.max(0, dayIncrease - dayExportSkip), 2);
+      const dayUsage = round(Math.max(0, dayIncrease - dayExportSkip), 2);
+      // Same 80 kWh/day guard as tomznDirectTodayUsage — a 0-baseline leftover
+      // must not overwrite a sane allocation value with ~200.
+      if (dayUsage <= 80) day.usage = dayUsage;
     }
   }
   // Today: use the most accurate value (counter + export subtraction with
   // live in-memory data, not just DB snapshots).
-  if (tomznDirectTodayUsage != null && dailyUsage.length > 0) {
-    dailyUsage[dailyUsage.length - 1].usage = tomznDirectTodayUsage;
+  if (dailyUsage.length > 0) {
+    dailyUsage[dailyUsage.length - 1].usage = totalToday;
   }
   let usageTrendPercent = null;
   const usageTrendDelta = null;
@@ -1866,10 +1886,17 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   // UPS backup check: only ping the home IP when BOTH solar inverter is offline
   // AND grid is unavailable/cutoff — meaning no power source is active. If the
   // ping succeeds, the router is still on (UPS backup). If it fails, power loss.
+  // Mode "B" (Battery) is the inverter powering the home from battery + solar —
+  // NOT an outage, so UPS must not trigger. All-zeros is also insufficient on
+  // its own (a transient poll can report zeros); require isOnline=false / mode S.
   const tomznFault = tomznSource?.faultCode || 0;
   const gridCutoffOrUnavailable = !tomznSource?.isOnline || tomznFault === 2048 || tomznFault === 8192;
-  const inverterOffline = !inverterOnline || inverter.inverterMode === "S" ||
-    (inverter.gridV === 0 && inverter.solarW === 0 && inverter.gridW === 0 && inverter.loadW === 0);
+  const inverterOnBattery = inverter.inverterMode === "B";
+  const inverterOffline = !inverterOnBattery && (
+    !inverterOnline
+    || inverter.inverterMode === "S"
+    || inverter.inverterMode === "offline"
+  );
   let ups = null;
   if (inverterOffline && gridCutoffOrUnavailable) {
     const reachable = await pingHome();
@@ -2027,6 +2054,9 @@ function registerUnifiedSolarRoutes(app, db) {
   // In-memory live inverter cache — same pattern as liveTomznRef, keeps the
   // freshest inverter reading for the live payload without DB reads every 3s.
   const liveInverterRef = { value: null };
+  // Consecutive InverterZone poll failures. Reset on a successful snapshot.
+  // Offline is only published after INVERTER_FAIL_THRESHOLD consecutive fails.
+  let inverterFailCount = 0;
   // Grid-flow state trackers for the on-grid direction state machine. These
   // persist between polls (in-memory, reset on restart) so the import↔export
   // zero-crossing detection works across the 5s live polls. billingFlowState is
@@ -2043,7 +2073,7 @@ function registerUnifiedSolarRoutes(app, db) {
   // auto-shift day/night/weather scenes in real time.
   let weatherCache = { value: null, timestamp: 0 };
 
-  const context = { stateCollection, snapshots, allocations, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef, billingFlowState, liveFlowState };
+  const context = { stateCollection, snapshots, allocations, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef, liveInverterRef, billingFlowState, liveFlowState };
   const pollTomzn = async ({ forcePersist = false, force = false } = {}) => {
     const now = Date.now();
     // Serve from in-memory live cache if fresh enough (avoids hitting Tuya on every 5s request).
@@ -2068,7 +2098,7 @@ function registerUnifiedSolarRoutes(app, db) {
           // Build an offline snapshot from the last known values
           const lastKnown = liveTomznRef.value;
           snapshot = {
-            energyKwh: lastKnown?.energyKwh ?? 0,
+            energyKwh: (lastKnown?.energyKwh > 0 ? lastKnown.energyKwh : 0),
             voltageV: 0,
             currentA: 0,
             powerW: 0,
@@ -2136,10 +2166,17 @@ function registerUnifiedSolarRoutes(app, db) {
         snapshot.currentA = 0;
         snapshot.powerW = 0;
       }
-      // If energyKwh is null (datapoint unavailable), fall back to last known value
+      // If energyKwh is null/0 (datapoint unavailable or TOMZN offline reporting 0),
+      // keep the last known cumulative counter. A 0 is never a real kWh total —
+      // persisting it poisons today's usage (current − midnight becomes 0 or 200).
       let energyKwh = finiteNumber(snapshot.energyKwh);
-      if (energyKwh == null || energyKwh < 0) {
-        energyKwh = liveTomznRef.value?.energyKwh ?? 0;
+      let lastKnownEnergy = finiteNumber(liveTomznRef.value?.energyKwh);
+      if (!(lastKnownEnergy > 0)) {
+        const lastPositive = await snapshots.find({ energyKwh: { $gt: 0 } }).sort({ timestamp: -1 }).limit(1).next();
+        lastKnownEnergy = finiteNumber(lastPositive?.energyKwh);
+      }
+      if (energyKwh == null || energyKwh < 0 || (energyKwh === 0 && lastKnownEnergy > 0)) {
+        energyKwh = lastKnownEnergy ?? 0;
         snapshot.energyKwh = energyKwh;
       }
       // Only persist to the database once per minute (or when explicitly forced by
@@ -2168,11 +2205,18 @@ function registerUnifiedSolarRoutes(app, db) {
     inverterPollInFlight = requestInverterZone()
       .then(async (snapshot) => {
         if (!snapshot) return snapshot;
+        // A 200 with empty LiveData / short QPIGS still produces an offline
+        // snapshot. Treat that as a failed poll so one drop doesn't flip the
+        // hero to Offline / UPS.
+        if (snapshot.isOnline === false) {
+          throw new Error("InverterZone returned an offline snapshot");
+        }
         // Only persist to the database once per minute. The 5s background poll
         // still updates the in-memory live cache (via the return value), but DB
         // writes are throttled to avoid flooding the collection with 17,280
         // snapshots/day (which exceeded the 5,000 query limit and caused the
         // flow graph to miss solar-producing hours).
+        inverterFailCount = 0;
         const now = Date.now();
         const shouldPersist = !latest || now - latest.timestamp >= INVERTER_PERSIST_MIN_INTERVAL_MS;
         if (shouldPersist) {
@@ -2186,10 +2230,15 @@ function registerUnifiedSolarRoutes(app, db) {
         return snapshot;
       })
       .catch(async (error) => {
-        // Network error / timeout / non-2xx — store an offline snapshot so
-        // "last fetched" keeps updating and the user can see we're still polling.
-        // Don't just return stale data silently.
-        console.error("[Solar Engine] inverter poll failed:", error.message);
+        // Network error / timeout / non-2xx. A single timeout is not a real
+        // inverter outage — keep serving the last good snapshot until we have
+        // INVERTER_FAIL_THRESHOLD consecutive failures (~20s). This stops the
+        // Solar Only → UPS flicker on the hero tag.
+        inverterFailCount += 1;
+        console.error(`[Solar Engine] inverter poll failed (${inverterFailCount}/${INVERTER_FAIL_THRESHOLD}):`, error.message);
+        if (inverterFailCount < INVERTER_FAIL_THRESHOLD && liveInverterRef.value && liveInverterRef.value.isOnline !== false) {
+          return liveInverterRef.value;
+        }
         const offline = makeOfflineInverterSnapshot();
         const now = Date.now();
         const shouldPersist = !latest || now - latest.timestamp >= INVERTER_PERSIST_MIN_INTERVAL_MS;
@@ -2305,9 +2354,14 @@ function registerUnifiedSolarRoutes(app, db) {
     // Cached for 10s to avoid pinging on every 2s broadcast.
     // Mode "B" (Battery) means the inverter is actively powering the home from
     // battery + solar — NOT offline, so UPS check should NOT trigger.
-    const inverterOffline = !latestInverter || latestInverter.isOnline === false ||
-      latestInverter.inverterMode === "S" || latestInverter.inverterMode === "offline" ||
-      (latestInverter.gridV === 0 && latestInverter.solarW === 0 && latestInverter.gridW === 0 && latestInverter.loadW === 0);
+    // All-zeros alone is not enough: a single timed-out poll used to zero the
+    // snapshot and flash UPS over "Solar Only". Require a real offline mode.
+    const inverterOffline = !inverterOnBattery && (
+      !latestInverter
+      || latestInverter.isOnline === false
+      || latestInverter.inverterMode === "S"
+      || latestInverter.inverterMode === "offline"
+    );
     const gridOffline = !tomznOnline || tomznFault === 2048 || tomznFault === 8192;
     let ups = null;
     if (inverterOffline && gridOffline) {
@@ -2317,6 +2371,8 @@ function registerUnifiedSolarRoutes(app, db) {
         upsCache = { active: reachable, label: reachable ? "UPS" : "Power Down", timestamp: now };
       }
       ups = { active: upsCache.active, label: upsCache.label };
+    } else {
+      upsCache = null;
     }
     // Include weather in the live payload so the frontend can auto-shift
     // day/night/weather scenes without waiting for a full dashboard sync.
@@ -2414,7 +2470,7 @@ function registerUnifiedSolarRoutes(app, db) {
       if (clientVersion === dataVersion) {
         // Nothing changed — return minimal response with live hero data only
         const live = await buildLivePayload();
-        res.json({ changed: false, dataVersion, tomznLive: live.tomznLive, inverter: live.inverter, gridFlow: live.gridFlow });
+        res.json({ changed: false, dataVersion, tomznLive: live.tomznLive, inverter: live.inverter, gridFlow: live.gridFlow, ups: live.ups, weather: live.weather });
       } else {
         // Data changed — return full dashboard
         res.json({ changed: true, dataVersion, dashboard: await buildDashboard(context) });
