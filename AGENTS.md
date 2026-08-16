@@ -70,6 +70,8 @@ Files to deploy (depending on what changed):
 | 30s | `/api/solar/dashboard/sync?since=N` | 551 bytes (no change) or ~50KB (changed) | Full dashboard delta |
 | 60s | `/api/solar/flow-history` | varies | Chart data |
 
+- Backend device poll is presence-based: **3s while the app (or overlay) is watching**, **30s when nobody is connected**. Presence = SSE `/live/stream` clients, or any `/live` / `/dashboard/sync` in the last 45s. App open immediately bumps the loop to 3s. After the last client leaves, it drops back to 30s. Backend never stops.
+- Hero is **push, not pull**: backend only SSE-broadcasts when TOMZN/inverter/UPS/weather actually changes. The app keeps the SSE open (even when idle) and paints the hero on those events. No 3s/5s live HTTP timer while the app is open.
 - On app open / foreground: `fetchLive(false)` first (cached live payload, ~100ms) so hero + Solar Only/UPS tag paint immediately, then `fetchLive(true)` + dashboard sync + flow history in the background
 - `dataVersion` tracking: backend increments on every data mutation, frontend sends its version, backend returns `{changed:false}` if match
 - Inverter offline requires 4 consecutive poll failures (~20s). A single timeout/hang-up keeps the last good snapshot. UPS only when inverter is actually offline (not mode B / not producing)
@@ -127,5 +129,5 @@ Files to deploy (depending on what changed):
 ## App Versioning
 
 - `expo.version`: `1.0.0` — app version string
-- `android.versionCode`: `13` — integer, increment for each APK release (currently 13)
+- `android.versionCode`: `15` — integer, increment for each APK release (currently 15)
 - To release new APK: bump `versionCode` in `app.json` and `android/app/build.gradle`, rebuild, install via ADB

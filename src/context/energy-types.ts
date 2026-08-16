@@ -75,9 +75,10 @@ export type EnergyToday = {
 
 export type EnergyFlowPoint = {
   timestamp: number;
-  solarKw: number;
-  gridKw: number;
-  loadKw: number;
+  // null = source was offline for that 5-minute bucket (line is hidden, not pinned at 0)
+  solarKw: number | null;
+  gridKw: number | null;
+  loadKw: number | null;
 };
 
 export type HomeState = {

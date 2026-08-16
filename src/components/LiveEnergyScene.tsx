@@ -8,9 +8,8 @@ import {
     vec,
 } from "@shopify/react-native-skia";
 import { BlurView } from "expo-blur";
-import { RefreshCw } from "lucide-react-native";
 import { memo, useEffect, useRef, useState } from "react";
-import { AppState, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { AppState, Platform, StyleSheet, Text, View } from "react-native";
 import Animated, {
     cancelAnimation,
     useAnimatedStyle,
@@ -80,8 +79,6 @@ type SceneProps = {
   isVisible?: boolean;
   variant?: "card" | "hero";
   overlayConfig?: HeroOverlayConfig;
-  lastSyncedAt?: number | null;
-  onSyncPress?: () => void;
   ups?: { active: boolean; label: string } | null;
   gridFlow?: GridFlow | null;
 };
@@ -500,13 +497,11 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   isVisible = true,
   variant = "card",
   overlayConfig,
-  lastSyncedAt = null,
-  onSyncPress,
   ups = null,
   gridFlow = null,
 }: SceneProps) {
   const { isIdle, isIdleShared } = useIdle();
-  const [now, setNow] = useState(() => Date.now());
+  const now = Date.now();
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
   // Solar text debounce: count consecutive polls where solarW=0 AND solarV=0 AND solarA=0.
@@ -523,12 +518,6 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     const subscription = AppState.addEventListener("change", (state) => setAppActive(state === "active"));
     return () => subscription.remove();
   }, []);
-
-  // Tick timer for "updated Xs ago" — 1s when active, 5s when idle to reduce re-renders.
-  useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), isIdle ? 5_000 : 1_000);
-    return () => clearInterval(interval);
-  }, [isIdle]);
 
   // Sunrise/sunset come from the backend weather API (Open-Meteo) which fetches
   // them daily. Falls back to the local device hour if sunrise/sunset aren't
@@ -707,23 +696,6 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     if (tomznLive.isOnline) return { modeLabel: solarProducing ? "Solar Only" : "Wapda Idle", modeColor: solarProducing ? "#F9C641" : "#F8C653" };
     return { modeLabel: "Wapda Offline", modeColor: "#EF4C4C" };
   })();
-  // Timer synced with real API fetch: uses lastSyncedAt (set every time the
-  // frontend receives fresh data from the backend). Resets to 0s on each fetch,
-  // then counts up 1s, 2s... smoothly.
-  const syncTs = lastSyncedAt ?? 0;
-  const elapsedSec = syncTs > 0 ? Math.max(0, Math.floor((now - syncTs) / 1000)) : null;
-  const updatedLabel = offline
-    ? "Offline"
-    : elapsedSec == null
-    ? "Waiting for data"
-    : elapsedSec === 0
-      ? "Just now"
-      : elapsedSec < 60
-        ? `${elapsedSec}s`
-        : elapsedSec < 3600
-          ? `${Math.floor(elapsedSec / 60)}m`
-          : `${Math.floor(elapsedSec / 3600)}h`;
-
   // Home power/V/A: in hybrid mode from the inverter's load readings (loadW).
   // In on-grid mode, loadW ≈ 0 (inverter's load output isn't feeding home), so
   // use the backend's computed homeW (solarW ± tomznPowerW) from gridFlow.
@@ -878,26 +850,8 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
           )}
         </View>
 
-        {/* ── Footer: time | mode ── */}
+        {/* ── Footer: mode ── */}
         <View style={styles.footer}>
-          <Pressable
-            onPress={onSyncPress}
-            disabled={!onSyncPress}
-            style={({ pressed }) => [styles.footerPill, onSyncPress && pressed && { opacity: 0.6 }]}
-          >
-            <BlurView
-              intensity={40}
-              tint="dark"
-              style={StyleSheet.absoluteFill}
-              blurMethod={Platform.OS === "android" ? "none" : undefined}
-            />
-            <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255,255,255,0.05)" }]} />
-            <View style={styles.footerPillRim} />
-            <View style={styles.footerPillContent}>
-              <RefreshCw size={9} color="#DCE7F2" />
-              <Text style={styles.footerText}>{updatedLabel}</Text>
-            </View>
-          </Pressable>
           <View style={styles.footerPill}>
             <BlurView
               intensity={40}

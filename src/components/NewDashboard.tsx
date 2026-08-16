@@ -13,156 +13,229 @@ import { LiveEnergyScene } from "./LiveEnergyScene";
 import { EnergyReceivedCard, EnergyUsedCard } from "./NewDashboardCards";
 
 
-type FlowPoint = { timestamp: number; solarKw: number; gridKw: number; loadKw: number };
+type FlowPoint = { timestamp: number; solarKw: number | null; gridKw: number | null; loadKw: number | null };
+type SeriesKey = "solarKw" | "gridKw" | "loadKw";
 
-const FlowChart = memo(function FlowChart({ points, width, windowStart, isLight, hideSolar }: { points: FlowPoint[]; width: number; windowStart: number; isLight: boolean; hideSolar?: boolean }) {
-  const height = 140;
-  const graphWidth = Math.max(1, width - 40);
-  const chartLeft = 28;
-  const [tooltip, setTooltip] = useState<{ x: number; time: string; solarKw: number; gridKw: number; loadKw: number } | null>(null);
-  const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+const FLOW_BUCKET_MS = 5 * 60_000;
+const FLOW_WINDOW_MS = 24 * 60 * 60 * 1000;
+const INSPECTOR_W = 86;
 
-  // Clear any pending auto-hide timer on unmount
-  useEffect(() => () => { if (tooltipTimer.current) clearTimeout(tooltipTimer.current); }, []);
+function regularizeFlow(points: FlowPoint[], windowStart: number, now: number): FlowPoint[] {
+  const firstBucket = Math.floor(windowStart / FLOW_BUCKET_MS) * FLOW_BUCKET_MS;
+  const lastBucket = Math.floor(now / FLOW_BUCKET_MS) * FLOW_BUCKET_MS;
+  const byBucket = new Map<number, FlowPoint>();
+  for (const p of points) {
+    const b = Math.floor(p.timestamp / FLOW_BUCKET_MS) * FLOW_BUCKET_MS;
+    const ex = byBucket.get(b);
+    if (!ex || p.timestamp > ex.timestamp) byBucket.set(b, { ...p, timestamp: b });
+  }
+  const out: FlowPoint[] = [];
+  for (let t = firstBucket; t <= lastBucket; t += FLOW_BUCKET_MS) {
+    out.push(byBucket.get(t) ?? { timestamp: t, solarKw: null, gridKw: null, loadKw: null });
+  }
+  return out;
+}
 
-  const { values, max, paths, yLabels } = useMemo(() => {
-    // Use real data if we have at least 2 points; otherwise generate a 24h empty axis.
-    const vals = points.length > 1 ? points : Array.from({ length: 24 }, (_, i) => ({
-      timestamp: windowStart + i * 3_600_000,
-      solarKw: 0,
-      loadKw: 0,
-      gridKw: 0,
-    }));
-    const mx = Math.max(1, ...vals.flatMap((p) => [p.solarKw, p.loadKw, p.gridKw]));
-    // Rolling 24h window: x position = hours from windowStart (0 = 24h ago, 24 = now)
-    const HOUR_MS = 60 * 60 * 1000;
-    const hourOf = (ts: number) => (ts - windowStart) / HOUR_MS;
-    const make = (key: keyof FlowPoint) => vals.map((p, i) => {
-      const x = chartLeft + (hourOf(p.timestamp) / 24) * graphWidth;
-      const y = 104 - (p[key] as number) / mx * 76;
-      return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(" ");
-    const peakIdx = vals.reduce((mi, p, i, arr) => p.loadKw > arr[mi].loadKw ? i : mi, 0);
-    const peakX = chartLeft + (hourOf(vals[peakIdx].timestamp) / 24) * graphWidth;
-    const peakY = 104 - vals[peakIdx].loadKw / mx * 76;
-    // Current time is always at the right edge of the rolling 24h graph
-    const currentX = chartLeft + graphWidth;
-    const niceMax = Math.ceil(mx * 1.1);
-    const yL = [
-      { kw: niceMax, y: 28 },
-      { kw: niceMax / 2, y: 66 },
-      { kw: 0, y: 104 },
-    ];
-    return { values: vals, max: mx, paths: { solar: make("solarKw"), home: make("loadKw"), grid: make("gridKw"), peakX, peakY, currentX }, yLabels: yL };
-  }, [graphWidth, points, chartLeft, windowStart]);
+function seriesPath(values: FlowPoint[], key: SeriesKey, xOf: (ts: number) => number, yOf: (v: number) => number): string {
+  let d = "";
+  let drawing = false;
+  for (const p of values) {
+    const v = p[key];
+    if (v == null) { drawing = false; continue; }
+    const x = xOf(p.timestamp).toFixed(1);
+    const y = yOf(v).toFixed(1);
+    d += drawing ? ` L${x},${y}` : ` M${x},${y}`;
+    drawing = true;
+  }
+  return d;
+}
 
-  const findNearestPoint = (x: number) => {
+function formatKw(v: number | null): string {
+  if (v == null) return "—";
+  return v >= 1 ? `${v.toFixed(2)}` : `${(v * 1000).toFixed(0)}`;
+}
+function formatKwUnit(v: number | null): string {
+  if (v == null) return "";
+  return v >= 1 ? "kW" : "W";
+}
+
+const FlowChart = memo(function FlowChart({
+  points, width, windowStart, isLight, cardTheme,
+}: {
+  points: FlowPoint[]; width: number; windowStart: number; isLight: boolean;
+  cardTheme: { textPrimary: string; textSecondary: string; textMuted: string; overlayBg: string; overlayBorder: string };
+}) {
+  const height = 148;
+  const plotW = Math.max(1, width - INSPECTOR_W);
+  const graphWidth = Math.max(1, plotW - 36);
+  const chartLeft = 26;
+  const plotTop = 18;
+  const plotBottom = 108;
+  const plotH = plotBottom - plotTop;
+  const touchOrigin = useRef({ x: 0, y: 0 });
+  const [selectedTs, setSelectedTs] = useState<number | null>(null);
+
+  const { values, max, paths, yLabels, hasSolar, hasGrid, selected, selectedX } = useMemo(() => {
+    const now = Date.now();
+    const vals = regularizeFlow(points, windowStart, now);
+    const mx = Math.max(
+      0.4,
+      ...vals.flatMap((p) => [p.solarKw, p.loadKw, p.gridKw].filter((v): v is number => v != null && v > 0)),
+    );
+    const hourOf = (ts: number) => (ts - windowStart) / 3_600_000;
+    const xOf = (ts: number) => chartLeft + (hourOf(ts) / 24) * graphWidth;
+    const yOf = (v: number) => plotBottom - (v / mx) * plotH;
+    let peakIdx = -1;
+    let peakLoad = -1;
+    for (let i = 0; i < vals.length; i += 1) {
+      const load = vals[i].loadKw;
+      if (load != null && load > peakLoad) { peakLoad = load; peakIdx = i; }
+    }
+    const peak = peakIdx >= 0 ? vals[peakIdx] : null;
+    const solarD = seriesPath(vals, "solarKw", xOf, yOf);
+    const homeD = seriesPath(vals, "loadKw", xOf, yOf);
+    const gridD = seriesPath(vals, "gridKw", xOf, yOf);
+    const sel = (selectedTs != null ? vals.find((p) => p.timestamp === selectedTs) : null)
+      ?? vals.reduce<FlowPoint | null>((acc, p) => (p.timestamp > (acc?.timestamp || 0) && (p.solarKw != null || p.gridKw != null || p.loadKw != null) ? p : acc), null)
+      ?? vals[vals.length - 1];
+    const niceMax = Math.ceil(mx * 10) / 10;
+    return {
+      values: vals,
+      max: mx,
+      hasSolar: solarD.length > 0,
+      hasGrid: gridD.length > 0,
+      selected: sel,
+      selectedX: sel ? xOf(sel.timestamp) : xOf(now),
+      paths: {
+        solar: solarD,
+        home: homeD,
+        grid: gridD,
+        peakX: peak ? xOf(peak.timestamp) : 0,
+        peakY: peak && peak.loadKw != null ? yOf(peak.loadKw) : 0,
+        hasPeak: peak != null && peak.loadKw != null,
+        currentX: xOf(now),
+      },
+      yLabels: [
+        { kw: niceMax, y: plotTop },
+        { kw: niceMax / 2, y: plotTop + plotH / 2 },
+        { kw: 0, y: plotBottom },
+      ],
+    };
+  }, [points, windowStart, graphWidth, selectedTs]);
+
+  const selectAtX = (x: number) => {
     const hour = ((x - chartLeft) / graphWidth) * 24;
-    if (hour < 0 || hour > 24) return null;
+    if (hour < -0.2 || hour > 24.2) return;
     let nearest = values[0];
     let minDist = Infinity;
     for (const p of values) {
-      const ph = (p.timestamp - windowStart) / (60 * 60 * 1000);
-      const dist = Math.abs(ph - hour);
+      const dist = Math.abs((p.timestamp - windowStart) / 3_600_000 - hour);
       if (dist < minDist) { minDist = dist; nearest = p; }
     }
-    return nearest;
+    if (nearest) setSelectedTs(nearest.timestamp);
   };
 
-  const handleTouch = (evtX: number) => {
-    const pt = findNearestPoint(evtX);
-    if (!pt) { setTooltip(null); return; }
-    const d = new Date(pt.timestamp);
-    const timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    const hourOf = (pt.timestamp - windowStart) / (60 * 60 * 1000);
-    const tx = chartLeft + (hourOf / 24) * graphWidth;
-    setTooltip({ x: tx, time: timeStr, solarKw: pt.solarKw, gridKw: pt.gridKw, loadKw: pt.loadKw });
-    // Auto-hide tooltip after 5 seconds
-    if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
-    tooltipTimer.current = setTimeout(() => setTooltip(null), 5000);
-  };
-
-  const tooltipBg = isLight ? "rgba(255,255,255,0.92)" : "rgba(10,18,28,0.88)";
-  const tooltipBorder = isLight ? "rgba(15,23,42,0.12)" : "rgba(176,199,224,0.15)";
-  const tooltipTextColor = isLight ? "#0F172A" : "#F4F8FC";
-  // SVG element colors — adapt for light scenes (fog, morning-cloud) where
-  // glassmorphism lets more light through. Dark text/lines on light, light on dark.
-  const gridStroke = isLight ? "rgba(15,23,42,0.12)" : "rgba(142,167,196,0.08)";
+  const gridStroke = isLight ? "rgba(15,23,42,0.10)" : "rgba(142,167,196,0.08)";
   const axisTextFill = isLight ? "#475569" : "#8A9BAE";
-  const markerStroke = isLight ? "rgba(15,23,42,0.25)" : "rgba(255,255,255,0.15)";
-  const markerFill = isLight ? "#0F172A" : "#F4F8FC";
-  const tooltipLineStroke = isLight ? "rgba(15,23,42,0.4)" : "rgba(255,255,255,0.3)";
+  const markerStroke = isLight ? "rgba(15,23,42,0.22)" : "rgba(255,255,255,0.14)";
+  const markerFill = isLight ? "#1A2332" : "#E8EEF4";
+  const pickStroke = isLight ? "rgba(26,35,50,0.45)" : "rgba(232,238,244,0.38)";
+  const selectedTime = selected
+    ? new Date(selected.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : "—";
+
+  const rows: Array<{ key: string; label: string; color: string; value: number | null; hidden?: boolean }> = [
+    { key: "solar", label: "Solar", color: "#F5C42E", value: selected?.solarKw ?? null, hidden: !hasSolar && selected?.solarKw == null },
+    { key: "home", label: "Home", color: "#35D86C", value: selected?.loadKw ?? null },
+    { key: "grid", label: "Grid", color: "#548EFF", value: selected?.gridKw ?? null },
+  ];
+
   return (
-    <View
-      style={{ width, height }}
-      onStartShouldSetResponder={() => true}
-      onMoveShouldSetResponder={() => true}
-      onResponderGrant={(e) => handleTouch(e.nativeEvent.locationX)}
-      onResponderMove={(e) => handleTouch(e.nativeEvent.locationX)}
-    >
-      <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-        {/* Y-axis grid lines + labels */}
-        {yLabels.map((yl, i) => (
-          <G key={`y-${i}`}>
-            <Line x1={chartLeft} y1={yl.y} x2={width - 12} y2={yl.y} stroke={gridStroke} />
-            <SvgText x={2} y={yl.y + 3} fill={axisTextFill} fontSize="7" fontFamily="Outfit">{yl.kw.toFixed(1)}kW</SvgText>
-          </G>
-        ))}
-        {/* Current time marker — vertical dashed line */}
-        <Line x1={paths.currentX} y1="24" x2={paths.currentX} y2="104" stroke={markerStroke} strokeWidth="1" strokeDasharray="2 3" />
-        <Circle cx={paths.currentX} cy="22" r="2.5" fill={markerFill} />
-        {/* Energy flow lines — solar line hidden when solar is on standby */}
-        {!hideSolar && <Path d={paths.solar} stroke="#F9C641" strokeWidth={1.4} fill="none" />}
-        <Path d={paths.home} stroke="#2DDB6C" strokeWidth={1.3} fill="none" />
-        <Path d={paths.grid} stroke="#4A85FF" strokeWidth={1.3} fill="none" />
-        {/* Peak marker */}
-        <Circle cx={paths.peakX} cy={paths.peakY} r="3" fill="#2DDB6C" />
-        <Circle cx={paths.peakX} cy={paths.peakY} r="5" fill="#2DDB6C" opacity="0.2" />
-        {/* Touch tooltip — vertical line + dots */}
-        {tooltip && (
-          <>
-            <Line x1={tooltip.x} y1="24" x2={tooltip.x} y2="104" stroke={tooltipLineStroke} strokeWidth="1" />
-            {!hideSolar && <Circle cx={tooltip.x} cy={104 - tooltip.solarKw / max * 76} r="3" fill="#F9C641" />}
-            {!hideSolar && <Circle cx={tooltip.x} cy={104 - tooltip.solarKw / max * 76} r="5" fill="#F9C641" opacity="0.3" />}
-            <Circle cx={tooltip.x} cy={104 - tooltip.loadKw / max * 76} r="3" fill="#2DDB6C" />
-            <Circle cx={tooltip.x} cy={104 - tooltip.gridKw / max * 76} r="3" fill="#4A85FF" />
-          </>
-        )}
-      </Svg>
-      {/* Tooltip label overlay */}
-      {tooltip && (
-        <View
-          style={[
-            fcStyles.tooltip,
-            {
-              left: Math.max(4, Math.min(width - 120, tooltip.x - 60)),
-              top: 2,
-              backgroundColor: tooltipBg,
-              borderColor: tooltipBorder,
-            },
-          ]}
-        >
-          <Text style={[fcStyles.tooltipTime, { color: tooltipTextColor }]}>{tooltip.time}</Text>
-          {!hideSolar && <Text style={[fcStyles.tooltipRow, { color: "#F9C641" }]}>Solar {tooltip.solarKw.toFixed(2)} kW</Text>}
-          <Text style={[fcStyles.tooltipRow, { color: "#2DDB6C" }]}>Home {tooltip.loadKw.toFixed(2)} kW</Text>
-          <Text style={[fcStyles.tooltipRow, { color: "#4A85FF" }]}>Grid {tooltip.gridKw.toFixed(2)} kW</Text>
-        </View>
-      )}
+    <View style={fcStyles.wrap}>
+      <View
+        style={{ width: plotW, height }}
+        onStartShouldSetResponder={() => true}
+        onMoveShouldSetResponder={(e) => {
+          const dx = Math.abs(e.nativeEvent.locationX - touchOrigin.current.x);
+          const dy = Math.abs(e.nativeEvent.locationY - touchOrigin.current.y);
+          return dx > 8 && dx > dy;
+        }}
+        onResponderGrant={(e) => {
+          touchOrigin.current = { x: e.nativeEvent.locationX, y: e.nativeEvent.locationY };
+          selectAtX(e.nativeEvent.locationX);
+        }}
+        onResponderMove={(e) => selectAtX(e.nativeEvent.locationX)}
+      >
+        <Svg width={plotW} height={height} viewBox={`0 0 ${plotW} ${height}`}>
+          {yLabels.map((yl, i) => (
+            <G key={`y-${i}`}>
+              <Line x1={chartLeft} y1={yl.y} x2={plotW - 8} y2={yl.y} stroke={gridStroke} />
+              <SvgText x={1} y={yl.y + 3} fill={axisTextFill} fontSize="7" fontFamily="Outfit">{yl.kw.toFixed(1)}</SvgText>
+            </G>
+          ))}
+          <Line x1={paths.currentX} y1={plotTop} x2={paths.currentX} y2={plotBottom} stroke={markerStroke} strokeWidth="1" strokeDasharray="2 3" />
+          <Circle cx={paths.currentX} cy={plotTop - 3} r="2.2" fill={markerFill} />
+          {paths.solar ? <Path d={paths.solar} stroke="#F5C42E" strokeWidth={1.6} fill="none" strokeLinejoin="round" strokeLinecap="round" /> : null}
+          {paths.home ? <Path d={paths.home} stroke="#2DDB6C" strokeWidth={1.5} fill="none" strokeLinejoin="round" strokeLinecap="round" /> : null}
+          {paths.grid ? <Path d={paths.grid} stroke="#4A85FF" strokeWidth={1.5} fill="none" strokeLinejoin="round" strokeLinecap="round" /> : null}
+          {paths.hasPeak ? (
+            <>
+              <Circle cx={paths.peakX} cy={paths.peakY} r="5" fill="#2DDB6C" opacity="0.18" />
+              <Circle cx={paths.peakX} cy={paths.peakY} r="2.6" fill="#2DDB6C" />
+            </>
+          ) : null}
+          {selected ? (
+            <>
+              <Line x1={selectedX} y1={plotTop} x2={selectedX} y2={plotBottom} stroke={pickStroke} strokeWidth="1" />
+              {selected.solarKw != null ? <Circle cx={selectedX} cy={plotBottom - (selected.solarKw / max) * plotH} r="2.8" fill="#F5C42E" /> : null}
+              {selected.loadKw != null ? <Circle cx={selectedX} cy={plotBottom - (selected.loadKw / max) * plotH} r="2.8" fill="#2DDB6C" /> : null}
+              {selected.gridKw != null ? <Circle cx={selectedX} cy={plotBottom - (selected.gridKw / max) * plotH} r="2.8" fill="#4A85FF" /> : null}
+            </>
+          ) : null}
+        </Svg>
+      </View>
+      <View style={[fcStyles.inspector, { backgroundColor: cardTheme.overlayBg, borderColor: cardTheme.overlayBorder }]}>
+        <Text style={[fcStyles.inspectorTime, { color: cardTheme.textPrimary }]}>{selectedTime}</Text>
+        <Text style={[fcStyles.inspectorHint, { color: cardTheme.textMuted }]}>5 min</Text>
+        {rows.filter((row) => !row.hidden).map((row) => {
+          const offline = row.value == null;
+          return (
+            <View key={row.key} style={fcStyles.inspectorRow}>
+              <View style={[fcStyles.inspectorDot, { backgroundColor: offline ? cardTheme.textMuted : row.color }]} />
+              <View style={fcStyles.inspectorCopy}>
+                <Text style={[fcStyles.inspectorLabel, { color: cardTheme.textMuted }]}>{row.label}</Text>
+                <Text style={[fcStyles.inspectorValue, { color: offline ? cardTheme.textMuted : cardTheme.textPrimary }]}>
+                  {offline ? "Off" : formatKw(row.value)}
+                  <Text style={[fcStyles.inspectorUnit, { color: cardTheme.textMuted }]}>{offline ? "" : ` ${formatKwUnit(row.value)}`}</Text>
+                </Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
     </View>
   );
 });
 
 const fcStyles = StyleSheet.create({
-  tooltip: {
-    position: "absolute",
-    borderRadius: 8,
+  wrap: { width: "100%", flexDirection: "row", alignItems: "stretch", marginTop: 8 },
+  inspector: {
+    width: INSPECTOR_W,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderWidth: 1,
-    minWidth: 116,
+    paddingVertical: 8,
+    justifyContent: "flex-start",
+    gap: 7,
   },
-  tooltipTime: { fontFamily: "Outfit", fontSize: 8, fontWeight: "700", marginBottom: 2 },
-  tooltipRow: { fontFamily: "Outfit", fontSize: 7, fontWeight: "600", marginTop: 1 },
+  inspectorTime: { fontFamily: "Outfit", fontSize: 12, fontWeight: "700", letterSpacing: -0.2 },
+  inspectorHint: { fontFamily: "Outfit", fontSize: 8, fontWeight: "600", letterSpacing: 0.4, textTransform: "uppercase", marginTop: -4 },
+  inspectorRow: { flexDirection: "row", alignItems: "flex-start", gap: 5 },
+  inspectorDot: { width: 5, height: 5, borderRadius: 2.5, marginTop: 4 },
+  inspectorCopy: { flex: 1 },
+  inspectorLabel: { fontFamily: "Outfit", fontSize: 8, fontWeight: "600", letterSpacing: 0.2 },
+  inspectorValue: { fontFamily: "Outfit", fontSize: 12, fontWeight: "700", marginTop: 1, letterSpacing: -0.2 },
+  inspectorUnit: { fontFamily: "Outfit", fontSize: 8, fontWeight: "600" },
 });
 
 export const NewDashboard = memo(function NewDashboard() {
@@ -185,33 +258,23 @@ export const NewDashboard = memo(function NewDashboard() {
     liveSceneVisible.current = visible;
     setIsLiveSceneVisible(visible);
   };
-  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive, ups, lastSyncedAt, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
+  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive, ups, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
   const meterOne = meters.meter1;
   const meterTwo = meters.meter2;
   const chartWidth = Math.min(width - 32, 520);
-  const peakLoadW = useMemo(() => Math.max(...flowHistory.slice(-288).map(p => p.loadKw * 1000), inverter.loadW), [flowHistory, inverter.loadW]);
+  const peakLoadW = useMemo(
+    () => Math.max(0, ...flowHistory.slice(-288).map((p) => (p.loadKw ?? 0) * 1000), inverter.loadW || 0),
+    [flowHistory, inverter.loadW],
+  );
   // Rolling 24-hour window for the flow graph. Current time is always at the
   // right edge; the x-axis shifts dynamically with the time of day.
-  const windowStart = useMemo(() => Date.now() - 24 * 60 * 60 * 1000, [flowHistory]);
-  // Show the last 24 hours of flow data, downsampled to max 1 point per 5 min.
-  const rolling24hFlow = useMemo(() => {
-    const filtered = flowHistory.filter((p) => p.timestamp >= windowStart);
-    if (filtered.length <= 288) return filtered;
-    // Downsample: keep 1 point per 5-minute bucket.
-    const bucketMs = 5 * 60_000;
-    const buckets = new Map<number, FlowPoint>();
-    for (const p of filtered) {
-      const b = Math.floor(p.timestamp / bucketMs) * bucketMs;
-      const ex = buckets.get(b);
-      if (!ex || p.timestamp > ex.timestamp) buckets.set(b, p);
-    }
-    return Array.from(buckets.values()).sort((a, b) => a.timestamp - b.timestamp);
-  }, [flowHistory, windowStart]);
-  // Graph solar visibility: only hide the solar line if there's NO solar data
-  // in the entire 24h window. When the inverter is currently off (bypass mode),
-  // current solar is 0 but there may be historical solar data from earlier in
-  // the day — that should still be visible in the graph.
-  const graphHasSolar = useMemo(() => rolling24hFlow.some((p) => p.solarKw > 0.01), [rolling24hFlow]);
+  const windowStart = useMemo(() => Date.now() - FLOW_WINDOW_MS, [flowHistory]);
+  const rolling24hFlow = useMemo(
+    () => flowHistory.filter((p) => p.timestamp >= windowStart),
+    [flowHistory, windowStart],
+  );
+  const graphHasSolar = useMemo(() => rolling24hFlow.some((p) => (p.solarKw ?? 0) > 0.01), [rolling24hFlow]);
+  const graphHasGrid = useMemo(() => rolling24hFlow.some((p) => p.gridKw != null), [rolling24hFlow]);
   // Dynamic x-axis labels: 5 evenly-spaced time markers across the 24h window.
   // e.g. at 6 PM: "6 PM, 12 AM, 6 AM, 12 PM, 6 PM"
   const axisLabels = useMemo(() => {
@@ -292,7 +355,7 @@ export const NewDashboard = memo(function NewDashboard() {
 
   return <View style={styles.screen}><Image source={heroScene.source} style={{ position: "absolute", top: 0, left: 0, width, height }} resizeMode="stretch" /><LinearGradient colors={["rgba(0,0,0,0.25)", "rgba(0,0,0,0.1)", "rgba(0,0,0,0.4)"]} locations={[0, 0.35, 1]} style={{ position: "absolute", top: 0, left: 0, width, height }} />
     <View style={{ position: "absolute", top: 0, left: 0, width: "100%", height: height * 0.50 }} pointerEvents="none">
-      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible} variant="hero" overlayConfig={heroScene.overlay} lastSyncedAt={lastSyncedAt} onSyncPress={() => { void refreshAll(); }} ups={ups} gridFlow={gridFlow} />
+      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible} variant="hero" overlayConfig={heroScene.overlay} ups={ups} gridFlow={gridFlow} />
     </View>
     <ScrollView ref={scrollRef} style={{ backgroundColor: "transparent" }} contentContainerStyle={[styles.content, { paddingTop: height * 0.49 }]} showsVerticalScrollIndicator={false} removeClippedSubviews={true} nestedScrollEnabled={true} scrollEventThrottle={isIdle ? 48 : 16} bounces={true} alwaysBounceVertical={true} onScroll={handleScroll}>
     <View style={{ width: "100%", borderTopLeftRadius: 28, borderTopRightRadius: 28, minHeight: height * 0.65 }}>
@@ -356,7 +419,31 @@ export const NewDashboard = memo(function NewDashboard() {
         cardTheme={sceneCardTheme}
       />
     </View>
-    <GlassCard style={styles.chartCard}><View style={styles.rowHeader}><View><Text style={[styles.cardTitle, { color: sceneCardTheme.textPrimary }]}>Last 24 Hours</Text><View style={styles.legend}>{graphHasSolar && <Text style={[styles.legendItem, { color: "#F5C42E" }]}>● Solar</Text>}<Text style={[styles.legendItem, { color: "#35D86C" }]}>● Home</Text><Text style={[styles.legendItem, { color: "#548EFF" }]}>● Grid</Text><Text style={[styles.legendItem, { color: sceneCardTheme.textSecondary }]}>│ Now</Text></View></View></View><FlowChart points={rolling24hFlow} width={chartWidth} windowStart={windowStart} isLight={sceneIsLight} hideSolar={!graphHasSolar} /><View style={[styles.axis, { width: chartWidth, paddingLeft: 28, paddingRight: 12 }]}>{axisLabels.map((label, i) => <Text key={i} style={[styles.axisText, { color: sceneCardTheme.textSecondary }]}>{label}</Text>)}</View></GlassCard>
+    <GlassCard style={styles.chartCard}>
+      <View style={styles.rowHeader}>
+        <View>
+          <Text style={[styles.cardTitle, { color: sceneCardTheme.textPrimary }]}>Last 24 Hours</Text>
+          <View style={styles.legend}>
+            {graphHasSolar && <Text style={[styles.legendItem, { color: "#F5C42E" }]}>● Solar</Text>}
+            <Text style={[styles.legendItem, { color: "#35D86C" }]}>● Home</Text>
+            {graphHasGrid && <Text style={[styles.legendItem, { color: "#548EFF" }]}>● Grid</Text>}
+            <Text style={[styles.legendItem, { color: sceneCardTheme.textSecondary }]}>│ Now</Text>
+          </View>
+        </View>
+      </View>
+      <FlowChart
+        points={rolling24hFlow}
+        width={chartWidth}
+        windowStart={windowStart}
+        isLight={sceneIsLight}
+        cardTheme={sceneCardTheme}
+      />
+      <View style={[styles.axis, { width: chartWidth - INSPECTOR_W, paddingLeft: 26, paddingRight: 8 }]}>
+        {axisLabels.map((label, i) => (
+          <Text key={i} style={[styles.axisText, { color: sceneCardTheme.textSecondary }]}>{label}</Text>
+        ))}
+      </View>
+    </GlassCard>
   </View>
   </View>
   </ScrollView>

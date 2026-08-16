@@ -175,7 +175,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const { isIdle } = useIdle();
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [tomznHistory, setTomznHistory] = useState<any[]>([]);
-  const [flowHistory24h, setFlowHistory24h] = useState<{ timestamp: number; solarKw: number; gridKw: number; loadKw: number }[]>([]);
+  const [flowHistory24h, setFlowHistory24h] = useState<EnergyFlowPoint[]>([]);
   const [manualBaselines, setManualBaselines] = useState<Record<MeterId, ManualBaseline | null>>({ meter1: null, meter2: null });
   const [period, setPeriod] = useState<"day" | "week" | "month" | "year">("day");
   const [loading, setLoading] = useState(true);
@@ -190,6 +190,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const manualReadingOverrideRef = useRef<Record<MeterId, { reading: number; timestamp: number } | null>>({ meter1: null, meter2: null });
   const deletedLogIdsRef = useRef<Set<string>>(new Set());
   const dataVersionRef = useRef<number>(0);
+  const lastLiveSigRef = useRef("");
   const startLiveStreamRef = useRef<(() => void) | null>(null);
   const startDashboardPollingRef = useRef<(() => void) | null>(null);
   const startIdlePollingRef = useRef<(() => void) | null>(null);
@@ -427,21 +428,39 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   // Apply live data (tomznLive + inverter + gridFlow) to the snapshot. Shared
   // by both fetchLive() and the SSE subscription handler so the merge logic
   // stays DRY.
+  const liveSig = (d: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any } | null | undefined) => {
+    if (!d) return "";
+    const t = d.tomznLive || {};
+    const i = d.inverter || {};
+    const g = d.gridFlow || {};
+    const w = d.weather || {};
+    const u = d.ups;
+    return [
+      i.isOnline, i.inverterMode, i.solarW, i.loadW, i.gridW, i.acOutV,
+      t.isOnline, t.switchOn, t.powerW, t.voltageV, t.currentA, t.faultCode,
+      g.mode, g.direction, g.homeW,
+      u?.active ?? null, w.isDay, w.code,
+    ].join("|");
+  };
+
   const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any } | null | undefined) => {
     if (!data || (!data.tomznLive && !data.inverter)) return;
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        tomznLive: data.tomznLive ?? prev.tomznLive,
-        inverter: data.inverter ?? prev.inverter,
-        gridFlow: data.gridFlow ?? prev.gridFlow,
-        weather: data.weather ?? prev.weather,
-        // Live payload owns the UPS tag. A leftover cache value from last night's
-        // outage must not keep showing "UPS" until the 30s dashboard sync.
-        ups: data.ups !== undefined ? data.ups : prev.ups,
-      };
-    });
+    const sig = liveSig(data);
+    const changed = sig !== lastLiveSigRef.current;
+    if (changed) {
+      lastLiveSigRef.current = sig;
+      setSnapshot((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          tomznLive: data.tomznLive ?? prev.tomznLive,
+          inverter: data.inverter ?? prev.inverter,
+          gridFlow: data.gridFlow ?? prev.gridFlow,
+          weather: data.weather ?? prev.weather,
+          ups: data.ups !== undefined ? data.ups : prev.ups,
+        };
+      });
+    }
     setLastSyncedAt(Date.now());
     setIsOffline(false);
     setError(null);
@@ -601,15 +620,12 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     };
 
     const startIdlePolling = () => {
-      stopLiveStream();
+      // Keep SSE open so hero still updates the instant backend data changes.
+      // Only slow the heavy dashboard + chart polls to save radio/CPU.
+      if (idleLiveInterval) { clearInterval(idleLiveInterval); idleLiveInterval = null; }
       if (syncInterval) clearInterval(syncInterval);
       if (flowInterval) clearInterval(flowInterval);
-      if (idleLiveInterval) clearInterval(idleLiveInterval);
-      // 5s: lightweight live poll (replaces SSE, keeps hero data fresh)
-      idleLiveInterval = setInterval(() => void fetchLive(false), IDLE_LIVE_INTERVAL_MS);
-      // 60s: slower dashboard sync
       syncInterval = setInterval(() => void syncDashboard(), IDLE_SYNC_INTERVAL_MS);
-      // 120s: slower flow history
       flowInterval = setInterval(() => void loadFlowHistory(), IDLE_FLOW_INTERVAL_MS);
     };
 
