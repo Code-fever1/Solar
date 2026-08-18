@@ -17,21 +17,21 @@ const METER_IDS = new Set(["meter1", "meter2"]);
 const PAKISTAN_OFFSET = "+05:00";
 const INVERTER_LOCAL_HOST = "113.203.197.44";
 const INVERTER_LOCAL_PORT = 3286;
-const INVERTER_POLL_MAX_AGE_MS = 3_000;
-// Device poll cadence is presence-based: 3s while any app is connected,
+const INVERTER_POLL_MAX_AGE_MS = 7_000;
+// Device poll cadence is presence-based: 7s while any app is connected,
 // 30s when nobody is watching. Presence = live SSE clients, or a /live?force
 // /dashboard hit in the last 45s (covers the brief window before SSE attaches).
-const POLL_INTERVAL_ACTIVE_MS = 3_000;
+const POLL_INTERVAL_ACTIVE_MS = 7_000;
 const POLL_INTERVAL_IDLE_MS = 30_000;
 const CLIENT_PRESENCE_TTL_MS = 45_000;
 // A single InverterZone timeout must NOT flip the inverter to offline.
 // The local port-forward drops packets often (logs show 6s bursts of timeouts).
 // Require several consecutive failures before publishing an offline snapshot,
-// matching TOMZN's fail-threshold pattern. ~20s at the 5s background poll.
+// matching TOMZN's fail-threshold pattern. ~28s at the 7s background poll.
 const INVERTER_FAIL_THRESHOLD = 4;
-// Live cache is refreshed at most every 3s so the dashboard stays responsive
+// Live cache is refreshed at most every 7s so the dashboard stays responsive
 // without hitting Tuya on every frontend poll.
-const TOMZN_LIVE_MAX_AGE_MS = 3_000;
+const TOMZN_LIVE_MAX_AGE_MS = 7_000;
 // Stale-data detection: when TOMZN's WiFi dies, the local Tuya poll fails.
 // We track consecutive poll failures — after TOMZN_FAIL_THRESHOLD failures,
 // we mark the device offline. The fingerprint approach also catches the case
@@ -432,7 +432,7 @@ function requestJson(options, body, timeoutMs = 12_000) {
 
 // ── Local inverter poller ──
 // Connects directly to the Fronus inverter's web API at 113.203.197.44:3286
-// (port-forwarded to 10.1.10.4:80). Returns real-time data every 3s instead of
+// (port-forwarded to 10.1.10.4:80). Returns real-time data every 7s instead of
 // the 15s cloud delay from InverterZone.
 // QPIGS format (InverterZone dongle firmware parseLive() mapping):
 //   [0]AC_in_V  [1]AC_in_Hz  [2]AC_out_V  [3]AC_out_Hz
@@ -1070,9 +1070,11 @@ async function applyHistoricalChangeover(allocations, fromMeter, toMeter, effect
         source: "TOMZN_CHANGEOVER_SPLIT",
         splitAt: effectiveAt,
       });
-    } else {
+    } else if (allocation.timestamp > effectiveAt) {
+      // Allocation is fully after the switch — move it to the new meter.
       await allocations.updateOne({ _id: allocation._id }, { $set: { meterId: toMeter, reassignedAt: Date.now(), changeoverAt: effectiveAt } });
     }
+    // If allocation ends at or before the switch, it stays with the from meter.
   }
 }
 
@@ -1777,45 +1779,50 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
 
   const readings = {};
   let maxErrorPenalty = 0;
+  // Inactive meters' usage is frozen once you switch away — their allocation
+  // deltas are already export-corrected (recordTomzn pauses during export).
+  // Only the active meter is adjusted so the total matches tomznDirectTodayUsage.
+  const inactiveTodayTotal = Array.from(METER_IDS).reduce((sum, id) =>
+    sum + (id !== state.activeMeter ? (todayUsage[id] || 0) : 0), 0);
   for (const meterId of METER_IDS) {
     const config = state.meters[meterId];
     let rawAfterAnchor = await meterUsageSince(allocations, meterId, Math.max(config.anchorAt || cycleStart, cycleStart), now);
     let meterTodayUncalibrated = todayUsage[meterId] || 0;
 
-    if (meterId === state.activeMeter) {
-      // TOMZN direct since anchor is primary for the meter reading.
-      // This uses the TOMZN cumulative counter delta from when the manual reading
-      // was logged (anchorEnergyKwh) to now — so the reading always tracks TOMZN truth.
-      const tomznSinceAnchor = computeTomznSinceAnchor(config.anchorAt, finiteNumber(config.anchorEnergyKwh));
-      if (tomznSinceAnchor != null) {
-        rawAfterAnchor = tomznSinceAnchor;
-        // For today's usage display: start from this meter's allocation-based usage
-        // (which correctly captures only the periods this meter was active today),
-        // then add any TOMZN direct excess over total allocations (live unallocated).
-        if (tomznDirectTodayUsage != null) {
-          const totalAllocationToday = Array.from(METER_IDS).reduce((sum, id) => sum + (todayUsage[id] || 0), 0);
-          const tomznDirectExcess = Math.max(0, tomznDirectTodayUsage - totalAllocationToday);
-          meterTodayUncalibrated = (todayUsage[meterId] || 0) + tomznDirectExcess;
-        }
-      } else if (tomznDirectTodayUsage != null) {
-        // No anchorEnergyKwh (old manual reading before this feature) — use midnight-based.
-        const totalAllocationToday = Array.from(METER_IDS).reduce((sum, id) => sum + (todayUsage[id] || 0), 0);
-        const tomznDirectExcess = Math.max(0, tomznDirectTodayUsage - totalAllocationToday);
-        const allocationTodayForMeter = todayUsage[meterId] || 0;
-        meterTodayUncalibrated = allocationTodayForMeter + tomznDirectExcess;
-        rawAfterAnchor = rawAfterAnchor - allocationTodayForMeter + meterTodayUncalibrated;
-      } else if (unallocatedDelta > 0) {
-        // Fallback: TOMZN offline or reset — add live unallocated consumption
-        rawAfterAnchor += unallocatedDelta;
-        meterTodayUncalibrated += unallocatedDelta;
+    // Add live, unpersisted consumption to the active meter's reading (rawAfterAnchor).
+    if (meterId === state.activeMeter && unallocatedDelta > 0) {
+      rawAfterAnchor += unallocatedDelta;
+    }
+
+    // Manual readings today override the TOMZN-derived scale for this meter so the
+    // physical meter card reflects the actual reading. Sum all same-day corrections.
+    const meterLogsToday = logs.filter((log) => log.meterId === meterId && log.timestamp >= todayStart && (log.previousAnchorAt == null || log.previousAnchorAt >= todayStart));
+    const manualTodayUsage = meterLogsToday.reduce((sum, log) => sum + finiteNumber(log.correction, 0), 0);
+    const hasManualToday = meterLogsToday.length > 0;
+
+    if (tomznDirectTodayUsage != null && !hasManualToday) {
+      if (meterId === state.activeMeter) {
+        // Active meter: derive from TOMZN direct total minus inactive meters'
+        // frozen usage. TOMZN direct already includes live consumption (it's
+        // from the current TOMZN reading), so no unallocatedDelta needed.
+        // This ensures the active meter absorbs all export correction while
+        // inactive meters stay frozen at their switch-time values.
+        meterTodayUncalibrated = Math.max(0, tomznDirectTodayUsage - inactiveTodayTotal);
       }
+      // Inactive meter: keep raw allocation-based usage (frozen, no scaling).
+      // Allocation deltas already exclude export periods (recordTomzn pauses
+      // during export), so the raw value is already export-corrected.
+    } else if (meterId === state.activeMeter && unallocatedDelta > 0) {
+      // Fallback (no TOMZN direct or has manual reading): add live unallocated delta
+      meterTodayUncalibrated += unallocatedDelta;
     }
 
     const afterAnchor = calibratedUnits(config, rawAfterAnchor);
     const reading = round((config.anchorReading ?? config.cycleBaselineReading) + afterAnchor, 3);
     const cycleUsageValue = Math.max(0, round(reading - config.cycleBaselineReading, 3));
     const remainingUnits = Math.max(0, round(state.slabTargetUnits - cycleUsageValue, 3));
-    const meterToday = calibratedUnits(config, meterTodayUncalibrated);
+    const meterTodayBase = calibratedUnits(config, meterTodayUncalibrated);
+    const meterToday = round(Math.max(0, meterTodayBase + manualTodayUsage), 3);
     const calibrationEvidence = clamp(finiteNumber(config.calibrationTomznUnits, 0), 0, 100);
     
     // Penalize confidence if the last manual reading was far off the prediction
@@ -2063,7 +2070,7 @@ function registerUnifiedSolarRoutes(app, db) {
   // without requiring a database write on every 5s poll. Reset to null on restart.
   const liveTomznRef = { value: null };
   // In-memory live inverter cache — same pattern as liveTomznRef, keeps the
-  // freshest inverter reading for the live payload without DB reads every 3s.
+  // freshest inverter reading for the live payload without DB reads every 7s.
   const liveInverterRef = { value: null };
   // Consecutive InverterZone poll failures. Reset on a successful snapshot.
   // Offline is only published after INVERTER_FAIL_THRESHOLD consecutive fails.
@@ -2477,16 +2484,18 @@ function registerUnifiedSolarRoutes(app, db) {
     // for the next background poll.
     void broadcastLive({ force: true });
     // Trigger a non-blocking fresh poll so the client gets truly fresh
-    // data from Tuya/InverterZone within 1-3s via SSE push (without
+    // data from Tuya/InverterZone within 1-7s via SSE push (without
     // blocking the initial cached response above).
     void Promise.all([pollTomzn({ force: true }), pollInverter({ force: true })])
       .then(() => broadcastLive())
       .catch(() => {});
 
-    // SSE keep-alive comment every 25s (prevents proxy/load-balancer timeouts)
+    // SSE keep-alive comment every 10s. Must be shorter than the overlay's
+    // 15s staleness timeout so the overlay resets its lastDataAt on each ping
+    // and doesn't flash "--" when readings are stable (no fingerprint change).
     const ping = setInterval(() => {
       try { res.write(":ping\n\n"); } catch (e) { clearInterval(ping); }
-    }, 25_000);
+    }, 10_000);
 
     req.on("close", () => {
       clearInterval(ping);
@@ -2567,8 +2576,8 @@ function registerUnifiedSolarRoutes(app, db) {
       const timestamp = clientActionTimestamp(req.body?.timestamp);
       const meter = state.meters[meterId];
       const oldAnchor = meter.anchorReading;
-      const anchorAt = meter.anchorAt || state.lastChangeoverAt;
-      const rawUsageSinceAnchor = await meterUsageSince(allocations, meterId, anchorAt, timestamp);
+      const previousAnchorAt = meter.anchorAt || state.lastChangeoverAt;
+      const rawUsageSinceAnchor = await meterUsageSince(allocations, meterId, previousAnchorAt, timestamp);
       const ratioBefore = meterRatio(meter);
       const predictedReading = round((oldAnchor ?? meter.cycleBaselineReading) + calibratedUnits(meter, rawUsageSinceAnchor), 2);
       const actualUsageSinceAnchor = round(reading - (oldAnchor ?? meter.cycleBaselineReading), 3);
@@ -2596,6 +2605,8 @@ function registerUnifiedSolarRoutes(app, db) {
         learnedRatio: calibration?.ratio ?? null,
         calibrationSampleRatio: calibration?.sampleRatio ?? null,
         anchorAt: timestamp,
+        previousAnchorAt,
+        previousAnchorReading: oldAnchor,
       });
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
       bumpDataVersion();
@@ -2809,10 +2820,10 @@ function registerUnifiedSolarRoutes(app, db) {
   }, 5_000);
 
   // Presence-based poll loop.
-  //   App open / SSE connected / /live?force : poll every 3s (instant hero).
+  //   App open / SSE connected / /live?force : poll every 7s (instant hero).
   //   App closed (no SSE, no recent force)  : poll every 30s (keep cache warm).
   // Backend never stops — idle cadence still feeds the next app-open /live.
-  // pollTomzn/pollInverter de-dupe in-flight so a 3s tick plus /live?force
+  // pollTomzn/pollInverter de-dupe in-flight so a 7s tick plus /live?force
   // cannot double-hit Tuya/InverterZone.
   let pollLoopTimer = null;
   let pollLoopInFlight = false;
@@ -2824,32 +2835,41 @@ function registerUnifiedSolarRoutes(app, db) {
       const tomznP = pollTomzn({ force: true })
         .then(() => broadcastLive())
         .catch((e) => console.error("[Solar Engine] TOMZN poll failed:", e.message));
+      // Inverter runs in the background — a slow/failing inverter (4s timeout)
+      // must not stretch the TOMZN cadence that drives the hero section. Its
+      // broadcast still fires whenever the poll eventually completes.
       const inverterP = pollInverter({ force: true })
         .then(() => broadcastLive())
         .catch((e) => console.error("[Solar Engine] inverter poll failed:", e.message));
-      await Promise.all([tomznP, inverterP]);
-      await broadcastLive();
+      // Wait only for TOMZN so the hero cadence tracks the TOMZN poll duration.
+      await tomznP;
+      void inverterP;
     } catch (e) {
       console.error("[Solar Engine] poll loop failed:", e.message);
     } finally {
       pollLoopInFlight = false;
     }
   };
-  const schedulePollLoop = (immediate = false) => {
+  const schedulePollLoop = (immediate = false, delay = null) => {
     if (pollLoopTimer) { clearTimeout(pollLoopTimer); pollLoopTimer = null; }
     const active = hasLiveAudience();
     const interval = active ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
     if (lastPollMode !== active) {
       lastPollMode = active;
-      console.log(`[Solar Engine] device poll ${active ? "3s (app watching)" : "30s (idle)"}`);
+      console.log(`[Solar Engine] device poll ${active ? "7s (app watching)" : "30s (idle)"}`);
     }
+    const nextDelay = immediate ? 0 : (delay == null ? interval : delay);
     pollLoopTimer = setTimeout(async () => {
+      const startedAt = Date.now();
       await runDevicePoll();
-      schedulePollLoop(false);
-    }, immediate ? 0 : interval);
+      // Schedule from the START of the poll: a slow poll (e.g. inverter
+      // timeout) shortens the gap instead of stacking an extra full interval
+      // on top of itself.
+      schedulePollLoop(false, Math.max(0, interval - (Date.now() - startedAt)));
+    }, nextDelay);
   };
   bumpPollLoop = () => {
-    // Already on the 3s cadence — the next tick is soon enough.
+    // Already on the 7s cadence — the next tick is soon enough.
     if (lastPollMode === true) return;
     schedulePollLoop(true);
   };
