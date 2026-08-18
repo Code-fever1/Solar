@@ -17,11 +17,11 @@ const METER_IDS = new Set(["meter1", "meter2"]);
 const PAKISTAN_OFFSET = "+05:00";
 const INVERTER_LOCAL_HOST = "113.203.197.44";
 const INVERTER_LOCAL_PORT = 3286;
-const INVERTER_POLL_MAX_AGE_MS = 7_000;
-// Device poll cadence is presence-based: 7s while any app is connected,
+const INVERTER_POLL_MAX_AGE_MS = 2_500;
+// Device poll cadence is presence-based: 2.5s while any app is connected,
 // 30s when nobody is watching. Presence = live SSE clients, or a /live?force
 // /dashboard hit in the last 45s (covers the brief window before SSE attaches).
-const POLL_INTERVAL_ACTIVE_MS = 7_000;
+const POLL_INTERVAL_ACTIVE_MS = 2_500;
 const POLL_INTERVAL_IDLE_MS = 30_000;
 const CLIENT_PRESENCE_TTL_MS = 45_000;
 // A single InverterZone timeout must NOT flip the inverter to offline.
@@ -29,9 +29,9 @@ const CLIENT_PRESENCE_TTL_MS = 45_000;
 // Require several consecutive failures before publishing an offline snapshot,
 // matching TOMZN's fail-threshold pattern. ~28s at the 7s background poll.
 const INVERTER_FAIL_THRESHOLD = 4;
-// Live cache is refreshed at most every 7s so the dashboard stays responsive
+// Live cache is refreshed at most every 2.5s so the dashboard stays responsive
 // without hitting Tuya on every frontend poll.
-const TOMZN_LIVE_MAX_AGE_MS = 7_000;
+const TOMZN_LIVE_MAX_AGE_MS = 2_500;
 // Stale-data detection: when TOMZN's WiFi dies, the local Tuya poll fails.
 // We track consecutive poll failures — after TOMZN_FAIL_THRESHOLD failures,
 // we mark the device offline. The fingerprint approach also catches the case
@@ -2820,10 +2820,10 @@ function registerUnifiedSolarRoutes(app, db) {
   }, 5_000);
 
   // Presence-based poll loop.
-  //   App open / SSE connected / /live?force : poll every 7s (instant hero).
+  //   App open / SSE connected / /live?force : poll every 2.5s (instant hero).
   //   App closed (no SSE, no recent force)  : poll every 30s (keep cache warm).
   // Backend never stops — idle cadence still feeds the next app-open /live.
-  // pollTomzn/pollInverter de-dupe in-flight so a 7s tick plus /live?force
+  // pollTomzn/pollInverter de-dupe in-flight so a 2.5s tick plus /live?force
   // cannot double-hit Tuya/InverterZone.
   let pollLoopTimer = null;
   let pollLoopInFlight = false;
@@ -2856,7 +2856,7 @@ function registerUnifiedSolarRoutes(app, db) {
     const interval = active ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
     if (lastPollMode !== active) {
       lastPollMode = active;
-      console.log(`[Solar Engine] device poll ${active ? "7s (app watching)" : "30s (idle)"}`);
+      console.log(`[Solar Engine] device poll ${active ? "2.5s (app watching)" : "30s (idle)"}`);
     }
     const nextDelay = immediate ? 0 : (delay == null ? interval : delay);
     pollLoopTimer = setTimeout(async () => {
@@ -2869,7 +2869,7 @@ function registerUnifiedSolarRoutes(app, db) {
     }, nextDelay);
   };
   bumpPollLoop = () => {
-    // Already on the 7s cadence — the next tick is soon enough.
+    // Already on the 2.5s cadence — the next tick is soon enough.
     if (lastPollMode === true) return;
     schedulePollLoop(true);
   };
