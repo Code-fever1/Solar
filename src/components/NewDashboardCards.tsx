@@ -1,6 +1,6 @@
 import { GlassCard } from "@/components/GlassCard";
 import { ArrowDown, ArrowUp, Home, Sparkles, SunMedium, TowerControl, Zap } from 'lucide-react-native';
-import { memo } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { Dimensions, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
 
