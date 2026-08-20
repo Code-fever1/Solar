@@ -97,6 +97,7 @@ def _reset_connections():
 
 def get_cloud_status():
     """Get cloud status with 5s cache. Uses persistent cloud device."""
+    global _cloud_device
     now = time.time()
     if _cloud_cache["data"] and now - _cloud_cache["ts"] < _CLOUD_CACHE_TTL:
         return _cloud_cache["data"]
@@ -111,7 +112,6 @@ def get_cloud_status():
                 return status
     except Exception:
         # Cloud session may have expired — reset for next init
-        global _cloud_device
         _cloud_device = None
     return None
 
