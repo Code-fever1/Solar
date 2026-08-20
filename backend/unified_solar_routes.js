@@ -2905,6 +2905,7 @@ function registerUnifiedSolarRoutes(app, db) {
         calls: perfStats.buildDashboardCalls,
         avgMs: perfStats.buildDashboardCalls > 0 ? Math.round(perfStats.buildDashboardTotalMs / perfStats.buildDashboardCalls) : 0,
         maxMs: perfStats.buildDashboardMaxMs,
+        cacheHits: perfStats.dashboardCacheHits,
       },
       buildLivePayload: {
         calls: perfStats.buildLivePayloadCalls,
@@ -2944,12 +2945,13 @@ function registerUnifiedSolarRoutes(app, db) {
     const lpAvg = perfStats.buildLivePayloadCalls > 0 ? Math.round(perfStats.buildLivePayloadTotalMs / perfStats.buildLivePayloadCalls) : 0;
     const tzAvg = perfStats.tomznPollCount > 0 ? Math.round(perfStats.tomznPollTotalMs / perfStats.tomznPollCount) : 0;
     const invAvg = perfStats.inverterPollCount > 0 ? Math.round(perfStats.inverterPollTotalMs / perfStats.inverterPollCount) : 0;
-    console.log(`[Perf] ${elapsed}ms window | dashboard: ${perfStats.buildDashboardCalls}x avg=${bdAvg}ms max=${perfStats.buildDashboardMaxMs}ms | livePayload: ${perfStats.buildLivePayloadCalls}x avg=${lpAvg}ms dbHits=${perfStats.buildLivePayloadDbHits} | sse: ${perfStats.sseBroadcasts}sent ${perfStats.sseSkipped}skip ${perfStats.sseClientCount}clients | dataVersion: ${perfStats.dataVersionBumps}bumps (${perfStats.dataVersionBumpsFromLiveTick}fromLiveTick) | tomzn: ${perfStats.tomznPollCount}polls ${perfStats.tomznPythonSpawnCount}spawns avg=${tzAvg}ms max=${perfStats.tomznPollMaxMs}ms | inverter: ${perfStats.inverterPollCount}polls avg=${invAvg}ms max=${perfStats.inverterPollMaxMs}ms fails=${perfStats.inverterPollFailures}`);
+    console.log(`[Perf] ${elapsed}ms window | dashboard: ${perfStats.buildDashboardCalls}x avg=${bdAvg}ms max=${perfStats.buildDashboardMaxMs}ms cacheHits=${perfStats.dashboardCacheHits} | livePayload: ${perfStats.buildLivePayloadCalls}x avg=${lpAvg}ms dbHits=${perfStats.buildLivePayloadDbHits} | sse: ${perfStats.sseBroadcasts}sent ${perfStats.sseSkipped}skip ${perfStats.sseClientCount}clients | dataVersion: ${perfStats.dataVersionBumps}bumps (${perfStats.dataVersionBumpsFromLiveTick}fromLiveTick) | tomzn: ${perfStats.tomznPollCount}polls ${perfStats.tomznPythonSpawnCount}spawns avg=${tzAvg}ms max=${perfStats.tomznPollMaxMs}ms | inverter: ${perfStats.inverterPollCount}polls avg=${invAvg}ms max=${perfStats.inverterPollMaxMs}ms fails=${perfStats.inverterPollFailures}`);
     // Reset window
     perfStats.windowStart = Date.now();
     perfStats.buildDashboardCalls = 0;
     perfStats.buildDashboardTotalMs = 0;
     perfStats.buildDashboardMaxMs = 0;
+    perfStats.dashboardCacheHits = 0;
     perfStats.buildLivePayloadCalls = 0;
     perfStats.buildLivePayloadTotalMs = 0;
     perfStats.buildLivePayloadMaxMs = 0;
