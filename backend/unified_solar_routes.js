@@ -108,6 +108,8 @@ const perfStats = {
   sseBroadcasts: 0,
   sseSkipped: 0,
   sseClientCount: 0,
+  sseReplayed: 0,
+  sseResyncRequired: 0,
   dataVersionBumps: 0,
   dataVersionBumpsFromLiveTick: 0,
   tomznPollCount: 0,
@@ -2688,6 +2690,17 @@ function registerUnifiedSolarRoutes(app, db) {
   // independent polling. Eliminates the "each client triggers its own backend
   // poll" pattern that caused random bursts.
   const liveClients = new Set();
+  // ── Phase 4: SSE Event IDs + replay buffer ──
+  // Monotonically increasing event sequence. Resets on server restart — clients
+  // detect this via the resync_required event when Last-Event-ID is older than
+  // the buffer's oldest entry (or when the server restarted and the buffer is
+  // empty / starts at a lower seq).
+  let eventSeq = 0;
+  // In-memory ring buffer of the last N broadcast events. Each entry is
+  // { seq, payload } where payload is the already-serialized JSON string.
+  // Size is configurable via REPLAY_BUFFER_SIZE (default 1000).
+  const REPLAY_BUFFER_SIZE = 1000;
+  const replayBuffer = [];
   // Last time a live client proved it was watching (SSE connect or /live?force).
   // Used so the poller speeds up on app-open even before SSE attaches.
   let lastClientSeenAt = 0;
@@ -2714,9 +2727,14 @@ function registerUnifiedSolarRoutes(app, db) {
       if (!force && fp === lastLiveFingerprint) { perfStats.sseSkipped += 1; return; }
       lastLiveFingerprint = fp;
       const payload = JSON.stringify(live);
+      // Phase 4: assign monotonically increasing event ID and store in replay buffer
+      eventSeq += 1;
+      const seq = eventSeq;
+      replayBuffer.push({ seq, payload });
+      if (replayBuffer.length > REPLAY_BUFFER_SIZE) replayBuffer.shift();
       perfStats.sseBroadcasts += 1;
       for (const res of liveClients) {
-        try { res.write(`data: ${payload}\n\n`); }
+        try { res.write(`id: ${seq}\ndata: ${payload}\n\n`); }
         catch (e) { liveClients.delete(res); perfStats.sseClientCount = liveClients.size; }
       }
     } catch (e) { console.error("[Solar Engine] live broadcast failed:", e.message); }
@@ -2747,12 +2765,47 @@ function registerUnifiedSolarRoutes(app, db) {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
+    // Phase 4: Last-Event-ID replay. If the client sends Last-Event-ID (set
+    // automatically by react-native-sse / standard SSE clients on reconnect),
+    // replay any buffered events with seq > lastEventId. If the oldest buffer
+    // entry is newer than lastEventId (or the buffer is empty), the client is
+    // too far behind — send resync_required so it does a full dashboard fetch.
+    const lastEventIdHeader = req.headers["last-event-id"];
+    const lastEventId = lastEventIdHeader ? parseInt(lastEventIdHeader, 10) : NaN;
+    let replayed = false;
+    let resynced = false;
+    if (!Number.isNaN(lastEventId) && lastEventId > 0) {
+      if (replayBuffer.length === 0 || replayBuffer[0].seq > lastEventId + 1) {
+        // Buffer doesn't cover the gap — client missed events older than our
+        // buffer. Send resync_required named event so the client does a full
+        // dashboard fetch.
+        resynced = true;
+        perfStats.sseResyncRequired += 1;
+        try { res.write(`event: resync_required\ndata: {"reason":"replay_unavailable","lastEventId":${lastEventId}}\n\n`); }
+        catch (e) { /* client already gone */ }
+      } else {
+        // Replay all buffered events with seq > lastEventId
+        for (const entry of replayBuffer) {
+          if (entry.seq > lastEventId) {
+            try { res.write(`id: ${entry.seq}\ndata: ${entry.payload}\n\n`); }
+            catch (e) { break; }
+          }
+        }
+        replayed = true;
+        perfStats.sseReplayed += replayBuffer.filter(e => e.seq > lastEventId).length;
+      }
+    }
+
     liveClients.add(res);
     perfStats.sseClientCount = liveClients.size;
     markClientPresent();
     // Send current cached state immediately so the client doesn't wait
-    // for the next background poll.
-    void broadcastLive({ force: true });
+    // for the next background poll. Skip this if we just replayed (the last
+    // replayed event is the current state). If we sent resync_required, the
+    // force broadcast gives the client the current state as a fresh event.
+    if (!replayed) {
+      void broadcastLive({ force: true });
+    }
     // Trigger a non-blocking fresh poll so the client gets truly fresh
     // data from Tuya/InverterZone within 1-7s via SSE push (without
     // blocking the initial cached response above).
@@ -3092,6 +3145,10 @@ function registerUnifiedSolarRoutes(app, db) {
         broadcasts: perfStats.sseBroadcasts,
         skipped: perfStats.sseSkipped,
         clients: perfStats.sseClientCount,
+        replayed: perfStats.sseReplayed,
+        resyncRequired: perfStats.sseResyncRequired,
+        eventSeq,
+        replayBufferSize: replayBuffer.length,
       },
       dataVersion: {
         bumps: perfStats.dataVersionBumps,
@@ -3120,7 +3177,7 @@ function registerUnifiedSolarRoutes(app, db) {
     const lpAvg = perfStats.buildLivePayloadCalls > 0 ? Math.round(perfStats.buildLivePayloadTotalMs / perfStats.buildLivePayloadCalls) : 0;
     const tzAvg = perfStats.tomznPollCount > 0 ? Math.round(perfStats.tomznPollTotalMs / perfStats.tomznPollCount) : 0;
     const invAvg = perfStats.inverterPollCount > 0 ? Math.round(perfStats.inverterPollTotalMs / perfStats.inverterPollCount) : 0;
-    console.log(`[Perf] ${elapsed}ms window | dashboard: ${perfStats.buildDashboardCalls}x avg=${bdAvg}ms max=${perfStats.buildDashboardMaxMs}ms cacheHits=${perfStats.dashboardCacheHits} | livePayload: ${perfStats.buildLivePayloadCalls}x avg=${lpAvg}ms dbHits=${perfStats.buildLivePayloadDbHits} | sse: ${perfStats.sseBroadcasts}sent ${perfStats.sseSkipped}skip ${perfStats.sseClientCount}clients | dataVersion: ${perfStats.dataVersionBumps}bumps (${perfStats.dataVersionBumpsFromLiveTick}fromLiveTick) | tomzn: ${perfStats.tomznPollCount}polls ${perfStats.tomznPythonSpawnCount}spawns avg=${tzAvg}ms max=${perfStats.tomznPollMaxMs}ms | inverter: ${perfStats.inverterPollCount}polls avg=${invAvg}ms max=${perfStats.inverterPollMaxMs}ms fails=${perfStats.inverterPollFailures}`);
+    console.log(`[Perf] ${elapsed}ms window | dashboard: ${perfStats.buildDashboardCalls}x avg=${bdAvg}ms max=${perfStats.buildDashboardMaxMs}ms cacheHits=${perfStats.dashboardCacheHits} | livePayload: ${perfStats.buildLivePayloadCalls}x avg=${lpAvg}ms dbHits=${perfStats.buildLivePayloadDbHits} | sse: ${perfStats.sseBroadcasts}sent ${perfStats.sseSkipped}skip ${perfStats.sseClientCount}clients replayed=${perfStats.sseReplayed} resync=${perfStats.sseResyncRequired} seq=${eventSeq} buf=${replayBuffer.length} | dataVersion: ${perfStats.dataVersionBumps}bumps (${perfStats.dataVersionBumpsFromLiveTick}fromLiveTick) | tomzn: ${perfStats.tomznPollCount}polls ${perfStats.tomznPythonSpawnCount}spawns avg=${tzAvg}ms max=${perfStats.tomznPollMaxMs}ms | inverter: ${perfStats.inverterPollCount}polls avg=${invAvg}ms max=${perfStats.inverterPollMaxMs}ms fails=${perfStats.inverterPollFailures}`);
     // Reset window
     perfStats.windowStart = Date.now();
     perfStats.buildDashboardCalls = 0;
@@ -3133,6 +3190,8 @@ function registerUnifiedSolarRoutes(app, db) {
     perfStats.buildLivePayloadDbHits = 0;
     perfStats.sseBroadcasts = 0;
     perfStats.sseSkipped = 0;
+    perfStats.sseReplayed = 0;
+    perfStats.sseResyncRequired = 0;
     perfStats.dataVersionBumps = 0;
     perfStats.dataVersionBumpsFromLiveTick = 0;
     perfStats.tomznPollCount = 0;

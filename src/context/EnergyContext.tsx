@@ -198,10 +198,22 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const stopIdlePollingRef = useRef<(() => void) | null>(null);
   const startRetryLoopRef = useRef<(() => void) | null>(null);
 
+  // ── Phase 4: SSE Event ID dedup ──
+  // lastEventIdRef tracks the highest event ID seen (in-memory only, NOT
+  // persisted to AsyncStorage per Phase 4 spec). react-native-sse automatically
+  // sends Last-Event-ID on reconnect, so we only need this for diagnostics.
+  const lastEventIdRef = useRef<number>(0);
+  // processedEventIdsRef holds the last N event IDs we've already applied,
+  // so replayed events from the backend don't double-apply on reconnect.
+  const PROCESSED_IDS_MAX = 100;
+  const processedEventIdsRef = useRef<Set<number>>(new Set());
+
   // ── Phase 1: Performance instrumentation (read-only, no behavior change) ──
   const perfRef = useRef({
     windowStart: Date.now(),
     sseEvents: 0,
+    sseDeduped: 0,
+    sseResync: 0,
     applySnapshotCalls: 0,
     applyLiveCalls: 0,
     syncDashboardCalls: 0,
@@ -643,7 +655,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     //   SSE  — /live/stream (instant push: tomznLive + inverter + gridFlow)
     //   30s  — /dashboard/sync (delta check: { changed: false } if nothing changed)
     //   60s  — /flow-history (chart data, only grows throughout the day)
-    let liveEs: RNEventSource | null = null;
+    let liveEs: RNEventSource<"resync_required"> | null = null;
     let syncInterval: ReturnType<typeof setInterval> | null = null;
     let flowInterval: ReturnType<typeof setInterval> | null = null;
     let idleLiveInterval: ReturnType<typeof setInterval> | null = null;
@@ -651,19 +663,49 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     const startLiveStream = () => {
       stopLiveStream();
       try {
-        liveEs = new RNEventSource(`${API_URL}/live/stream`, {
+        liveEs = new RNEventSource<"resync_required">(`${API_URL}/live/stream`, {
           pollingInterval: 3000, // auto-reconnect 3s after a disconnect
           timeout: 0, // no activity timeout — connection stays open indefinitely
         });
         liveEs.addEventListener("message", (event) => {
           try {
             if (!event.data) return;
+            // Phase 4: deduplicate by event ID. react-native-sse parses the
+            // SSE id: field and exposes it as event.lastEventId. On reconnect,
+            // the backend replays missed events — skip any we've already seen.
+            const eventId = event.lastEventId ? parseInt(event.lastEventId, 10) : NaN;
+            if (!Number.isNaN(eventId) && eventId > 0) {
+              if (processedEventIdsRef.current.has(eventId)) {
+                perfRef.current.sseDeduped += 1;
+                return;
+              }
+              processedEventIdsRef.current.add(eventId);
+              if (processedEventIdsRef.current.size > PROCESSED_IDS_MAX) {
+                // Evict oldest — Set preserves insertion order, so delete the
+                // first entry. This is O(n) but N=100 so negligible.
+                const first = processedEventIdsRef.current.values().next().value;
+                if (first !== undefined) processedEventIdsRef.current.delete(first);
+              }
+              if (eventId > lastEventIdRef.current) lastEventIdRef.current = eventId;
+            }
             perfRef.current.sseEvents += 1;
             const data = JSON.parse(event.data);
             applyLive(data);
           } catch {
             // ignore parse errors (keep-alive pings, partial chunks)
           }
+        });
+        // Phase 4: resync_required — backend sends this named event when
+        // Last-Event-ID is older than the replay buffer. Trigger a full
+        // dashboard fetch to resync.
+        liveEs.addEventListener("resync_required", (_event) => {
+          perfRef.current.sseResync += 1;
+          // Clear dedup set since we're starting fresh after a resync
+          processedEventIdsRef.current.clear();
+          lastEventIdRef.current = 0;
+          // Full dashboard fetch (refresh=false: don't force backend poll,
+          // just get the current cached dashboard which is authoritative)
+          void loadDashboard(false);
         });
       } catch {
         // RNEventSource construction failed — the 30s syncInterval will keep data fresh
@@ -765,9 +807,11 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     const interval = setInterval(() => {
       const p = perfRef.current;
       const elapsed = Date.now() - p.windowStart;
-      console.log(`[PerfFE] ${elapsed}ms | sse:${p.sseEvents} applyLive:${p.applyLiveCalls} applySnapshot:${p.applySnapshotCalls} syncDash:${p.syncDashboardCalls} fetchLive:${p.fetchLiveCalls} loadDash:${p.loadDashboardCalls} loadFlow:${p.loadFlowHistoryCalls}`);
+      console.log(`[PerfFE] ${elapsed}ms | sse:${p.sseEvents} deduped:${p.sseDeduped} resync:${p.sseResync} applyLive:${p.applyLiveCalls} applySnapshot:${p.applySnapshotCalls} syncDash:${p.syncDashboardCalls} fetchLive:${p.fetchLiveCalls} loadDash:${p.loadDashboardCalls} loadFlow:${p.loadFlowHistoryCalls}`);
       p.windowStart = Date.now();
       p.sseEvents = 0;
+      p.sseDeduped = 0;
+      p.sseResync = 0;
       p.applyLiveCalls = 0;
       p.applySnapshotCalls = 0;
       p.syncDashboardCalls = 0;
