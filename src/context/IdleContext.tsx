@@ -49,7 +49,10 @@ export function IdleProvider({ children }: { children: ReactNode }) {
     const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
       if (state === "active") {
         resetIdleTimer();
-      } else {
+      } else if (state === "background") {
+        // Only treat true background as idle. "inactive" fires for the
+        // notification shade / overlay permission sheet and would freeze
+        // dashboard polling while the app is still visible.
         clearTimer();
         if (!isIdleRef.current) {
           isIdleRef.current = true;

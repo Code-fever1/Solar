@@ -191,6 +191,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const deletedLogIdsRef = useRef<Set<string>>(new Set());
   const dataVersionRef = useRef<number>(0);
   const lastLiveSigRef = useRef("");
+  const lastUsageTickRef = useRef<{ energyKwh: number; at: number; exporting: boolean } | null>(null);
   const startLiveStreamRef = useRef<(() => void) | null>(null);
   const startDashboardPollingRef = useRef<(() => void) | null>(null);
   const startIdlePollingRef = useRef<(() => void) | null>(null);
@@ -329,6 +330,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       }
     }
     setSnapshot(next);
+    lastUsageTickRef.current = next.tomznLive?.energyKwh > 0
+      ? { energyKwh: next.tomznLive.energyKwh, at: Date.now(), exporting: next.gridFlow?.direction === "export" }
+      : null;
     if (options.persist !== false) saveSnapshot(next);
     if (options.clearError !== false) {
       setIsOffline(false);
@@ -358,7 +362,8 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
   const request = async (path: string, init?: RequestInit) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8_000);
+    const timeoutMs = path.includes("/dashboard") || path.includes("/flow-history") ? 20_000 : 8_000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(`${API_URL}${path}`, {
         ...init,
@@ -423,6 +428,8 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     }
   };
 
+
+
   // Lightweight live fetch — returns just tomznLive + inverter without the heavy
   // dashboard DB queries. Used on app open and 5s polling so the hero section
   // Apply live data (tomznLive + inverter + gridFlow) to the snapshot. Shared
@@ -447,19 +454,59 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     if (!data || (!data.tomznLive && !data.inverter)) return;
     const sig = liveSig(data);
     const changed = sig !== lastLiveSigRef.current;
-    if (changed) {
-      lastLiveSigRef.current = sig;
-      setSnapshot((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          tomznLive: data.tomznLive ?? prev.tomznLive,
-          inverter: data.inverter ?? prev.inverter,
-          gridFlow: data.gridFlow ?? prev.gridFlow,
-          weather: data.weather ?? prev.weather,
-          ups: data.ups !== undefined ? data.ups : prev.ups,
-        };
-      });
+    if (changed) lastLiveSigRef.current = sig;
+    const exporting = data.gridFlow?.direction === "export";
+    const nextEnergy = Number(data.tomznLive?.energyKwh);
+    setSnapshot((prev) => {
+      if (!prev) return prev;
+      const next = {
+        ...prev,
+        tomznLive: data.tomznLive ?? prev.tomznLive,
+        inverter: data.inverter ?? prev.inverter,
+        gridFlow: data.gridFlow ?? prev.gridFlow,
+        weather: data.weather ?? prev.weather,
+        ups: data.ups !== undefined ? data.ups : prev.ups,
+      };
+      const prevEnergy = lastUsageTickRef.current?.energyKwh;
+      const importStep = !exporting
+        && Number.isFinite(nextEnergy)
+        && nextEnergy > 0
+        && Number.isFinite(prevEnergy)
+        && nextEnergy > (prevEnergy as number)
+        && nextEnergy - (prevEnergy as number) <= 1
+        ? Math.round((nextEnergy - (prevEnergy as number)) * 1000) / 1000
+        : 0;
+      if (importStep > 0) {
+        const activeId = (next.activeMeter || "meter1") as MeterId;
+        const activeMeter = next.meters?.[activeId];
+        next.home = next.home
+          ? { ...next.home, todayUsage: Math.round(((next.home.todayUsage || 0) + importStep) * 1000) / 1000 }
+          : next.home;
+        next.energyToday = next.energyToday
+          ? {
+              ...next.energyToday,
+              homeKwh: Math.round(((next.energyToday.homeKwh || 0) + importStep) * 1000) / 1000,
+              gridKwh: Math.round(((next.energyToday.gridKwh || 0) + importStep) * 1000) / 1000,
+            }
+          : next.energyToday;
+        if (activeMeter) {
+          const todayUsage = Math.round(((activeMeter.todayUsage || 0) + importStep) * 1000) / 1000;
+          next.meters = {
+            ...next.meters,
+            [activeId]: {
+              ...activeMeter,
+              todayUsage,
+              currentDaily: todayUsage,
+              reading: Math.round(((activeMeter.reading || 0) + importStep) * 1000) / 1000,
+              cycleUsage: Math.round(((activeMeter.cycleUsage || 0) + importStep) * 1000) / 1000,
+            },
+          };
+        }
+      }
+      return next;
+    });
+    if (Number.isFinite(nextEnergy) && nextEnergy > 0) {
+      lastUsageTickRef.current = { energyKwh: nextEnergy, at: Date.now(), exporting };
     }
     setLastSyncedAt(Date.now());
     setIsOffline(false);
@@ -561,7 +608,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         if (initialFetchOk) {
           dataVersionRef.current = 0;
           void fetchLive(true);
-          void syncDashboard();
+          void loadDashboard(false);
           void loadFlowHistory();
         } else {
           setIsOffline(true);
@@ -635,17 +682,17 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
     const onAppStateChange = (state: AppStateStatus) => {
       if (state === "active") {
-        // App came to foreground. Cached live first (hero + tag instantly),
-        // then a forced device poll + full dashboard + chart in the background.
+        // JS was suspended — SSE, timers, and today-usage are stale even if
+        // the native overlay kept polling /live. Force a full dashboard rebuild
+        // (not delta-sync) so Energy Used + meter cards catch up immediately.
+        lastUsageTickRef.current = null;
         dataVersionRef.current = 0;
         void fetchLive(false);
         void fetchLive(true);
-        void syncDashboard();
+        void loadDashboard(false);
         void loadFlowHistory();
-        // Reconnect SSE in case it dropped while JS was suspended in the background
         startLiveStream();
         startDashboardPolling();
-        // Restart retry loop in case internet was restored while backgrounded
         startRetryLoopRef.current?.();
       }
     };
@@ -664,7 +711,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
         dataVersionRef.current = 0;
         void fetchLive(true);
-        void syncDashboard();
+        void loadDashboard(false);
         void loadFlowHistory();
         startLiveStream();
       }, 3_000);
@@ -701,9 +748,10 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       startIdlePollingRef.current?.();
     } else {
       stopIdlePollingRef.current?.();
+      lastUsageTickRef.current = null;
       dataVersionRef.current = 0;
       void fetchLive(true);
-      void syncDashboard();
+      void loadDashboard(false);
       startLiveStreamRef.current?.();
       startDashboardPollingRef.current?.();
     }

@@ -323,24 +323,16 @@ function determineGridFlow(inverter, tomznPowerW, flowState, now) {
       return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: balance, isExporting: false };
     }
     if (balance < -ENERGY_BALANCE_THRESHOLD_W) {
-      // Excess solar (solarW > loadW). Check inverter's grid signal for direction.
-      // TOMZN powerW is always positive (counts both import and export), so we
-      // can't use it for direction — rely on the inverter's gridWRaw/gridDirection.
-      const gridWRaw = finiteNumber(inverter?.gridWRaw, 0);
-      const gridDirection = inverter?.gridDirection || "import";
-      if (gridDirection === "export" || gridWRaw < -50) {
-        if (flowState) { flowState.lastDirection = "export"; flowState.atCrossing = false; }
-        return { mode: "hybrid", direction: "export", homeW: loadW, gridExchangeW: balance, isExporting: true };
-      }
-      // Inverter doesn't confirm export. If TOMZN is online with power flowing,
-      // it's likely import (home drawing from grid despite high solar).
-      if (tomznW > 0) {
+      // Excess solar (solarW > loadW). TOMZN's counter still ticks during this
+      // surplus because it cannot tell import from export. Treat hybrid surplus
+      // as export so meter today-units and home import stay import-only.
+      // Idle only when the surplus is tiny and TOMZN sees no flow.
+      if (tomznW < 20 && Math.abs(balance) < 80) {
         if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
-        return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: Math.max(0, loadW - solarW), isExporting: false };
+        return { mode: "hybrid", direction: "idle", homeW: loadW, gridExchangeW: 0, isExporting: false };
       }
-      // TOMZN offline, inverter doesn't confirm export — idle (solar covering home)
-      if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
-      return { mode: "hybrid", direction: "idle", homeW: loadW, gridExchangeW: 0, isExporting: false };
+      if (flowState) { flowState.lastDirection = "export"; flowState.atCrossing = false; }
+      return { mode: "hybrid", direction: "export", homeW: loadW, gridExchangeW: balance, isExporting: true };
     }
     if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
     return { mode: "hybrid", direction: "idle", homeW: loadW, gridExchangeW: 0, isExporting: false };
@@ -396,6 +388,25 @@ function buildExportBuckets(inverterSamples, tomznSamples, bucketMs) {
     if (flow.isExporting) exportBuckets.add(bucket);
   }
   return exportBuckets;
+}
+
+// TOMZN energyKwh ticks for both import and export. Sum only the steps that
+// are NOT in an export bucket so meter/home today-units stay import-only.
+function importKwhFromSnapshots(snapshots, exportBuckets, bucketMs, fromTs, untilTs) {
+  const rows = (snapshots || [])
+    .filter((s) => s.energyKwh != null && s.energyKwh > 0 && s.timestamp >= fromTs && s.timestamp <= untilTs)
+    .sort((a, b) => a.timestamp - b.timestamp);
+  let importKwh = 0;
+  for (let i = 1; i < rows.length; i += 1) {
+    const prev = rows[i - 1];
+    const curr = rows[i];
+    const step = finiteNumber(curr.energyKwh, 0) - finiteNumber(prev.energyKwh, 0);
+    if (step <= 0 || step > 1) continue;
+    const bucket = Math.floor(curr.timestamp / bucketMs);
+    if (exportBuckets.has(bucket)) continue;
+    importKwh += step;
+  }
+  return round(importKwh, 3);
 }
 
 // Parse inverter realTime format "DD-MM-YYYY HH:mm" → epoch ms.
@@ -1779,17 +1790,28 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
 
   const readings = {};
   let maxErrorPenalty = 0;
-  // Inactive meters' usage is frozen once you switch away — their allocation
-  // deltas are already export-corrected (recordTomzn pauses during export).
-  // Only the active meter is adjusted so the total matches tomznDirectTodayUsage.
-  const inactiveTodayTotal = Array.from(METER_IDS).reduce((sum, id) =>
-    sum + (id !== state.activeMeter ? (todayUsage[id] || 0) : 0), 0);
+  // Each meter owns its own import-only today units. TOMZN snapshots tagged
+  // with activeMeter are walked; export buckets are skipped so daytime surplus
+  // does not inflate the physical meter card. Swap freezes the old meter.
+  const meterImportToday = {};
+  for (const meterId of METER_IDS) {
+    meterImportToday[meterId] = importKwhFromSnapshots(
+      rawTodayTomzn.filter((s) => (s.activeMeter || "meter1") === meterId),
+      exportBuckets,
+      FLOW_BUCKET_MS,
+      todayStart,
+      now,
+    );
+  }
+  if (unallocatedDelta > 0 && state.activeMeter) {
+    meterImportToday[state.activeMeter] = round((meterImportToday[state.activeMeter] || 0) + unallocatedDelta, 3);
+  }
   for (const meterId of METER_IDS) {
     const config = state.meters[meterId];
     let rawAfterAnchor = await meterUsageSince(allocations, meterId, Math.max(config.anchorAt || cycleStart, cycleStart), now);
-    let meterTodayUncalibrated = todayUsage[meterId] || 0;
+    let meterTodayUncalibrated = meterImportToday[meterId] || todayUsage[meterId] || 0;
 
-    // Add live, unpersisted consumption to the active meter's reading (rawAfterAnchor).
+    // Add live, unpersisted consumption to the active meter's cycle reading.
     if (meterId === state.activeMeter && unallocatedDelta > 0) {
       rawAfterAnchor += unallocatedDelta;
     }
@@ -1798,24 +1820,6 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     // physical meter card reflects the actual reading. Sum all same-day corrections.
     const meterLogsToday = logs.filter((log) => log.meterId === meterId && log.timestamp >= todayStart && (log.previousAnchorAt == null || log.previousAnchorAt >= todayStart));
     const manualTodayUsage = meterLogsToday.reduce((sum, log) => sum + finiteNumber(log.correction, 0), 0);
-    const hasManualToday = meterLogsToday.length > 0;
-
-    if (tomznDirectTodayUsage != null && !hasManualToday) {
-      if (meterId === state.activeMeter) {
-        // Active meter: derive from TOMZN direct total minus inactive meters'
-        // frozen usage. TOMZN direct already includes live consumption (it's
-        // from the current TOMZN reading), so no unallocatedDelta needed.
-        // This ensures the active meter absorbs all export correction while
-        // inactive meters stay frozen at their switch-time values.
-        meterTodayUncalibrated = Math.max(0, tomznDirectTodayUsage - inactiveTodayTotal);
-      }
-      // Inactive meter: keep raw allocation-based usage (frozen, no scaling).
-      // Allocation deltas already exclude export periods (recordTomzn pauses
-      // during export), so the raw value is already export-corrected.
-    } else if (meterId === state.activeMeter && unallocatedDelta > 0) {
-      // Fallback (no TOMZN direct or has manual reading): add live unallocated delta
-      meterTodayUncalibrated += unallocatedDelta;
-    }
 
     const afterAnchor = calibratedUnits(config, rawAfterAnchor);
     const reading = round((config.anchorReading ?? config.cycleBaselineReading) + afterAnchor, 3);
@@ -2211,7 +2215,11 @@ function registerUnifiedSolarRoutes(app, db) {
       // writing to the database or creating an allocation record.
       const state = await ensureState(stateCollection);
       const liveRecord = { ...snapshot, timestamp: now, energyKwh, activeMeter: state.activeMeter };
+      const prevEnergy = finiteNumber(liveTomznRef.value?.energyKwh);
       liveTomznRef.value = liveRecord;
+      // Live energy ticks change today-usage even without a DB persist. Bump
+      // dataVersion so /dashboard/sync returns a full rebuild, not just hero.
+      if (prevEnergy != null && energyKwh > prevEnergy) bumpDataVersion();
       return { state, record: liveRecord, allocatedDelta: 0 };
     })();
     try { return await pollInFlight; } finally { pollInFlight = null; }
