@@ -2839,6 +2839,7 @@ function registerUnifiedSolarRoutes(app, db) {
       state.lastMonthTotalOverride = total;
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
+      invalidateStateCache();
       res.json(await getCachedDashboard());
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
