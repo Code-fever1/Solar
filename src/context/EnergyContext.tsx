@@ -429,6 +429,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   };
 
   const loadDashboard = async (refresh = true) => {
+    perfRef.current.loadDashboardCalls += 1;
     try {
       const data = await request(`/dashboard?refresh=${refresh ? "true" : "false"}`);
       applySnapshot(data);
@@ -533,6 +534,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   // During normal operation the SSE subscription (startLiveStream) handles
   // updates — this is only for the initial foreground burst.
   const fetchLive = async (force = false): Promise<boolean> => {
+    perfRef.current.fetchLiveCalls += 1;
     try {
       const data = await request(`/live${force ? "?force=true" : ""}`);
       applyLive(data);
@@ -547,6 +549,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   // changed, it returns the full dashboard. This avoids re-fetching and re-rendering
   // the entire dashboard every 5s when only the hero section needs updating.
   const syncDashboard = async () => {
+    perfRef.current.syncDashboardCalls += 1;
     try {
       // If there are pending operations, flush them first — this may bump
       // dataVersion on the server, so the sync that follows will pick up changes.
@@ -576,6 +579,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   };
 
   const loadFlowHistory = async () => {
+    perfRef.current.loadFlowHistoryCalls += 1;
     try {
       const data = await request("/flow-history");
       if (Array.isArray(data)) setFlowHistory24h(data);
@@ -654,6 +658,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         liveEs.addEventListener("message", (event) => {
           try {
             if (!event.data) return;
+            perfRef.current.sseEvents += 1;
             const data = JSON.parse(event.data);
             applyLive(data);
           } catch {
@@ -753,6 +758,24 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       stopIdlePollingRef.current = null;
       startRetryLoopRef.current = null;
     };
+  }, []);
+
+  // ── Phase 1: Periodic perf log (every 10s) — no behavior change ──
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const p = perfRef.current;
+      const elapsed = Date.now() - p.windowStart;
+      console.log(`[PerfFE] ${elapsed}ms | sse:${p.sseEvents} applyLive:${p.applyLiveCalls} applySnapshot:${p.applySnapshotCalls} syncDash:${p.syncDashboardCalls} fetchLive:${p.fetchLiveCalls} loadDash:${p.loadDashboardCalls} loadFlow:${p.loadFlowHistoryCalls}`);
+      p.windowStart = Date.now();
+      p.sseEvents = 0;
+      p.applyLiveCalls = 0;
+      p.applySnapshotCalls = 0;
+      p.syncDashboardCalls = 0;
+      p.fetchLiveCalls = 0;
+      p.loadDashboardCalls = 0;
+      p.loadFlowHistoryCalls = 0;
+    }, 10_000);
+    return () => clearInterval(interval);
   }, []);
 
   // Idle mode: switch from SSE (5s push) to 15s HTTP polling to save battery.
