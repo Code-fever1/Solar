@@ -500,6 +500,16 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   ups = null,
   gridFlow = null,
 }: SceneProps) {
+  // ── Phase 1: Render counter (no behavior change) ──
+  const _renderCount = useRef(0);
+  _renderCount.current += 1;
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (_renderCount.current > 0) console.log(`[PerfFE] LiveEnergyScene renders: ${_renderCount.current}/10s`);
+      _renderCount.current = 0;
+    }, 10_000);
+    return () => clearInterval(iv);
+  }, []);
   const { isIdle, isIdleShared } = useIdle();
   const now = Date.now();
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
