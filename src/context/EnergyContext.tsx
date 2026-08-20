@@ -1,12 +1,12 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
-    createContext,
-    useContext,
-    useEffect,
-    useMemo,
-    useRef,
-    useState,
-    type ReactNode,
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
 } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import RNEventSource from "react-native-sse";
@@ -14,43 +14,43 @@ import RNEventSource from "react-native-sse";
 import { useIdle } from "@/context/IdleContext";
 import { interpolateUsageHistory, summarizeHistory } from "@/utils/calculations";
 import {
-    applyOfflineBaseline,
-    applyOfflineChangeover,
-    applyOfflineManualReading,
-    estimateOfflineDashboard,
-    type CachedDashboardSnapshot,
-    type CachedTomznLive,
+  applyOfflineBaseline,
+  applyOfflineChangeover,
+  applyOfflineManualReading,
+  estimateOfflineDashboard,
+  type CachedDashboardSnapshot,
+  type CachedTomznLive,
 } from "@/utils/offline-dashboard";
 import type {
-    AlertItem,
-    EnergyFlowPoint,
-    EnergyToday,
-    GridFlow,
-    HistoryPoint,
-    HomeState,
-    InverterTelemetry,
-    LiveTelemetry,
-    ManualLog,
-    MeterId,
-    MeterState,
-    Recommendation,
-    WeatherState,
+  AlertItem,
+  EnergyFlowPoint,
+  EnergyToday,
+  GridFlow,
+  HistoryPoint,
+  HomeState,
+  InverterTelemetry,
+  LiveTelemetry,
+  ManualLog,
+  MeterId,
+  MeterState,
+  Recommendation,
+  WeatherState,
 } from "./energy-types";
 
 export type {
-    AlertItem,
-    EnergyFlowPoint,
-    EnergyToday,
-    GridFlow,
-    HistoryPoint,
-    HomeState,
-    InverterTelemetry,
-    LiveTelemetry,
-    ManualLog,
-    MeterId,
-    MeterState,
-    Recommendation,
-    WeatherState
+  AlertItem,
+  EnergyFlowPoint,
+  EnergyToday,
+  GridFlow,
+  HistoryPoint,
+  HomeState,
+  InverterTelemetry,
+  LiveTelemetry,
+  ManualLog,
+  MeterId,
+  MeterState,
+  Recommendation,
+  WeatherState
 } from "./energy-types";
 
 export interface ManualBaseline {
@@ -174,6 +174,16 @@ const EnergyContext = createContext<EnergyContextValue | null>(null);
 export function EnergyProvider({ children }: { children: ReactNode }) {
   const { isIdle } = useIdle();
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+  // Phase 5: Live slice — updated independently from dashboard slice so live
+  // SSE events (tomznLive/inverter/gridFlow/weather/ups) don't trigger re-renders
+  // in components that only consume dashboard fields (home, meters, energyToday).
+  const [liveData, setLiveData] = useState<{
+    tomznLive?: DashboardSnapshot["tomznLive"];
+    inverter?: DashboardSnapshot["inverter"];
+    gridFlow?: DashboardSnapshot["gridFlow"];
+    weather?: DashboardSnapshot["weather"];
+    ups?: DashboardSnapshot["ups"];
+  } | null>(null);
   const [tomznHistory, setTomznHistory] = useState<any[]>([]);
   const [flowHistory24h, setFlowHistory24h] = useState<EnergyFlowPoint[]>([]);
   const [manualBaselines, setManualBaselines] = useState<Record<MeterId, ManualBaseline | null>>({ meter1: null, meter2: null });
@@ -214,6 +224,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     sseEvents: 0,
     sseDeduped: 0,
     sseResync: 0,
+    sseDashboardEvents: 0,
+    liveSliceUpdates: 0,
+    dashboardSliceFromLive: 0,
     applySnapshotCalls: 0,
     applyLiveCalls: 0,
     syncDashboardCalls: 0,
@@ -235,7 +248,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     void AsyncStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify(stored)).catch(() => undefined);
   };
 
-  const applySnapshot = (data: DashboardSnapshot, options: { persist?: boolean; clearError?: boolean } = {}) => {
+  const applySnapshot = (data: DashboardSnapshot, options: { persist?: boolean; clearError?: boolean; live?: boolean } = {}) => {
     perfRef.current.applySnapshotCalls += 1;
     const next = normaliseSnapshot(data);
     // Filter out logs that were deleted locally (so polling doesn't re-add them)
@@ -355,9 +368,22 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       }
     }
     setSnapshot(next);
-    lastUsageTickRef.current = next.tomznLive?.energyKwh > 0
-      ? { energyKwh: next.tomznLive.energyKwh, at: Date.now(), exporting: next.gridFlow?.direction === "export" }
-      : null;
+    // Phase 5: When live=true (default — HTTP fetch, cache load, foreground
+    // refresh), update the live slice too since this is an authoritative full
+    // snapshot. When live=false (SSE dashboard event), do NOT overwrite the
+    // live slice — SSE live telemetry is fresher than the dashboard payload.
+    if (options.live !== false) {
+      setLiveData({
+        tomznLive: next.tomznLive,
+        inverter: next.inverter,
+        gridFlow: next.gridFlow,
+        weather: next.weather,
+        ups: next.ups,
+      });
+      lastUsageTickRef.current = next.tomznLive?.energyKwh > 0
+        ? { energyKwh: next.tomznLive.energyKwh, at: Date.now(), exporting: next.gridFlow?.direction === "export" }
+        : null;
+    }
     if (options.persist !== false) saveSnapshot(next);
     if (options.clearError !== false) {
       setIsOffline(false);
@@ -481,29 +507,44 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     perfRef.current.applyLiveCalls += 1;
     const sig = liveSig(data);
     const changed = sig !== lastLiveSigRef.current;
-    if (changed) lastLiveSigRef.current = sig;
+    if (!changed) {
+      // Fingerprint unchanged — still mark online + synced, but don't create
+      // new state objects (safeguard 7: no unnecessary re-renders).
+      setLastSyncedAt(Date.now());
+      setIsOffline(false);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+    lastLiveSigRef.current = sig;
+    // Phase 5: update live slice only — triggers re-renders for components
+    // consuming tomznLive/inverter/gridFlow/weather/ups, but NOT for components
+    // consuming home/meters/energyToday.
+    setLiveData({
+      tomznLive: data.tomznLive,
+      inverter: data.inverter,
+      gridFlow: data.gridFlow,
+      weather: data.weather,
+      ups: data.ups,
+    });
+    perfRef.current.liveSliceUpdates += 1;
+    // Import step — billing/accounting preserved EXACTLY. Only update the
+    // dashboard slice when energy was actually consumed (importStep > 0).
     const exporting = data.gridFlow?.direction === "export";
     const nextEnergy = Number(data.tomznLive?.energyKwh);
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      const next = {
-        ...prev,
-        tomznLive: data.tomznLive ?? prev.tomznLive,
-        inverter: data.inverter ?? prev.inverter,
-        gridFlow: data.gridFlow ?? prev.gridFlow,
-        weather: data.weather ?? prev.weather,
-        ups: data.ups !== undefined ? data.ups : prev.ups,
-      };
-      const prevEnergy = lastUsageTickRef.current?.energyKwh;
-      const importStep = !exporting
-        && Number.isFinite(nextEnergy)
-        && nextEnergy > 0
-        && Number.isFinite(prevEnergy)
-        && nextEnergy > (prevEnergy as number)
-        && nextEnergy - (prevEnergy as number) <= 1
-        ? Math.round((nextEnergy - (prevEnergy as number)) * 1000) / 1000
-        : 0;
-      if (importStep > 0) {
+    const prevEnergy = lastUsageTickRef.current?.energyKwh;
+    const importStep = !exporting
+      && Number.isFinite(nextEnergy)
+      && nextEnergy > 0
+      && Number.isFinite(prevEnergy)
+      && nextEnergy > (prevEnergy as number)
+      && nextEnergy - (prevEnergy as number) <= 1
+      ? Math.round((nextEnergy - (prevEnergy as number)) * 1000) / 1000
+      : 0;
+    if (importStep > 0) {
+      setSnapshot((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev };
         const activeId = (next.activeMeter || "meter1") as MeterId;
         const activeMeter = next.meters?.[activeId];
         next.home = next.home
@@ -529,9 +570,10 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
             },
           };
         }
-      }
-      return next;
-    });
+        return next;
+      });
+      perfRef.current.dashboardSliceFromLive += 1;
+    }
     if (Number.isFinite(nextEnergy) && nextEnergy > 0) {
       lastUsageTickRef.current = { energyKwh: nextEnergy, at: Date.now(), exporting };
     }
@@ -655,7 +697,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     //   SSE  — /live/stream (instant push: tomznLive + inverter + gridFlow)
     //   30s  — /dashboard/sync (delta check: { changed: false } if nothing changed)
     //   60s  — /flow-history (chart data, only grows throughout the day)
-    let liveEs: RNEventSource<"resync_required"> | null = null;
+    let liveEs: RNEventSource<"resync_required" | "dashboard"> | null = null;
     let syncInterval: ReturnType<typeof setInterval> | null = null;
     let flowInterval: ReturnType<typeof setInterval> | null = null;
     let idleLiveInterval: ReturnType<typeof setInterval> | null = null;
@@ -663,7 +705,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     const startLiveStream = () => {
       stopLiveStream();
       try {
-        liveEs = new RNEventSource<"resync_required">(`${API_URL}/live/stream`, {
+        liveEs = new RNEventSource<"resync_required" | "dashboard">(`${API_URL}/live/stream`, {
           pollingInterval: 3000, // auto-reconnect 3s after a disconnect
           timeout: 0, // no activity timeout — connection stays open indefinitely
         });
@@ -706,6 +748,21 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
           // Full dashboard fetch (refresh=false: don't force backend poll,
           // just get the current cached dashboard which is authoritative)
           void loadDashboard(false);
+        });
+        // Phase 5: dashboard named event — backend pushes this when
+        // bumpDataVersion() fires (meter persist, changeover, manual reading,
+        // baseline). Apply with live=false so fresher SSE live telemetry is
+        // NOT overwritten by the dashboard payload's potentially stale live
+        // fields (safeguard 8). The 30s syncDashboard() remains as safety net.
+        liveEs.addEventListener("dashboard", (event) => {
+          try {
+            if (!event.data) return;
+            perfRef.current.sseDashboardEvents += 1;
+            const data = JSON.parse(event.data) as DashboardSnapshot;
+            applySnapshot(data, { live: false });
+          } catch {
+            // ignore parse errors
+          }
         });
       } catch {
         // RNEventSource construction failed — the 30s syncInterval will keep data fresh
@@ -807,11 +864,14 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     const interval = setInterval(() => {
       const p = perfRef.current;
       const elapsed = Date.now() - p.windowStart;
-      console.log(`[PerfFE] ${elapsed}ms | sse:${p.sseEvents} deduped:${p.sseDeduped} resync:${p.sseResync} applyLive:${p.applyLiveCalls} applySnapshot:${p.applySnapshotCalls} syncDash:${p.syncDashboardCalls} fetchLive:${p.fetchLiveCalls} loadDash:${p.loadDashboardCalls} loadFlow:${p.loadFlowHistoryCalls}`);
+      console.log(`[PerfFE] ${elapsed}ms | sse:${p.sseEvents} deduped:${p.sseDeduped} resync:${p.sseResync} dashSse:${p.sseDashboardEvents} applyLive:${p.applyLiveCalls} liveSlice:${p.liveSliceUpdates} dashFromLive:${p.dashboardSliceFromLive} applySnapshot:${p.applySnapshotCalls} syncDash:${p.syncDashboardCalls} fetchLive:${p.fetchLiveCalls} loadDash:${p.loadDashboardCalls} loadFlow:${p.loadFlowHistoryCalls}`);
       p.windowStart = Date.now();
       p.sseEvents = 0;
       p.sseDeduped = 0;
       p.sseResync = 0;
+      p.sseDashboardEvents = 0;
+      p.liveSliceUpdates = 0;
+      p.dashboardSliceFromLive = 0;
       p.applyLiveCalls = 0;
       p.applySnapshotCalls = 0;
       p.syncDashboardCalls = 0;
@@ -838,16 +898,21 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     }
   }, [isIdle]);
 
+  // Phase 5: Live fields derive from liveData (updated by SSE live events)
+  // with fallback to snapshot (cache load / HTTP fetch). Dashboard fields
+  // derive from snapshot only. This separation ensures live SSE events only
+  // re-render components consuming live fields.
   const activeMeter = snapshot?.activeMeter || "meter1";
   const meters = snapshot?.meters || EMPTY_METERS;
   const home = snapshot?.home || (error ? { ...EMPTY_HOME, explanation: error } : EMPTY_HOME);
   const live = snapshot?.live || EMPTY_LIVE;
-  const tomznLive = snapshot?.tomznLive || EMPTY_TOMZN;
-  const gridFlow = snapshot?.gridFlow ?? null;
-  const inverter = snapshot?.inverter
-    ? { ...EMPTY_INVERTER, ...snapshot.inverter }
+  const tomznLive = liveData?.tomznLive || snapshot?.tomznLive || EMPTY_TOMZN;
+  const gridFlow = liveData?.gridFlow ?? snapshot?.gridFlow ?? null;
+  const inverter = (liveData?.inverter || snapshot?.inverter)
+    ? { ...EMPTY_INVERTER, ...(liveData?.inverter || snapshot?.inverter) }
     : EMPTY_INVERTER;
-  const weather = snapshot?.weather || EMPTY_WEATHER;
+  const weather = liveData?.weather || snapshot?.weather || EMPTY_WEATHER;
+  const ups = liveData?.ups ?? snapshot?.ups ?? null;
   const energyToday = snapshot?.energyToday || EMPTY_ENERGY_TODAY;
   // Prefer the dedicated 24h flow-history endpoint (fresh data even after offline period),
   // fall back to the dashboard's embedded flowHistory.
@@ -1021,7 +1086,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<EnergyContextValue>(() => ({
     live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
-    history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, ups: snapshot?.ups ?? null, summary,
+    history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, ups, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     calibrateMeter: (meterId, reading) => { void addManualLog(meterId, reading, Date.now(), "Manual calibration"); },
     setManualBaseline, setLastMonthTotal, addManualLog, editManualLog, deleteManualLog,
@@ -1033,7 +1098,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     refreshInverterForce,
   }), [
     live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
-    history, manualLogs, manualBaselines, tomznHistory, snapshot?.meta, snapshot?.ups, summary,
+    history, manualLogs, manualBaselines, tomznHistory, snapshot?.meta, ups, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     setManualBaseline, setLastMonthTotal, addManualLog, editManualLog, deleteManualLog,
     refreshTomzn, refreshAll, refreshTomznForce, refreshInverterForce, loadDashboard,

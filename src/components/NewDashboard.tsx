@@ -396,7 +396,7 @@ export const NewDashboard = memo(function NewDashboard() {
           <Cpu size={16} color={sceneCardTheme.textSecondary} />
           <View style={styles.statusItemText}>
             <Text style={[styles.statusLabel, { color: sceneCardTheme.textSecondary }]}>Inverter</Text>
-            <Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{inverterOff ? "Offline" : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text>
+            <Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : inverter.isOnline === false ? "#F8C653" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{inverterOff ? "Offline" : inverter.isOnline === false ? "Connecting..." : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text>
           </View>
         </View>
         <View style={[styles.statusDivider, { backgroundColor: sceneCardTheme.overlayBorder }]} />

@@ -110,6 +110,8 @@ const perfStats = {
   sseClientCount: 0,
   sseReplayed: 0,
   sseResyncRequired: 0,
+  sseDashboardBroadcasts: 0,
+  sseDashboardSkipped: 0,
   dataVersionBumps: 0,
   dataVersionBumpsFromLiveTick: 0,
   tomznPollCount: 0,
@@ -1299,7 +1301,15 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     // Limit 20,000 is a safety net — with the 60s persist throttle, only ~1,440
     // snapshots/day are saved (10,080 for 7 days). The downsample also cleans
     // up legacy high-freq data.
-    inverterSnapshots.find({ timestamp: { $gte: now - 7 * 86_400_000, $lte: now } }).sort({ timestamp: 1 }).limit(20_000).toArray(),
+    // Projection: only the 9 fields consumed by buildDashboard's flow/history
+    // and export-bucket logic. Excludes 15 unused fields (acOutV, acOutHz,
+    // solarV, solarA, gridHz, gridConnected, loadVa, loadPercent, inverterFault,
+    // temperatureC, ratedOutputW, signal, sourceTime, fetchedAt, _id).
+    // Measured: 794ms → 175ms (78% reduction) on 9,624 docs.
+    inverterSnapshots.find(
+      { timestamp: { $gte: now - 7 * 86_400_000, $lte: now } },
+      { projection: { _id: 0, timestamp: 1, isOnline: 1, gridV: 1, gridW: 1, loadW: 1, solarW: 1, inverterMode: 1, gridWRaw: 1, gridDirection: 1 } }
+    ).sort({ timestamp: 1 }).limit(20_000).toArray(),
     // Query the latest inverter snapshot separately — the inverterHistory query
     // above sorts ascending, so without a separate query the most recent snapshot
     // could be cut off if the limit is ever reached.
@@ -2268,6 +2278,10 @@ function registerUnifiedSolarRoutes(app, db) {
     dataVersion += 1;
     perfStats.dataVersionBumps += 1;
     dashboardCache.payload = null; // invalidate — next build will use the new version
+    // Phase 5: push dashboard changes to SSE clients instantly. Non-blocking —
+    // the request handler completes normally while the dashboard is built and
+    // pushed asynchronously. broadcastDashboard() skips if no SSE clients.
+    void broadcastDashboard();
   };
   // Cached dashboard builder — returns the cached payload if dataVersion matches
   // and the cache is fresh. De-duplicates concurrent builds via dashboardBuildInFlight.
@@ -2740,6 +2754,32 @@ function registerUnifiedSolarRoutes(app, db) {
     } catch (e) { console.error("[Solar Engine] live broadcast failed:", e.message); }
   };
 
+  // ── Phase 5: Typed dashboard SSE event ──
+  // When bumpDataVersion() fires (meter persist, changeover, manual reading,
+  // baseline), the dashboard changes are pushed to SSE clients instantly as a
+  // named "dashboard" event — instead of waiting up to 30s for the client's
+  // syncDashboard() poll to discover the change.
+  //
+  // Dashboard events do NOT get an id: field and are NOT stored in the replay
+  // buffer (payloads are ~50KB vs ~200B for live). Missed dashboard events are
+  // caught by the 30s syncDashboard() safety net. The eventSeq counter stays
+  // exclusive to live events so Last-Event-ID replay remains bounded.
+  let lastBroadcastedDataVersion = 0;
+  const broadcastDashboard = async () => {
+    if (liveClients.size === 0) return;
+    if (dataVersion === lastBroadcastedDataVersion) { perfStats.sseDashboardSkipped += 1; return; }
+    try {
+      const dashboard = await getCachedDashboard();
+      const payload = JSON.stringify(dashboard);
+      lastBroadcastedDataVersion = dataVersion;
+      perfStats.sseDashboardBroadcasts += 1;
+      for (const res of liveClients) {
+        try { res.write(`event: dashboard\ndata: ${payload}\n\n`); }
+        catch (e) { liveClients.delete(res); perfStats.sseClientCount = liveClients.size; }
+      }
+    } catch (e) { console.error("[Solar Engine] dashboard broadcast failed:", e.message); }
+  };
+
   // Lightweight live endpoint — returns the in-memory cached TOMZN + inverter
   // data without the heavy buildDashboard DB queries. The 5s background poller
   // keeps the cache fresh, so this endpoint just reads the cache. Only
@@ -2770,29 +2810,36 @@ function registerUnifiedSolarRoutes(app, db) {
     // replay any buffered events with seq > lastEventId. If the oldest buffer
     // entry is newer than lastEventId (or the buffer is empty), the client is
     // too far behind — send resync_required so it does a full dashboard fetch.
+    // Phase 5 fix: lastEventId > eventSeq means the client is ahead of this
+    // server instance (server restarted) → resync. lastEventId === eventSeq
+    // means the client is current → no replay needed, no resync, just continue.
     const lastEventIdHeader = req.headers["last-event-id"];
     const lastEventId = lastEventIdHeader ? parseInt(lastEventIdHeader, 10) : NaN;
     let replayed = false;
     let resynced = false;
     if (!Number.isNaN(lastEventId) && lastEventId > 0) {
-      if (lastEventId >= eventSeq || replayBuffer.length === 0 || replayBuffer[0].seq > lastEventId + 1) {
+      if (lastEventId > eventSeq || replayBuffer.length === 0 || replayBuffer[0].seq > lastEventId + 1) {
         // Buffer doesn't cover the gap — client missed events older than our
-        // buffer. Send resync_required named event so the client does a full
-        // dashboard fetch.
+        // buffer, or the client is ahead of this server instance (restart).
+        // Send resync_required named event so the client does a full dashboard fetch.
         resynced = true;
         perfStats.sseResyncRequired += 1;
         try { res.write(`event: resync_required\ndata: {"reason":"replay_unavailable","lastEventId":${lastEventId}}\n\n`); }
         catch (e) { /* client already gone */ }
       } else {
         // Replay all buffered events with seq > lastEventId
+        let replayedCount = 0;
         for (const entry of replayBuffer) {
           if (entry.seq > lastEventId) {
-            try { res.write(`id: ${entry.seq}\ndata: ${entry.payload}\n\n`); }
+            try { res.write(`id: ${entry.seq}\ndata: ${entry.payload}\n\n`); replayedCount++; }
             catch (e) { break; }
           }
         }
+        perfStats.sseReplayed += replayedCount;
+        // If replayedCount > 0, the last replayed event is the current state —
+        // skip the force broadcast. If replayedCount === 0 (client was already
+        // current, lastEventId === eventSeq), also skip — client is up to date.
         replayed = true;
-        perfStats.sseReplayed += replayBuffer.filter(e => e.seq > lastEventId).length;
       }
     }
 
@@ -3147,6 +3194,8 @@ function registerUnifiedSolarRoutes(app, db) {
         clients: perfStats.sseClientCount,
         replayed: perfStats.sseReplayed,
         resyncRequired: perfStats.sseResyncRequired,
+        dashboardBroadcasts: perfStats.sseDashboardBroadcasts,
+        dashboardSkipped: perfStats.sseDashboardSkipped,
         eventSeq,
         replayBufferSize: replayBuffer.length,
       },
@@ -3177,7 +3226,7 @@ function registerUnifiedSolarRoutes(app, db) {
     const lpAvg = perfStats.buildLivePayloadCalls > 0 ? Math.round(perfStats.buildLivePayloadTotalMs / perfStats.buildLivePayloadCalls) : 0;
     const tzAvg = perfStats.tomznPollCount > 0 ? Math.round(perfStats.tomznPollTotalMs / perfStats.tomznPollCount) : 0;
     const invAvg = perfStats.inverterPollCount > 0 ? Math.round(perfStats.inverterPollTotalMs / perfStats.inverterPollCount) : 0;
-    console.log(`[Perf] ${elapsed}ms window | dashboard: ${perfStats.buildDashboardCalls}x avg=${bdAvg}ms max=${perfStats.buildDashboardMaxMs}ms cacheHits=${perfStats.dashboardCacheHits} | livePayload: ${perfStats.buildLivePayloadCalls}x avg=${lpAvg}ms dbHits=${perfStats.buildLivePayloadDbHits} | sse: ${perfStats.sseBroadcasts}sent ${perfStats.sseSkipped}skip ${perfStats.sseClientCount}clients replayed=${perfStats.sseReplayed} resync=${perfStats.sseResyncRequired} seq=${eventSeq} buf=${replayBuffer.length} | dataVersion: ${perfStats.dataVersionBumps}bumps (${perfStats.dataVersionBumpsFromLiveTick}fromLiveTick) | tomzn: ${perfStats.tomznPollCount}polls ${perfStats.tomznPythonSpawnCount}spawns avg=${tzAvg}ms max=${perfStats.tomznPollMaxMs}ms | inverter: ${perfStats.inverterPollCount}polls avg=${invAvg}ms max=${perfStats.inverterPollMaxMs}ms fails=${perfStats.inverterPollFailures}`);
+    console.log(`[Perf] ${elapsed}ms window | dashboard: ${perfStats.buildDashboardCalls}x avg=${bdAvg}ms max=${perfStats.buildDashboardMaxMs}ms cacheHits=${perfStats.dashboardCacheHits} | livePayload: ${perfStats.buildLivePayloadCalls}x avg=${lpAvg}ms dbHits=${perfStats.buildLivePayloadDbHits} | sse: ${perfStats.sseBroadcasts}sent ${perfStats.sseSkipped}skip ${perfStats.sseClientCount}clients replayed=${perfStats.sseReplayed} resync=${perfStats.sseResyncRequired} dashSent=${perfStats.sseDashboardBroadcasts} dashSkip=${perfStats.sseDashboardSkipped} seq=${eventSeq} buf=${replayBuffer.length} | dataVersion: ${perfStats.dataVersionBumps}bumps (${perfStats.dataVersionBumpsFromLiveTick}fromLiveTick) | tomzn: ${perfStats.tomznPollCount}polls ${perfStats.tomznPythonSpawnCount}spawns avg=${tzAvg}ms max=${perfStats.tomznPollMaxMs}ms | inverter: ${perfStats.inverterPollCount}polls avg=${invAvg}ms max=${perfStats.inverterPollMaxMs}ms fails=${perfStats.inverterPollFailures}`);
     // Reset window
     perfStats.windowStart = Date.now();
     perfStats.buildDashboardCalls = 0;
@@ -3192,6 +3241,8 @@ function registerUnifiedSolarRoutes(app, db) {
     perfStats.sseSkipped = 0;
     perfStats.sseReplayed = 0;
     perfStats.sseResyncRequired = 0;
+    perfStats.sseDashboardBroadcasts = 0;
+    perfStats.sseDashboardSkipped = 0;
     perfStats.dataVersionBumps = 0;
     perfStats.dataVersionBumpsFromLiveTick = 0;
     perfStats.tomznPollCount = 0;
