@@ -1025,7 +1025,7 @@ function forEachReadingInterval(readings, callback) {
 // Runs both from the exact 28th 12:00 PM job and as a catch-up after a restart.
 // The baseline is the calculated meter reading at the cycle boundary, so no units
 // before the 28th leak into the new monthly allowance.
-async function rolloverBillingCycle({ stateCollection, allocations }, state, now = Date.now()) {
+async function rolloverBillingCycle({ stateCollection, allocations, invalidateStateCache }, state, now = Date.now()) {
   const cycleStart = billingCycleStart(now, state.billingDay);
   const needsRollover = Array.from(METER_IDS).some((meterId) => (state.meters[meterId].cycleBaselineAt || 0) < cycleStart);
   if (!needsRollover) return state;
@@ -1050,6 +1050,7 @@ async function rolloverBillingCycle({ stateCollection, allocations }, state, now
   }
   state.updatedAt = now;
   await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
+  if (invalidateStateCache) invalidateStateCache();
   return state;
 }
 
