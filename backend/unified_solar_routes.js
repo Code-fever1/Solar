@@ -1126,10 +1126,10 @@ async function applyHistoricalChangeover(allocations, fromMeter, toMeter, effect
   }
 }
 
-async function buildDashboard({ stateCollection, allocations, snapshots, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef, liveInverterRef, liveFlowState }) {
+async function buildDashboard({ stateCollection, allocations, snapshots, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef, liveInverterRef, liveFlowState, invalidateStateCache }) {
   const now = Date.now();
   let state = await ensureState(stateCollection);
-  state = await rolloverBillingCycle({ stateCollection, allocations }, state, now);
+  state = await rolloverBillingCycle({ stateCollection, allocations, invalidateStateCache }, state, now);
   // Prefer the in-memory live cache for display values when it's fresher than the
   // last persisted snapshot — this keeps the dashboard responsive (5s updates) while
   // the database only stores one snapshot per minute.
