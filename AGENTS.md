@@ -59,6 +59,7 @@ Files to deploy (depending on what changed):
 | `/api/solar/manual-readings/:id` | PATCH | Edit manual reading |
 | `/api/solar/manual-readings/:id` | DELETE | Delete manual reading |
 | `/api/solar/baselines` | POST | Set meter baseline |
+| `/api/solar/perf` | GET | Performance stats (60s rolling window) — dashboard build count/duration, live payload calls/DB hits, SSE broadcasts/skips, dataVersion bumps, TOMZN/inverter poll timing |
 | `/api/solar/tomzn/history` | GET | TOMZN historical data |
 | `/api/solar/flow-history` | GET | 24h flow history for chart |
 
@@ -129,5 +130,5 @@ Files to deploy (depending on what changed):
 ## App Versioning
 
 - `expo.version`: `1.0.0` — app version string
-- `android.versionCode`: `15` — integer, increment for each APK release (currently 15)
+- `android.versionCode`: `17` — integer, increment for each APK release (currently 17)
 - To release new APK: bump `versionCode` in `app.json` and `android/app/build.gradle`, rebuild, install via ADB
