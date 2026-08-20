@@ -891,7 +891,7 @@ async function ensureState(stateCollection) {
   return state;
 }
 
-async function recordTomzn({ stateCollection, snapshots, allocations, inverterSnapshots, snapshot, billingFlowState }) {
+async function recordTomzn({ stateCollection, snapshots, allocations, inverterSnapshots, snapshot, billingFlowState, invalidateStateCache }) {
   const now = Date.now();
   let state = await ensureState(stateCollection);
   state = await rolloverBillingCycle({ stateCollection, allocations }, state, now);
@@ -955,6 +955,7 @@ async function recordTomzn({ stateCollection, snapshots, allocations, inverterSn
 
   const newState = { ...state, lastTomzn: record, updatedAt: now };
   await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, newState, { upsert: true });
+  if (invalidateStateCache) invalidateStateCache();
   return { state: newState, record, allocatedDelta };
 }
 
@@ -2188,7 +2189,7 @@ function registerUnifiedSolarRoutes(app, db) {
   // auto-shift day/night/weather scenes in real time.
   let weatherCache = { value: null, timestamp: 0 };
 
-  const context = { stateCollection, snapshots, allocations, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef, liveInverterRef, billingFlowState, liveFlowState };
+  const context = { stateCollection, snapshots, allocations, manualLogs, inverterSnapshots, weatherSnapshots, liveTomznRef, liveInverterRef, billingFlowState, liveFlowState, invalidateStateCache };
   const pollTomzn = async ({ forcePersist = false, force = false } = {}) => {
     const now = Date.now();
     // Serve from in-memory live cache if fresh enough (avoids hitting Tuya on every 5s request).
