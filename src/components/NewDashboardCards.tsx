@@ -182,6 +182,15 @@ export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liv
   voltage: number; currentA: number; loadStatus: 'Low' | 'Normal' | 'High';
   normalDrawKw: number; isLight?: boolean; cardTheme?: CardTheme;
 }) {
+  const _renderCount = useRef(0);
+  _renderCount.current += 1;
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (_renderCount.current > 0) console.log(`[PerfFE] EnergyUsedCard renders: ${_renderCount.current}/10s`);
+      _renderCount.current = 0;
+    }, 10_000);
+    return () => clearInterval(iv);
+  }, []);
   const t = cardTheme ?? useCardTheme(isLight);
   const hasTrend = vsYesterdayPercent != null;
   const isLower = hasTrend && vsYesterdayPercent <= 0;
