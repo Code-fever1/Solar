@@ -3171,61 +3171,81 @@ function registerUnifiedSolarRoutes(app, db) {
       .catch((error) => console.error("[Solar Engine] initial inverter downsample failed:", error.message));
   }, 5_000);
 
-  // Presence-based poll loop.
-  //   App open / SSE connected / /live?force : poll every 2.5s (instant hero).
-  //   App closed (no SSE, no recent force)  : poll every 30s (keep cache warm).
-  // Backend never stops — idle cadence still feeds the next app-open /live.
-  // pollTomzn/pollInverter de-dupe in-flight so a 2.5s tick plus /live?force
-  // cannot double-hit Tuya/InverterZone.
-  let pollLoopTimer = null;
-  let pollLoopInFlight = false;
+  // ── Independent poll timers (Phase 3d) ──
+  // TOMZN and inverter run on separate timers so a slow/failing inverter
+  // (4s timeout) cannot delay TOMZN polls or the SSE broadcast path.
+  // Both share the same presence-based cadence (2.5s active / 30s idle)
+  // but are fully independent — one device's failure doesn't affect the other.
+  let tomznPollTimer = null;
+  let tomznPollInFlight = false;
+  let inverterPollTimer = null;
+  let inverterPollLoopInFlight = false;
   let lastPollMode = null;
-  const runDevicePoll = async () => {
-    if (pollLoopInFlight) return;
-    pollLoopInFlight = true;
+
+  const getPollInterval = () => hasLiveAudience() ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
+
+  const runTomznPoll = async () => {
+    if (tomznPollInFlight) return;
+    tomznPollInFlight = true;
+    const startedAt = Date.now();
     try {
-      const tomznP = pollTomzn({ force: true })
-        .then(() => broadcastLive())
-        .catch((e) => console.error("[Solar Engine] TOMZN poll failed:", e.message));
-      // Inverter runs in the background — a slow/failing inverter (4s timeout)
-      // must not stretch the TOMZN cadence that drives the hero section. Its
-      // broadcast still fires whenever the poll eventually completes.
-      const inverterP = pollInverter({ force: true })
-        .then(() => broadcastLive())
-        .catch((e) => console.error("[Solar Engine] inverter poll failed:", e.message));
-      // Wait only for TOMZN so the hero cadence tracks the TOMZN poll duration.
-      await tomznP;
-      void inverterP;
+      await pollTomzn({ force: true });
+      await broadcastLive();
     } catch (e) {
-      console.error("[Solar Engine] poll loop failed:", e.message);
+      console.error("[Solar Engine] TOMZN poll loop:", e.message);
     } finally {
-      pollLoopInFlight = false;
+      tomznPollInFlight = false;
+      const interval = getPollInterval();
+      tomznPollTimer = setTimeout(runTomznPoll, Math.max(0, interval - (Date.now() - startedAt)));
     }
   };
-  const schedulePollLoop = (immediate = false, delay = null) => {
-    if (pollLoopTimer) { clearTimeout(pollLoopTimer); pollLoopTimer = null; }
+
+  const runInverterPoll = async () => {
+    if (inverterPollLoopInFlight) return;
+    inverterPollLoopInFlight = true;
+    const startedAt = Date.now();
+    try {
+      await pollInverter({ force: true });
+      await broadcastLive();
+    } catch (e) {
+      console.error("[Solar Engine] inverter poll loop:", e.message);
+    } finally {
+      inverterPollLoopInFlight = false;
+      const interval = getPollInterval();
+      inverterPollTimer = setTimeout(runInverterPoll, Math.max(0, interval - (Date.now() - startedAt)));
+    }
+  };
+
+  const checkPollModeSwitch = () => {
     const active = hasLiveAudience();
-    const interval = active ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
     if (lastPollMode !== active) {
       lastPollMode = active;
       console.log(`[Solar Engine] device poll ${active ? "2.5s (app watching)" : "30s (idle)"}`);
+      // Reschedule both timers immediately when mode switches
+      if (tomznPollTimer) { clearTimeout(tomznPollTimer); tomznPollTimer = setTimeout(runTomznPoll, 0); }
+      if (inverterPollTimer) { clearTimeout(inverterPollTimer); inverterPollTimer = setTimeout(runInverterPoll, 0); }
     }
-    const nextDelay = immediate ? 0 : (delay == null ? interval : delay);
-    pollLoopTimer = setTimeout(async () => {
-      const startedAt = Date.now();
-      await runDevicePoll();
-      // Schedule from the START of the poll: a slow poll (e.g. inverter
-      // timeout) shortens the gap instead of stacking an extra full interval
-      // on top of itself.
-      schedulePollLoop(false, Math.max(0, interval - (Date.now() - startedAt)));
-    }, nextDelay);
   };
+
   bumpPollLoop = () => {
     // Already on the 2.5s cadence — the next tick is soon enough.
     if (lastPollMode === true) return;
-    schedulePollLoop(true);
+    // Speed up both timers immediately
+    if (tomznPollTimer) { clearTimeout(tomznPollTimer); tomznPollTimer = setTimeout(runTomznPoll, 0); }
+    if (inverterPollTimer) { clearTimeout(inverterPollTimer); inverterPollTimer = setTimeout(runInverterPoll, 0); }
   };
-  schedulePollLoop(true);
+
+  // Start both independent poll loops
+  setTimeout(() => seedStaleTrackerFromDb(snapshots).then(() => pollTomzn()).then(() => { tomznPollTimer = setTimeout(runTomznPoll, getPollInterval()); }).catch((error) => { console.error("[Solar Engine] initial TOMZN poll failed:", error.message); tomznPollTimer = setTimeout(runTomznPoll, getPollInterval()); }), 2_000);
+  setTimeout(() => pollInverter().then(() => { inverterPollTimer = setTimeout(runInverterPoll, getPollInterval()); }).catch((error) => { console.error("[Solar Engine] initial inverter poll failed:", error.message); inverterPollTimer = setTimeout(runInverterPoll, getPollInterval()); }), 3_000);
+
+  // Check for active/idle mode switches every 5s (lightweight — just checks timestamps)
+  setInterval(checkPollModeSwitch, 5_000);
+
+  // Start the persistent TOMZN daemon (Phase 3c)
+  // The daemon keeps a TCP connection to the TOMZN device alive across polls,
+  // eliminating Python startup + import + connect overhead per 2.5s poll.
+  startTomznDaemon();
 
   // Weather poll loop — polls weather every 10 minutes so sunrise/sunset are
   // always for the current day (not stale from yesterday). Without this, the
