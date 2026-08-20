@@ -100,6 +100,7 @@ const perfStats = {
   buildDashboardCalls: 0,
   buildDashboardTotalMs: 0,
   buildDashboardMaxMs: 0,
+  dashboardCacheHits: 0,
   buildLivePayloadCalls: 0,
   buildLivePayloadTotalMs: 0,
   buildLivePayloadMaxMs: 0,
