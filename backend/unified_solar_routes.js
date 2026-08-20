@@ -894,7 +894,7 @@ async function ensureState(stateCollection) {
 async function recordTomzn({ stateCollection, snapshots, allocations, inverterSnapshots, snapshot, billingFlowState, invalidateStateCache }) {
   const now = Date.now();
   let state = await ensureState(stateCollection);
-  state = await rolloverBillingCycle({ stateCollection, allocations }, state, now);
+  state = await rolloverBillingCycle({ stateCollection, allocations, invalidateStateCache }, state, now);
   const energyKwh = finiteNumber(snapshot.energyKwh);
   if (energyKwh == null || energyKwh < 0) throw new Error("TOMZN returned an invalid cumulative energy value");
 
