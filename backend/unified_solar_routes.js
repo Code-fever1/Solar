@@ -2737,6 +2737,7 @@ function registerUnifiedSolarRoutes(app, db) {
         previousAnchorReading: oldAnchor,
       });
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
+      invalidateStateCache();
       bumpDataVersion();
       res.status(201).json(await getCachedDashboard());
     } catch (error) { res.status(502).json({ error: error.message }); }
