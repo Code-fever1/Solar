@@ -57,11 +57,13 @@ def _init_connections():
                     address=DEVICE_IP,
                     local_key=LOCAL_KEY,
                     version=3.5,
-                    connection_timeout=5,
-                    persist=True,  # keep TCP socket open between polls
+                    connection_timeout=3,       # fail fast when device is offline
+                    persist=True,               # keep TCP socket open between polls
+                    connection_retry_limit=1,   # single attempt — no 25s retry storm
+                    connection_retry_delay=1,
                 )
                 _tuya_device.set_socketPersistent(True)
-                _tuya_device.set_socketRetryLimit(2)
+                _tuya_device.set_socketRetryLimit(1)
             except Exception as e:
                 print(json.dumps({"error": f"tuya init failed: {e}"}), file=sys.stderr)
                 _tuya_device = None
@@ -131,30 +133,46 @@ def decode_phase_a(b64):
 
 
 def poll_device():
-    """Poll the TOMZN device. Returns a result dict or raises Exception."""
+    """Poll the TOMZN device with a hard 6s timeout. Returns result dict or raises."""
     # Ensure connections are initialized
     if _tuya_device is None:
         _init_connections()
 
     local_dps = {}
     local_ok = False
+    poll_error = None
 
-    # Poll local Tuya (persistent socket — no TCP connect overhead)
-    if _tuya_device:
+    # Poll local Tuya in a thread with a hard timeout. tinytuya's own timeout
+    # is 3s × 1 retry = 3s, but the SDK can still hang on session key
+    # negotiation or read. The thread timeout is a safety net.
+    def _do_poll():
+        nonlocal local_dps, local_ok, poll_error
+        if not _tuya_device:
+            poll_error = Exception("tuya device not initialized")
+            return
         try:
             data = _tuya_device.status()
             if data and "Err" in data and data["Err"] != "0":
-                # Socket may have dropped — reset for next poll
                 _reset_connections()
-                raise Exception(f"tuya status error: {data.get('Err')}")
+                poll_error = Exception(f"tuya status error: {data.get('Err')}")
+                return
             local_dps = data.get("dps", {}) if data else {}
             local_ok = True
         except Exception as e:
-            # Socket dropped or device unreachable — reset connection
             _reset_connections()
-            raise Exception(f"local poll failed: {e}")
-    else:
-        raise Exception("tuya device not initialized")
+            poll_error = Exception(f"local poll failed: {e}")
+
+    t = threading.Thread(target=_do_poll, daemon=True)
+    t.start()
+    t.join(timeout=6)
+    if t.is_alive():
+        # Thread is still running — the device is unreachable or hung.
+        # Reset connections so the next poll starts fresh.
+        _reset_connections()
+        raise Exception("local poll timeout (6s)")
+
+    if poll_error:
+        raise poll_error
 
     # Cloud status (with cache — only hits API every 5s)
     cloud = get_cloud_status() if local_ok else {}
