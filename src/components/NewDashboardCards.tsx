@@ -110,6 +110,15 @@ const cardWidth = (screenWidth - 32) / 2;
 export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWapda, isLight = false, cardTheme }: {
   totalEnergy: number; solarEnergy: number; gridEnergy: number; isWapda: boolean; isLight?: boolean; cardTheme?: CardTheme;
 }) {
+  const _renderCount = useRef(0);
+  _renderCount.current += 1;
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (_renderCount.current > 0) console.log(`[PerfFE] EnergyReceivedCard renders: ${_renderCount.current}/10s`);
+      _renderCount.current = 0;
+    }, 10_000);
+    return () => clearInterval(iv);
+  }, []);
   const t = cardTheme ?? useCardTheme(isLight);
   const solarShare = totalEnergy > 0 ? Math.round((solarEnergy / totalEnergy) * 100) : 0;
   const gridShare = totalEnergy > 0 ? 100 - solarShare : 0;
