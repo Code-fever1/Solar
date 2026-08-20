@@ -2392,7 +2392,7 @@ function registerUnifiedSolarRoutes(app, db) {
   app.get("/api/solar/dashboard", async (req, res) => {
     try {
       if (req.query.refresh !== "false") await Promise.all([pollTomzn(), pollInverter(), pollWeather()]);
-      res.json(await buildDashboard(context));
+      res.json(await getCachedDashboard());
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
@@ -2620,7 +2620,7 @@ function registerUnifiedSolarRoutes(app, db) {
         res.json({ changed: false, dataVersion, tomznLive: live.tomznLive, inverter: live.inverter, gridFlow: live.gridFlow, ups: live.ups, weather: live.weather });
       } else {
         // Data changed — return full dashboard
-        res.json({ changed: true, dataVersion, dashboard: await buildDashboard(context) });
+        res.json({ changed: true, dataVersion, dashboard: await getCachedDashboard() });
       }
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
@@ -2629,7 +2629,7 @@ function registerUnifiedSolarRoutes(app, db) {
     try {
       const force = req.query.force === "true";
       const [recorded] = await Promise.all([pollTomzn({ force }), pollInverter({ force }), pollWeather()]);
-      res.json({ allocatedDelta: recorded.allocatedDelta, dataVersion, dashboard: await buildDashboard(context) });
+      res.json({ allocatedDelta: recorded.allocatedDelta, dataVersion, dashboard: await getCachedDashboard() });
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
@@ -2638,7 +2638,7 @@ function registerUnifiedSolarRoutes(app, db) {
     try {
       const force = req.query.force === "true";
       await pollTomzn({ force });
-      res.json({ dataVersion, dashboard: await buildDashboard(context) });
+      res.json({ dataVersion, dashboard: await getCachedDashboard() });
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
@@ -2647,7 +2647,7 @@ function registerUnifiedSolarRoutes(app, db) {
     try {
       const force = req.query.force === "true";
       await pollInverter({ force });
-      res.json({ dataVersion, dashboard: await buildDashboard(context) });
+      res.json({ dataVersion, dashboard: await getCachedDashboard() });
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
@@ -2664,7 +2664,7 @@ function registerUnifiedSolarRoutes(app, db) {
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
       bumpDataVersion();
-      res.json(await buildDashboard(context));
+      res.json(await getCachedDashboard());
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
@@ -2712,7 +2712,7 @@ function registerUnifiedSolarRoutes(app, db) {
       });
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
       bumpDataVersion();
-      res.status(201).json(await buildDashboard(context));
+      res.status(201).json(await getCachedDashboard());
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
@@ -2732,7 +2732,7 @@ function registerUnifiedSolarRoutes(app, db) {
       } });
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
-      res.json(await buildDashboard(context));
+      res.json(await getCachedDashboard());
     } catch (error) { res.status(500).json({ error: error.message }); }
   });
 
@@ -2768,7 +2768,7 @@ function registerUnifiedSolarRoutes(app, db) {
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
       bumpDataVersion();
-      res.json(await buildDashboard(context));
+      res.json(await getCachedDashboard());
     } catch (error) { res.status(500).json({ error: error.message }); }
   });
 
@@ -2796,7 +2796,7 @@ function registerUnifiedSolarRoutes(app, db) {
       }
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
-      res.json(await buildDashboard(context));
+      res.json(await getCachedDashboard());
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
@@ -2809,14 +2809,14 @@ function registerUnifiedSolarRoutes(app, db) {
       state.lastMonthTotalOverride = total;
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
-      res.json(await buildDashboard(context));
+      res.json(await getCachedDashboard());
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
 
   // Compatibility for existing installs. New clients should use /dashboard.
   app.get("/api/solar/sync", async (_req, res) => {
     try {
-      const dashboard = await buildDashboard(context);
+      const dashboard = await getCachedDashboard();
       res.json({ ...dashboard, logs: dashboard.manualLogs, baselines: {} });
     } catch (error) { res.status(500).json({ error: error.message }); }
   });
