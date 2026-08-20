@@ -817,37 +817,181 @@ function makeDefaultState(now = Date.now()) {
 // This avoids IoT Core quota limits and provides unlimited local polling.
 const TUYA_LOCAL_POLL_SCRIPT = path.join(__dirname, "tuya_local_poll.py");
 
-function requestTomzn() {
-  const _perfStart = Date.now();
-  perfStats.tomznPythonSpawnCount += 1;
-  return new Promise((resolve, reject) => {
-    execFile("python3", [TUYA_LOCAL_POLL_SCRIPT], { timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      const _dur = Date.now() - _perfStart;
-      perfStats.tomznPollCount += 1;
-      perfStats.tomznPollTotalMs += _dur;
-      if (_dur > perfStats.tomznPollMaxMs) perfStats.tomznPollMaxMs = _dur;
-      if (error) {
-        const msg = stderr.trim() || error.message;
-        return reject(new Error(`TOMZN local poll failed: ${msg}`));
-      }
-      try {
-        const data = JSON.parse(stdout.trim());
-        if (data.error) return reject(new Error(`TOMZN local poll: ${data.error}`));
-        resolve({
-          energyKwh: data.energyKwh,
-          voltageV: data.voltageV || 0,
-          currentA: data.currentA || 0,
-          powerW: data.powerW || 0,
-          frequencyHz: data.frequencyHz || 50,
-          isOnline: data.isOnline,
-          switchOn: data.switchOn,
-          faultCode: data.faultCode || 0,
-          fetchedAt: data.fetchedAt,
-        });
-      } catch (parseErr) {
-        reject(new Error(`TOMZN local poll: invalid JSON output`));
+// ── Persistent TOMZN daemon ──
+// The Python poller runs as a long-lived child process with a persistent TCP
+// connection to the TOMZN device. Node.js communicates via stdin/stdout JSON.
+// This eliminates Python startup + tinytuya import + TCP connect overhead on
+// every 2.5s poll. A watchdog restarts the daemon if it crashes or hangs.
+let tomznDaemon = null;
+let tomznDaemonRestarting = false;
+let tomznDaemonBuffer = "";
+let tomznDaemonPendingResolvers = [];
+
+function startTomznDaemon() {
+  if (tomznDaemonRestarting) return;
+  if (tomznDaemon) {
+    try { tomznDaemon.kill("SIGTERM"); } catch {}
+    tomznDaemon = null;
+  }
+  tomznDaemonRestarting = true;
+  tomznDaemonBuffer = "";
+  // Flush any pending resolvers with an error so they don't hang forever
+  const pending = tomznDaemonPendingResolvers;
+  tomznDaemonPendingResolvers = [];
+  for (const { reject } of pending) {
+    try { reject(new Error("TOMZN daemon restarting")); } catch {}
+  }
+
+  try {
+    tomznDaemon = require("child_process").spawn("python3", [TUYA_LOCAL_POLL_SCRIPT, "--daemon"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env },
+    });
+
+    tomznDaemon.stdout.setEncoding("utf8");
+    tomznDaemon.stdout.on("data", (chunk) => {
+      tomznDaemonBuffer += chunk;
+      // Process complete lines (one JSON response per line)
+      let nlIdx;
+      while ((nlIdx = tomznDaemonBuffer.indexOf("\n")) >= 0) {
+        const line = tomznDaemonBuffer.slice(0, nlIdx).trim();
+        tomznDaemonBuffer = tomznDaemonBuffer.slice(nlIdx + 1);
+        if (!line) continue;
+        try {
+          const data = JSON.parse(line);
+          const resolver = tomznDaemonPendingResolvers.shift();
+          if (resolver) {
+            if (data.error) {
+              resolver.reject(new Error(`TOMZN local poll: ${data.error}`));
+            } else {
+              resolver.resolve({
+                energyKwh: data.energyKwh,
+                voltageV: data.voltageV || 0,
+                currentA: data.currentA || 0,
+                powerW: data.powerW || 0,
+                frequencyHz: data.frequencyHz || 50,
+                isOnline: data.isOnline,
+                switchOn: data.switchOn,
+                faultCode: data.faultCode || 0,
+                fetchedAt: data.fetchedAt,
+              });
+            }
+          }
+        } catch (parseErr) {
+          // Non-JSON line (debug output) — skip
+        }
       }
     });
+
+    tomznDaemon.stderr.on("data", (chunk) => {
+      // Log stderr but don't fail — the daemon writes diagnostics here
+      const msg = chunk.toString().trim();
+      if (msg) console.error(`[TOMZN Daemon] ${msg}`);
+    });
+
+    tomznDaemon.on("exit", (code, signal) => {
+      console.log(`[TOMZN Daemon] exited (code=${code} signal=${signal}) — will restart on next poll`);
+      tomznDaemon = null;
+      tomznDaemonRestarting = false;
+      // Fail any pending requests
+      const pending = tomznDaemonPendingResolvers;
+      tomznDaemonPendingResolvers = [];
+      for (const { reject } of pending) {
+        try { reject(new Error("TOMZN daemon exited")); } catch {}
+      }
+    });
+
+    tomznDaemon.on("error", (err) => {
+      console.error(`[TOMZN Daemon] spawn error:`, err.message);
+      tomznDaemon = null;
+      tomznDaemonRestarting = false;
+    });
+
+    tomznDaemonRestarting = false;
+    console.log("[TOMZN Daemon] started — persistent TCP connection to TOMZN device");
+  } catch (err) {
+    console.error(`[TOMZN Daemon] failed to start:`, err.message);
+    tomznDaemon = null;
+    tomznDaemonRestarting = false;
+  }
+}
+
+function requestTomzn() {
+  const _perfStart = Date.now();
+  return new Promise((resolve, reject) => {
+    // Ensure daemon is running
+    if (!tomznDaemon || tomznDaemonRestarting) {
+      if (!tomznDaemon && !tomznDaemonRestarting) {
+        startTomznDaemon();
+      }
+      // If daemon is starting, fall back to one-shot mode for this request
+      if (!tomznDaemon) {
+        perfStats.tomznPythonSpawnCount += 1;
+        execFile("python3", [TUYA_LOCAL_POLL_SCRIPT], { timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+          const _dur = Date.now() - _perfStart;
+          perfStats.tomznPollCount += 1;
+          perfStats.tomznPollTotalMs += _dur;
+          if (_dur > perfStats.tomznPollMaxMs) perfStats.tomznPollMaxMs = _dur;
+          if (error) {
+            const msg = stderr.trim() || error.message;
+            return reject(new Error(`TOMZN local poll failed: ${msg}`));
+          }
+          try {
+            const data = JSON.parse(stdout.trim());
+            if (data.error) return reject(new Error(`TOMZN local poll: ${data.error}`));
+            resolve({
+              energyKwh: data.energyKwh,
+              voltageV: data.voltageV || 0,
+              currentA: data.currentA || 0,
+              powerW: data.powerW || 0,
+              frequencyHz: data.frequencyHz || 50,
+              isOnline: data.isOnline,
+              switchOn: data.switchOn,
+              faultCode: data.faultCode || 0,
+              fetchedAt: data.fetchedAt,
+            });
+          } catch (parseErr) {
+            reject(new Error(`TOMZN local poll: invalid JSON output`));
+          }
+        });
+        return;
+      }
+    }
+
+    // Send poll request to daemon
+    const timeout = setTimeout(() => {
+      // Remove from pending queue
+      const idx = tomznDaemonPendingResolvers.findIndex((p) => p.reject === reject);
+      if (idx >= 0) tomznDaemonPendingResolvers.splice(idx, 1);
+      reject(new Error("TOMZN daemon poll timeout (10s)"));
+    }, 10_000);
+
+    tomznDaemonPendingResolvers.push({
+      resolve: (data) => { clearTimeout(timeout); resolve(data); },
+      reject: (err) => { clearTimeout(timeout); reject(err); },
+    });
+
+    try {
+      tomznDaemon.stdin.write(JSON.stringify({ cmd: "poll" }) + "\n");
+    } catch (writeErr) {
+      clearTimeout(timeout);
+      tomznDaemonPendingResolvers.pop();
+      // Daemon pipe broke — restart and retry on next poll
+      startTomznDaemon();
+      reject(new Error(`TOMZN daemon write failed: ${writeErr.message}`));
+    }
+  }).then((data) => {
+    const _dur = Date.now() - _perfStart;
+    perfStats.tomznPollCount += 1;
+    perfStats.tomznPollTotalMs += _dur;
+    if (_dur > perfStats.tomznPollMaxMs) perfStats.tomznPollMaxMs = _dur;
+    return data;
+  }).catch((err) => {
+    const _dur = Date.now() - _perfStart;
+    perfStats.tomznPollCount += 1;
+    perfStats.tomznPollTotalMs += _dur;
+    if (_dur > perfStats.tomznPollMaxMs) perfStats.tomznPollMaxMs = _dur;
+    throw err;
   });
 }
 
