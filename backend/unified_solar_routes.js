@@ -2422,8 +2422,10 @@ function registerUnifiedSolarRoutes(app, db) {
   // so all three return an identical shape without duplicating the assembly logic.
   const buildLivePayload = async () => {
     const _perfStart = Date.now();
-    perfStats.buildLivePayloadDbHits += 1; // ensureState always queries
-    const state = await ensureState(stateCollection);
+    // Use in-memory state cache — no DB query on the hot path. The cache is
+    // invalidated by any stateCollection write (changeover, manual reading,
+    // allocation persist, etc.). Only the activeMeter field is needed here.
+    const state = await getCachedState();
     const liveOverride = liveTomznRef?.value;
     const tomznSource = (liveOverride && (!state.lastTomzn || liveOverride.timestamp >= state.lastTomzn.timestamp))
       ? liveOverride
