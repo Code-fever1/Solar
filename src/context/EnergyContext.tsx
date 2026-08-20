@@ -198,6 +198,18 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const stopIdlePollingRef = useRef<(() => void) | null>(null);
   const startRetryLoopRef = useRef<(() => void) | null>(null);
 
+  // ── Phase 1: Performance instrumentation (read-only, no behavior change) ──
+  const perfRef = useRef({
+    windowStart: Date.now(),
+    sseEvents: 0,
+    applySnapshotCalls: 0,
+    applyLiveCalls: 0,
+    syncDashboardCalls: 0,
+    fetchLiveCalls: 0,
+    loadDashboardCalls: 0,
+    loadFlowHistoryCalls: 0,
+  });
+
   const normaliseSnapshot = (data: DashboardSnapshot): DashboardSnapshot => ({
       ...data,
       changeover: { ...data.changeover, lastSwitchedAt: Number(data.changeover.lastSwitchedAt) },
@@ -212,6 +224,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   };
 
   const applySnapshot = (data: DashboardSnapshot, options: { persist?: boolean; clearError?: boolean } = {}) => {
+    perfRef.current.applySnapshotCalls += 1;
     const next = normaliseSnapshot(data);
     // Filter out logs that were deleted locally (so polling doesn't re-add them)
     if (deletedLogIdsRef.current.size > 0 && next.manualLogs?.length) {
@@ -452,6 +465,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
   const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any } | null | undefined) => {
     if (!data || (!data.tomznLive && !data.inverter)) return;
+    perfRef.current.applyLiveCalls += 1;
     const sig = liveSig(data);
     const changed = sig !== lastLiveSigRef.current;
     if (changed) lastLiveSigRef.current = sig;

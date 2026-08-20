@@ -91,6 +91,34 @@ const WEATHER_POLL_MAX_AGE_MS = 30 * 60_000;
 const BHAKKAR_COORDINATES = { latitude: 31.6269, longitude: 71.0657 };
 const HOME_PUBLIC_IP = "113.203.197.44";
 
+// ── Phase 1: Performance instrumentation (read-only, no behavior change) ──
+// Accumulates counters/timings that are exposed via /api/solar/perf and logged
+// every 60s. All fields reset on each 60s window so the numbers represent the
+// last minute, not cumulative since boot.
+const perfStats = {
+  windowStart: Date.now(),
+  buildDashboardCalls: 0,
+  buildDashboardTotalMs: 0,
+  buildDashboardMaxMs: 0,
+  buildLivePayloadCalls: 0,
+  buildLivePayloadTotalMs: 0,
+  buildLivePayloadMaxMs: 0,
+  buildLivePayloadDbHits: 0,
+  sseBroadcasts: 0,
+  sseSkipped: 0,
+  sseClientCount: 0,
+  dataVersionBumps: 0,
+  dataVersionBumpsFromLiveTick: 0,
+  tomznPollCount: 0,
+  tomznPollTotalMs: 0,
+  tomznPollMaxMs: 0,
+  tomznPythonSpawnCount: 0,
+  inverterPollCount: 0,
+  inverterPollTotalMs: 0,
+  inverterPollMaxMs: 0,
+  inverterPollFailures: 0,
+};
+
 // Check if the home router is alive via TCP connect to port 7547 (TR-069/CWMP
 // management port, which is open on the router). ICMP ping is blocked from the
 // Azure VM, and ports 80/443/22 are filtered, but 7547 responds. If the TCP
@@ -789,8 +817,14 @@ function makeDefaultState(now = Date.now()) {
 const TUYA_LOCAL_POLL_SCRIPT = path.join(__dirname, "tuya_local_poll.py");
 
 function requestTomzn() {
+  const _perfStart = Date.now();
+  perfStats.tomznPythonSpawnCount += 1;
   return new Promise((resolve, reject) => {
     execFile("python3", [TUYA_LOCAL_POLL_SCRIPT], { timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      const _dur = Date.now() - _perfStart;
+      perfStats.tomznPollCount += 1;
+      perfStats.tomznPollTotalMs += _dur;
+      if (_dur > perfStats.tomznPollMaxMs) perfStats.tomznPollMaxMs = _dur;
       if (error) {
         const msg = stderr.trim() || error.message;
         return reject(new Error(`TOMZN local poll failed: ${msg}`));
@@ -1925,7 +1959,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     ups = { active: reachable, label: reachable ? "UPS Backup" : "Power Loss" };
   }
 
-  return {
+  const _perfResult = {
     version: state.version,
     generatedAt: new Date(now).toISOString(),
     activeMeter: state.activeMeter,
@@ -1997,6 +2031,11 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     manualLogs: logs.map(({ _id, ...log }) => log),
     meta: { cycleStart, billingEnd: nextBillingCycleStart(now, state.billingDay), todayStart, cycleUsage, todayUsage, averageWindowDays: round(observedDays, 2), historicalAverageDaily },
   };
+  const _perfDur = Date.now() - now;
+  perfStats.buildDashboardCalls += 1;
+  perfStats.buildDashboardTotalMs += _perfDur;
+  if (_perfDur > perfStats.buildDashboardMaxMs) perfStats.buildDashboardMaxMs = _perfDur;
+  return _perfResult;
 }
 
 // Downsample old high-frequency snapshots (every ~5-10s) to one per minute.
@@ -2069,7 +2108,7 @@ function registerUnifiedSolarRoutes(app, db) {
   // its current version — if it matches, we return { changed: false } instead
   // of the full dashboard, saving bandwidth and re-render cycles.
   let dataVersion = 0;
-  const bumpDataVersion = () => { dataVersion += 1; };
+  const bumpDataVersion = () => { dataVersion += 1; perfStats.dataVersionBumps += 1; };
   // In-memory live cache: holds the freshest TOMZN reading for dashboard display
   // without requiring a database write on every 5s poll. Reset to null on restart.
   const liveTomznRef = { value: null };
@@ -2219,7 +2258,7 @@ function registerUnifiedSolarRoutes(app, db) {
       liveTomznRef.value = liveRecord;
       // Live energy ticks change today-usage even without a DB persist. Bump
       // dataVersion so /dashboard/sync returns a full rebuild, not just hero.
-      if (prevEnergy != null && energyKwh > prevEnergy) bumpDataVersion();
+      if (prevEnergy != null && energyKwh > prevEnergy) { bumpDataVersion(); perfStats.dataVersionBumpsFromLiveTick += 1; }
       return { state, record: liveRecord, allocatedDelta: 0 };
     })();
     try { return await pollInFlight; } finally { pollInFlight = null; }
@@ -2228,6 +2267,7 @@ function registerUnifiedSolarRoutes(app, db) {
     const latest = await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
     if (!force && latest && Date.now() - latest.timestamp < INVERTER_POLL_MAX_AGE_MS) return latest;
     if (inverterPollInFlight) return inverterPollInFlight;
+    const _invPerfStart = Date.now();
     inverterPollInFlight = requestInverterZone()
       .then(async (snapshot) => {
         if (!snapshot) return snapshot;
@@ -2260,6 +2300,7 @@ function registerUnifiedSolarRoutes(app, db) {
         // inverter outage — keep serving the last good snapshot until we have
         // INVERTER_FAIL_THRESHOLD consecutive failures (~20s). This stops the
         // Solar Only → UPS flicker on the hero tag.
+        perfStats.inverterPollFailures += 1;
         inverterFailCount += 1;
         console.error(`[Solar Engine] inverter poll failed (${inverterFailCount}/${INVERTER_FAIL_THRESHOLD}):`, error.message);
         if (inverterFailCount < INVERTER_FAIL_THRESHOLD && liveInverterRef.value && liveInverterRef.value.isOnline !== false) {
@@ -2278,7 +2319,13 @@ function registerUnifiedSolarRoutes(app, db) {
         liveInverterRef.value = offline;
         return offline;
       })
-      .finally(() => { inverterPollInFlight = null; });
+      .finally(() => {
+        const _dur = Date.now() - _invPerfStart;
+        perfStats.inverterPollCount += 1;
+        perfStats.inverterPollTotalMs += _dur;
+        if (_dur > perfStats.inverterPollMaxMs) perfStats.inverterPollMaxMs = _dur;
+        inverterPollInFlight = null;
+      });
     return inverterPollInFlight;
   };
   const pollWeather = async () => {
@@ -2317,12 +2364,15 @@ function registerUnifiedSolarRoutes(app, db) {
   // the in-memory live cache. Used by /live, /live/stream, and broadcastLive()
   // so all three return an identical shape without duplicating the assembly logic.
   const buildLivePayload = async () => {
+    const _perfStart = Date.now();
+    perfStats.buildLivePayloadDbHits += 1; // ensureState always queries
     const state = await ensureState(stateCollection);
     const liveOverride = liveTomznRef?.value;
     const tomznSource = (liveOverride && (!state.lastTomzn || liveOverride.timestamp >= state.lastTomzn.timestamp))
       ? liveOverride
       : state.lastTomzn;
-    const latestInverter = liveInverterRef.value || await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
+    let latestInverter = liveInverterRef.value;
+    if (!latestInverter) { perfStats.buildLivePayloadDbHits += 1; latestInverter = await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next(); }
     const inverter = latestInverter ? {
       solarW: latestInverter.solarW || 0,
       solarV: latestInverter.solarV || 0,
@@ -2406,6 +2456,7 @@ function registerUnifiedSolarRoutes(app, db) {
     // for 60s to avoid a query on every 2s broadcast.
     let weather = weatherCache.value;
     if (!weather || Date.now() - weatherCache.timestamp > 60_000) {
+      perfStats.buildLivePayloadDbHits += 1;
       const latestWeather = await weatherSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
       weather = latestWeather ? {
         code: latestWeather.code,
@@ -2420,6 +2471,10 @@ function registerUnifiedSolarRoutes(app, db) {
       } : { code: 0, isDay: pakistanHour(Date.now()) >= 6 && pakistanHour(Date.now()) < 19, cloudCover: 0, precipitation: 0, temperatureC: 0, sunrise: null, sunset: null, fetchedAt: "", isLive: false };
       weatherCache = { value: weather, timestamp: Date.now() };
     }
+    const _liveDur = Date.now() - _perfStart;
+    perfStats.buildLivePayloadCalls += 1;
+    perfStats.buildLivePayloadTotalMs += _liveDur;
+    if (_liveDur > perfStats.buildLivePayloadMaxMs) perfStats.buildLivePayloadMaxMs = _liveDur;
     return { tomznLive: publicTomzn(tomznSource), inverter, gridFlow, ups, weather };
   };
 
@@ -2451,12 +2506,13 @@ function registerUnifiedSolarRoutes(app, db) {
     try {
       const live = await buildLivePayload();
       const fp = liveFingerprint(live);
-      if (!force && fp === lastLiveFingerprint) return;
+      if (!force && fp === lastLiveFingerprint) { perfStats.sseSkipped += 1; return; }
       lastLiveFingerprint = fp;
       const payload = JSON.stringify(live);
+      perfStats.sseBroadcasts += 1;
       for (const res of liveClients) {
         try { res.write(`data: ${payload}\n\n`); }
-        catch (e) { liveClients.delete(res); }
+        catch (e) { liveClients.delete(res); perfStats.sseClientCount = liveClients.size; }
       }
     } catch (e) { console.error("[Solar Engine] live broadcast failed:", e.message); }
   };
@@ -2487,6 +2543,7 @@ function registerUnifiedSolarRoutes(app, db) {
     res.flushHeaders();
 
     liveClients.add(res);
+    perfStats.sseClientCount = liveClients.size;
     markClientPresent();
     // Send current cached state immediately so the client doesn't wait
     // for the next background poll.
@@ -2508,6 +2565,7 @@ function registerUnifiedSolarRoutes(app, db) {
     req.on("close", () => {
       clearInterval(ping);
       liveClients.delete(res);
+      perfStats.sseClientCount = liveClients.size;
     });
   });
 
@@ -2800,6 +2858,79 @@ function registerUnifiedSolarRoutes(app, db) {
         })));
     } catch (error) { res.status(500).json({ error: error.message }); }
   });
+
+  // ── Phase 1: Performance monitoring endpoint ──
+  // Returns the current 60s window stats. Does not modify any runtime behavior.
+  app.get("/api/solar/perf", (_req, res) => {
+    const elapsed = Date.now() - perfStats.windowStart;
+    res.json({
+      windowMs: elapsed,
+      buildDashboard: {
+        calls: perfStats.buildDashboardCalls,
+        avgMs: perfStats.buildDashboardCalls > 0 ? Math.round(perfStats.buildDashboardTotalMs / perfStats.buildDashboardCalls) : 0,
+        maxMs: perfStats.buildDashboardMaxMs,
+      },
+      buildLivePayload: {
+        calls: perfStats.buildLivePayloadCalls,
+        avgMs: perfStats.buildLivePayloadCalls > 0 ? Math.round(perfStats.buildLivePayloadTotalMs / perfStats.buildLivePayloadCalls) : 0,
+        maxMs: perfStats.buildLivePayloadMaxMs,
+        dbHits: perfStats.buildLivePayloadDbHits,
+      },
+      sse: {
+        broadcasts: perfStats.sseBroadcasts,
+        skipped: perfStats.sseSkipped,
+        clients: perfStats.sseClientCount,
+      },
+      dataVersion: {
+        bumps: perfStats.dataVersionBumps,
+        fromLiveTick: perfStats.dataVersionBumpsFromLiveTick,
+      },
+      tomznPoll: {
+        count: perfStats.tomznPollCount,
+        pythonSpawns: perfStats.tomznPythonSpawnCount,
+        avgMs: perfStats.tomznPollCount > 0 ? Math.round(perfStats.tomznPollTotalMs / perfStats.tomznPollCount) : 0,
+        maxMs: perfStats.tomznPollMaxMs,
+      },
+      inverterPoll: {
+        count: perfStats.inverterPollCount,
+        avgMs: perfStats.inverterPollCount > 0 ? Math.round(perfStats.inverterPollTotalMs / perfStats.inverterPollCount) : 0,
+        maxMs: perfStats.inverterPollMaxMs,
+        failures: perfStats.inverterPollFailures,
+      },
+    });
+  });
+
+  // ── Phase 1: Periodic perf log (every 60s) ──
+  // Logs the last 60s of stats to PM2 logs, then resets the window.
+  setInterval(() => {
+    const elapsed = Date.now() - perfStats.windowStart;
+    const bdAvg = perfStats.buildDashboardCalls > 0 ? Math.round(perfStats.buildDashboardTotalMs / perfStats.buildDashboardCalls) : 0;
+    const lpAvg = perfStats.buildLivePayloadCalls > 0 ? Math.round(perfStats.buildLivePayloadTotalMs / perfStats.buildLivePayloadCalls) : 0;
+    const tzAvg = perfStats.tomznPollCount > 0 ? Math.round(perfStats.tomznPollTotalMs / perfStats.tomznPollCount) : 0;
+    const invAvg = perfStats.inverterPollCount > 0 ? Math.round(perfStats.inverterPollTotalMs / perfStats.inverterPollCount) : 0;
+    console.log(`[Perf] ${elapsed}ms window | dashboard: ${perfStats.buildDashboardCalls}x avg=${bdAvg}ms max=${perfStats.buildDashboardMaxMs}ms | livePayload: ${perfStats.buildLivePayloadCalls}x avg=${lpAvg}ms dbHits=${perfStats.buildLivePayloadDbHits} | sse: ${perfStats.sseBroadcasts}sent ${perfStats.sseSkipped}skip ${perfStats.sseClientCount}clients | dataVersion: ${perfStats.dataVersionBumps}bumps (${perfStats.dataVersionBumpsFromLiveTick}fromLiveTick) | tomzn: ${perfStats.tomznPollCount}polls ${perfStats.tomznPythonSpawnCount}spawns avg=${tzAvg}ms max=${perfStats.tomznPollMaxMs}ms | inverter: ${perfStats.inverterPollCount}polls avg=${invAvg}ms max=${perfStats.inverterPollMaxMs}ms fails=${perfStats.inverterPollFailures}`);
+    // Reset window
+    perfStats.windowStart = Date.now();
+    perfStats.buildDashboardCalls = 0;
+    perfStats.buildDashboardTotalMs = 0;
+    perfStats.buildDashboardMaxMs = 0;
+    perfStats.buildLivePayloadCalls = 0;
+    perfStats.buildLivePayloadTotalMs = 0;
+    perfStats.buildLivePayloadMaxMs = 0;
+    perfStats.buildLivePayloadDbHits = 0;
+    perfStats.sseBroadcasts = 0;
+    perfStats.sseSkipped = 0;
+    perfStats.dataVersionBumps = 0;
+    perfStats.dataVersionBumpsFromLiveTick = 0;
+    perfStats.tomznPollCount = 0;
+    perfStats.tomznPollTotalMs = 0;
+    perfStats.tomznPollMaxMs = 0;
+    perfStats.tomznPythonSpawnCount = 0;
+    perfStats.inverterPollCount = 0;
+    perfStats.inverterPollTotalMs = 0;
+    perfStats.inverterPollMaxMs = 0;
+    perfStats.inverterPollFailures = 0;
+  }, 60_000);
 
   // Polling is server-owned and is the single source of truth for live data.
   // A unified 5s background loop polls both TOMZN + inverter (using force=true
