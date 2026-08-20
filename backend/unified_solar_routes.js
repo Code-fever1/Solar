@@ -2775,7 +2775,7 @@ function registerUnifiedSolarRoutes(app, db) {
     let replayed = false;
     let resynced = false;
     if (!Number.isNaN(lastEventId) && lastEventId > 0) {
-      if (replayBuffer.length === 0 || replayBuffer[0].seq > lastEventId + 1) {
+      if (lastEventId >= eventSeq || replayBuffer.length === 0 || replayBuffer[0].seq > lastEventId + 1) {
         // Buffer doesn't cover the gap — client missed events older than our
         // buffer. Send resync_required named event so the client does a full
         // dashboard fetch.
