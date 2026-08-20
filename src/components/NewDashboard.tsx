@@ -65,6 +65,9 @@ const FlowChart = memo(function FlowChart({
   points: FlowPoint[]; width: number; windowStart: number; isLight: boolean;
   cardTheme: { textPrimary: string; textSecondary: string; textMuted: string; overlayBg: string; overlayBorder: string };
 }) {
+  // ── Phase 1: Render counter (no behavior change) ──
+  const _renderCount = useRef(0);
+  _renderCount.current += 1;
   const height = 148;
   const plotW = Math.max(1, width - INSPECTOR_W);
   const graphWidth = Math.max(1, plotW - 36);
@@ -122,6 +125,14 @@ const FlowChart = memo(function FlowChart({
       ],
     };
   }, [points, windowStart, graphWidth, selectedTs]);
+
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (_renderCount.current > 0) console.log(`[PerfFE] FlowChart renders: ${_renderCount.current}/10s`);
+      _renderCount.current = 0;
+    }, 10_000);
+    return () => clearInterval(iv);
+  }, []);
 
   const selectAtX = (x: number) => {
     const hour = ((x - chartLeft) / graphWidth) * 24;
@@ -239,6 +250,16 @@ const fcStyles = StyleSheet.create({
 });
 
 export const NewDashboard = memo(function NewDashboard() {
+  // ── Phase 1: Render counter (no behavior change) ──
+  const _renderCount = useRef(0);
+  _renderCount.current += 1;
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (_renderCount.current > 0) console.log(`[PerfFE] NewDashboard renders: ${_renderCount.current}/10s`);
+      _renderCount.current = 0;
+    }, 10_000);
+    return () => clearInterval(iv);
+  }, []);
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const { isIdle, resetIdleTimer } = useIdle();
