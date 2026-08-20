@@ -2109,7 +2109,39 @@ function registerUnifiedSolarRoutes(app, db) {
   // its current version — if it matches, we return { changed: false } instead
   // of the full dashboard, saving bandwidth and re-render cycles.
   let dataVersion = 0;
-  const bumpDataVersion = () => { dataVersion += 1; perfStats.dataVersionBumps += 1; };
+  // Dashboard cache: avoids running the 12-query buildDashboard pipeline when
+  // dataVersion hasn't changed. The cache is invalidated by bumpDataVersion()
+  // (any mutation) and expires after 60s (to pick up live energy changes that
+  // don't bump dataVersion). Concurrent requests share a single in-flight build.
+  const dashboardCache = { version: null, payload: null, builtAt: 0 };
+  let dashboardBuildInFlight = null;
+  const DASHBOARD_CACHE_MAX_AGE_MS = 60_000;
+  const bumpDataVersion = () => {
+    dataVersion += 1;
+    perfStats.dataVersionBumps += 1;
+    dashboardCache.payload = null; // invalidate — next build will use the new version
+  };
+  // Cached dashboard builder — returns the cached payload if dataVersion matches
+  // and the cache is fresh. De-duplicates concurrent builds via dashboardBuildInFlight.
+  const getCachedDashboard = async () => {
+    if (dashboardCache.payload && dashboardCache.version === dataVersion && Date.now() - dashboardCache.builtAt < DASHBOARD_CACHE_MAX_AGE_MS) {
+      perfStats.dashboardCacheHits += 1;
+      return dashboardCache.payload;
+    }
+    if (dashboardBuildInFlight) return dashboardBuildInFlight;
+    dashboardBuildInFlight = (async () => {
+      try {
+        const payload = await buildDashboard(context);
+        dashboardCache.version = dataVersion;
+        dashboardCache.payload = payload;
+        dashboardCache.builtAt = Date.now();
+        return payload;
+      } finally {
+        dashboardBuildInFlight = null;
+      }
+    })();
+    return dashboardBuildInFlight;
+  };
   // In-memory live cache: holds the freshest TOMZN reading for dashboard display
   // without requiring a database write on every 5s poll. Reset to null on restart.
   const liveTomznRef = { value: null };
@@ -2257,9 +2289,12 @@ function registerUnifiedSolarRoutes(app, db) {
       const liveRecord = { ...snapshot, timestamp: now, energyKwh, activeMeter: state.activeMeter };
       const prevEnergy = finiteNumber(liveTomznRef.value?.energyKwh);
       liveTomznRef.value = liveRecord;
-      // Live energy ticks change today-usage even without a DB persist. Bump
-      // dataVersion so /dashboard/sync returns a full rebuild, not just hero.
-      if (prevEnergy != null && energyKwh > prevEnergy) { bumpDataVersion(); perfStats.dataVersionBumpsFromLiveTick += 1; }
+      // Live energy ticks no longer bump dataVersion. The frontend's applyLive
+      // already increments home.todayUsage + active meter units from the live
+      // SSE event, so a full dashboard rebuild is unnecessary every 2.5s.
+      // Analytics (forecasts, trends, daily usage) refresh on the next allocation
+      // persist (1/min) which bumps dataVersion naturally.
+      // perfStats.dataVersionBumpsFromLiveTick stays at 0 to verify this.
       return { state, record: liveRecord, allocatedDelta: 0 };
     })();
     try { return await pollInFlight; } finally { pollInFlight = null; }
