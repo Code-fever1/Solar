@@ -2148,6 +2148,27 @@ function registerUnifiedSolarRoutes(app, db) {
   // In-memory live inverter cache — same pattern as liveTomznRef, keeps the
   // freshest inverter reading for the live payload without DB reads every 7s.
   const liveInverterRef = { value: null };
+  // In-memory state cache — avoids a findOne on every buildLivePayload call.
+  // Invalidated by any stateCollection write (replaceOne/insertOne/updateOne).
+  // The state document rarely changes (only on allocation persist, changeover,
+  // manual reading, baseline update) — caching it eliminates the #1 DB hit on
+  // the live SSE path.
+  const stateCache = { value: null, loading: null };
+  const invalidateStateCache = () => { stateCache.value = null; };
+  const getCachedState = async () => {
+    if (stateCache.value) return stateCache.value;
+    if (stateCache.loading) return stateCache.loading;
+    stateCache.loading = (async () => {
+      try {
+        const state = await ensureState(stateCollection);
+        stateCache.value = state;
+        return state;
+      } finally {
+        stateCache.loading = null;
+      }
+    })();
+    return stateCache.loading;
+  };
   // Consecutive InverterZone poll failures. Reset on a successful snapshot.
   // Offline is only published after INVERTER_FAIL_THRESHOLD consecutive fails.
   let inverterFailCount = 0;
