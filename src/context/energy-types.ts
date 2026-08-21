@@ -185,6 +185,46 @@ export type AlertItem = {
   createdAt: Date;
 };
 
+// Energy Intelligence — backend-computed insight from learned patterns
+export type IntelligenceState = {
+  status:
+    | "NORMAL"
+    | "METER_RECOMMENDATION"
+    | "SOLAR_ANOMALY"
+    | "HIGH_CONSUMPTION"
+    | "LOW_CONSUMPTION"
+    | "WAPDA_STANDBY"
+    | "WAPDA_IMPORTING"
+    | "WAPDA_CUTOFF"
+    | "WAPDA_RESTORED"
+    | "WAPDA_UNSTABLE"
+    | "INSUFFICIENT_DATA";
+  title: string;
+  message: string;
+  severity: "none" | "info" | "low" | "medium" | "high";
+  confidence: number; // 0.0–1.0
+  reasonCodes: string[];
+  meterRecommendation: {
+    recommendation: MeterId;
+    meter1Score: number;
+    meter2Score: number;
+    advantage: number;
+    action: string;
+  } | null;
+  details?: {
+    gridState: string;
+    gridLabel: string;
+    solarAnomaly: { expectedW: number; actualW: number; deviationPct: number; probableCause: string } | null;
+    consumption: { expectedW: number; actualW: number; deviationPct: number } | null;
+    meterScores: { meter1: number; meter2: number; advantage: number; advantageFavors: string };
+    confidenceLevel: string;
+    bucketId: string;
+    mode: string;
+  };
+  notification: { priority: string; status: string; title: string; message: string } | null;
+  timestamp: number;
+};
+
 export type HistoryPoint = {
   time: string;
   meter1: number;

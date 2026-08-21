@@ -9,6 +9,7 @@ import { GlassCard } from "@/components/GlassCard";
 import { useEnergy } from "@/context/EnergyContext";
 import { useIdle } from "@/context/IdleContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
+import { EnergyIntelligenceCard } from "./EnergyIntelligenceCard";
 import { LiveEnergyScene } from "./LiveEnergyScene";
 import { EnergyReceivedCard, EnergyUsedCard } from "./NewDashboardCards";
 
@@ -279,7 +280,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
     liveSceneVisible.current = visible;
     setIsLiveSceneVisible(visible);
   };
-  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive, ups, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
+  const { activeMeter, energyToday, flowHistory, home, inverter, intelligence, isOffline, meters, weather, tomznLive, ups, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
   const meterOne = meters.meter1;
   const meterTwo = meters.meter2;
   const chartWidth = Math.min(width - 32, 520);
@@ -417,6 +418,12 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
         </View>
       </View>
     </GlassCard>
+    {/* Energy Intelligence — backend-computed insight from learned patterns */}
+    <EnergyIntelligenceCard
+      intelligence={intelligence}
+      isLight={sceneIsLight}
+      cardTheme={sceneCardTheme}
+    />
     {/* LiveEnergyScene moved to hero background */}
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8, width: '100%' }}>
       <EnergyReceivedCard

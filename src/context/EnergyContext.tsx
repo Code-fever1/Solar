@@ -28,13 +28,14 @@ import type {
   GridFlow,
   HistoryPoint,
   HomeState,
+  IntelligenceState,
   InverterTelemetry,
   LiveTelemetry,
   ManualLog,
   MeterId,
   MeterState,
   Recommendation,
-  WeatherState,
+  WeatherState
 } from "./energy-types";
 
 export type {
@@ -43,9 +44,7 @@ export type {
   EnergyToday,
   GridFlow,
   HistoryPoint,
-  HomeState,
-  InverterTelemetry,
-  LiveTelemetry,
+  HomeState, IntelligenceState, InverterTelemetry, LiveTelemetry,
   ManualLog,
   MeterId,
   MeterState,
@@ -66,7 +65,7 @@ type DashboardSnapshot = CachedDashboardSnapshot;
 
 type PendingOperation = {
   id: string;
-  path: "/changeover" | "/manual-readings" | "/baselines" | "/last-month-total";
+  path: "/changeover" | "/manual-readings" | "/baselines" | "/last-month-total" | "/forget-swap";
   method: "POST";
   body: Record<string, unknown>;
   createdAt: number;
@@ -95,6 +94,7 @@ type EnergyContextValue = {
   tomznHistory: any[];
   meta?: { billingEnd?: number; todayStart?: number; [key: string]: unknown };
   ups: { active: boolean; label: string } | null;
+  intelligence: IntelligenceState | null;
   summary: ReturnType<typeof summarizeHistory>;
   period: "day" | "week" | "month" | "year";
   loading: boolean;
@@ -107,6 +107,7 @@ type EnergyContextValue = {
   setManualBaseline: (meterId: MeterId, reading: number, cycleStartTs: number) => Promise<void>;
   setLastMonthTotal: (total: number) => Promise<void>;
   addManualLog: (meterId: MeterId, reading: number, timestamp: number, notes?: string) => Promise<void>;
+  forgetSwap: (meter1Reading: number, meter2Reading: number) => Promise<void>;
   editManualLog: (id: string, reading: number, timestamp: number, notes?: string) => Promise<void>;
   deleteManualLog: (id: string) => Promise<void>;
   clearAlerts: () => void;
@@ -183,6 +184,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     gridFlow?: DashboardSnapshot["gridFlow"];
     weather?: DashboardSnapshot["weather"];
     ups?: DashboardSnapshot["ups"];
+    intelligence?: IntelligenceState | null;
   } | null>(null);
   const [tomznHistory, setTomznHistory] = useState<any[]>([]);
   const [flowHistory24h, setFlowHistory24h] = useState<EnergyFlowPoint[]>([]);
@@ -487,22 +489,24 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   // Apply live data (tomznLive + inverter + gridFlow) to the snapshot. Shared
   // by both fetchLive() and the SSE subscription handler so the merge logic
   // stays DRY.
-  const liveSig = (d: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any } | null | undefined) => {
+  const liveSig = (d: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any; intelligence?: any } | null | undefined) => {
     if (!d) return "";
     const t = d.tomznLive || {};
     const i = d.inverter || {};
     const g = d.gridFlow || {};
     const w = d.weather || {};
     const u = d.ups;
+    const intel = d.intelligence;
     return [
       i.isOnline, i.inverterMode, i.solarW, i.loadW, i.gridW, i.acOutV,
       t.isOnline, t.switchOn, t.powerW, t.voltageV, t.currentA, t.faultCode,
       g.mode, g.direction, g.homeW,
       u?.active ?? null, w.isDay, w.code,
+      intel?.status, intel?.meterRecommendation?.recommendation,
     ].join("|");
   };
 
-  const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any } | null | undefined) => {
+  const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any; intelligence?: any } | null | undefined) => {
     if (!data || (!data.tomznLive && !data.inverter)) return;
     perfRef.current.applyLiveCalls += 1;
     const sig = liveSig(data);
@@ -526,6 +530,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       gridFlow: data.gridFlow,
       weather: data.weather,
       ups: data.ups,
+      intelligence: data.intelligence || null,
     });
     perfRef.current.liveSliceUpdates += 1;
     // Import step — billing/accounting preserved EXACTLY. Only update the
@@ -913,6 +918,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     : EMPTY_INVERTER;
   const weather = liveData?.weather || snapshot?.weather || EMPTY_WEATHER;
   const ups = liveData?.ups ?? snapshot?.ups ?? null;
+  const intelligence = liveData?.intelligence ?? null;
   const energyToday = snapshot?.energyToday || EMPTY_ENERGY_TODAY;
   // Prefer the dedicated 24h flow-history endpoint (fresh data even after offline period),
   // fall back to the dashboard's embedded flowHistory.
@@ -994,6 +1000,19 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     await submitOrQueue(
       { id: `manual-${meterId}-${entryTimestamp}`, path: "/manual-readings", method: "POST", body: { meterId, reading, timestamp: entryTimestamp, notes }, createdAt: entryTimestamp },
       (current) => applyOfflineManualReading(current, meterId, reading, entryTimestamp, notes),
+    );
+  };
+
+  const forgetSwap = async (meter1Reading: number, meter2Reading: number) => {
+    const timestamp = Date.now();
+    manualReadingOverrideRef.current = {
+      meter1: { reading: meter1Reading, timestamp },
+      meter2: { reading: meter2Reading, timestamp },
+    };
+    void AsyncStorage.setItem(MANUAL_READINGS_OVERRIDE_KEY, JSON.stringify(manualReadingOverrideRef.current)).catch(() => undefined);
+    await submitOrQueue(
+      { id: `forget-swap-${timestamp}`, path: "/forget-swap", method: "POST", body: { meter1Reading, meter2Reading, timestamp }, createdAt: timestamp },
+      (current) => applyOfflineManualReading(applyOfflineManualReading(current, "meter1", meter1Reading, timestamp, "Forget swap correction"), "meter2", meter2Reading, timestamp, "Forget swap correction"),
     );
   };
 
@@ -1086,10 +1105,10 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<EnergyContextValue>(() => ({
     live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
-    history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, ups, summary,
+    history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, ups, intelligence, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     calibrateMeter: (meterId, reading) => { void addManualLog(meterId, reading, Date.now(), "Manual calibration"); },
-    setManualBaseline, setLastMonthTotal, addManualLog, editManualLog, deleteManualLog,
+    setManualBaseline, setLastMonthTotal, addManualLog, forgetSwap, editManualLog, deleteManualLog,
     clearAlerts: () => undefined,
     resetAllLogs: async () => { await loadDashboard(false); },
     refreshTomzn,
@@ -1098,9 +1117,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     refreshInverterForce,
   }), [
     live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
-    history, manualLogs, manualBaselines, tomznHistory, snapshot?.meta, ups, summary,
+    history, manualLogs, manualBaselines, tomznHistory, snapshot?.meta, ups, intelligence, summary,
     period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
-    setManualBaseline, setLastMonthTotal, addManualLog, editManualLog, deleteManualLog,
+    setManualBaseline, setLastMonthTotal, addManualLog, forgetSwap, editManualLog, deleteManualLog,
     refreshTomzn, refreshAll, refreshTomznForce, refreshInverterForce, loadDashboard,
   ]);
 

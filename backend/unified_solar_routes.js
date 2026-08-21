@@ -11,6 +11,7 @@ const http = require("http");
 const https = require("https");
 const { execFile } = require("child_process");
 const path = require("path");
+const { createEnergyIntelligenceEngine } = require("./intelligence/EnergyIntelligenceEngine");
 
 const PRIMARY_STATE_ID = "primary";
 const METER_IDS = new Set(["meter1", "meter2"]);
@@ -2270,6 +2271,14 @@ function registerUnifiedSolarRoutes(app, db) {
   const manualLogs = db.collection("solar_manual_logs");
   const inverterSnapshots = db.collection("solar_inverter_snapshots");
   const weatherSnapshots = db.collection("solar_weather_snapshots");
+  // Energy Intelligence Engine — learns patterns from historical data and
+  // generates real-time insights (meter recommendations, anomaly detection,
+  // grid state classification, consumption analysis). Included in SSE payload.
+  const intelligenceEngine = createEnergyIntelligenceEngine({
+    inverterSnapshots,
+    tomznSnapshots: snapshots,
+    allocations,
+  });
   let pollInFlight = null;
   let inverterPollInFlight = null;
   let weatherPollInFlight = null;
@@ -2728,7 +2737,23 @@ function registerUnifiedSolarRoutes(app, db) {
     perfStats.buildLivePayloadCalls += 1;
     perfStats.buildLivePayloadTotalMs += _liveDur;
     if (_liveDur > perfStats.buildLivePayloadMaxMs) perfStats.buildLivePayloadMaxMs = _liveDur;
-    return { tomznLive: publicTomzn(tomznSource), inverter, gridFlow, ups, weather };
+    // Energy Intelligence — runs on every live payload build. Historical pattern
+    // learning is cached for 5 min; real-time scoring is ~1ms. Failures are
+    // non-fatal: intelligence is absent but live telemetry still broadcasts.
+    let intelligence = null;
+    try {
+      intelligence = await intelligenceEngine.compute({
+        inverter,
+        tomznLive: publicTomzn(tomznSource),
+        gridFlow,
+        weather,
+        state,
+      });
+    } catch (e) {
+      // Intelligence failure must never break the live stream
+      console.error("[Intelligence] compute failed:", e.message);
+    }
+    return { tomznLive: publicTomzn(tomznSource), inverter, gridFlow, ups, weather, intelligence };
   };
 
   // SSE subscribers for /live/stream — pushed instantly after each device poll
@@ -2764,6 +2789,7 @@ function registerUnifiedSolarRoutes(app, db) {
     payload.tomznLive?.voltageV, payload.tomznLive?.currentA, payload.tomznLive?.faultCode,
     payload.gridFlow?.mode, payload.gridFlow?.direction, payload.gridFlow?.homeW,
     payload.ups?.active ?? null, payload.weather?.isDay, payload.weather?.code,
+    payload.intelligence?.status, payload.intelligence?.meterRecommendation?.recommendation,
   ].join("|");
   const broadcastLive = async ({ force = false } = {}) => {
     if (liveClients.size === 0) return;
@@ -3102,6 +3128,36 @@ function registerUnifiedSolarRoutes(app, db) {
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
       invalidateStateCache();
+      res.json(await getCachedDashboard());
+    } catch (error) { res.status(502).json({ error: error.message }); }
+  });
+
+  // Forget Swap — updates both meters' anchor readings WITHOUT learning the
+  // ratio or inserting manual log entries. Used when the user forgot to swap
+  // and wants to re-anchor both meters so future manual logs are calculated
+  // relative to the correct current readings, without polluting the algorithm.
+  app.post("/api/solar/forget-swap", async (req, res) => {
+    try {
+      const meter1Reading = finiteNumber(req.body?.meter1Reading);
+      const meter2Reading = finiteNumber(req.body?.meter2Reading);
+      if (meter1Reading == null || meter1Reading < 0 || meter2Reading == null || meter2Reading < 0) {
+        return res.status(400).json({ error: "Non-negative readings for both meters are required" });
+      }
+      await pollTomzn({ forcePersist: true });
+      const state = await ensureState(stateCollection);
+      const timestamp = clientActionTimestamp(req.body?.timestamp);
+      const tomznEnergy = state.lastTomzn?.energyKwh ?? null;
+      for (const meterId of METER_IDS) {
+        const reading = meterId === "meter1" ? meter1Reading : meter2Reading;
+        const meter = state.meters[meterId];
+        meter.anchorReading = reading;
+        meter.anchorAt = timestamp;
+        meter.anchorEnergyKwh = tomznEnergy;
+      }
+      state.updatedAt = timestamp;
+      await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
+      invalidateStateCache();
+      bumpDataVersion();
       res.json(await getCachedDashboard());
     } catch (error) { res.status(502).json({ error: error.message }); }
   });
