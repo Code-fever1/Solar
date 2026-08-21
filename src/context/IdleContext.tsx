@@ -2,28 +2,35 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { AppState, type AppStateStatus } from "react-native";
 import { useSharedValue, type SharedValue } from "react-native-reanimated";
 
-// ── Adaptive animation speed tiers ──
-// animSpeedShared controls ONLY visual animation FPS on the UI thread.
-// It is completely independent from isIdle (which controls data polling).
+// ── Animation FPS Controller ──
 //
-//   3 = full ~60fps (active interaction)
-//   2 = ~30fps     (10s after last interaction)
-//   1 = ~10fps     (40s after last interaction)
-//   0 = stopped    (5min after last interaction)
+// animationFpsShared controls ONLY the decorative animation frame rate on the
+// UI thread. It is completely independent from isIdle (which controls data
+// polling / SSE).
+//
+// Target FPS lifecycle:
+//   120  — active interaction (first 10s)
+//   60   — 10s after last interaction
+//   30   — 40s after last interaction
+//   10   — 5min after last interaction (animation continues slowly)
+//   0    — app backgrounded or Home tab not focused
 //
 // isIdle remains a boolean that flips true only at the 5-minute mark,
 // preserving existing EnergyContext polling behavior.
 
-const TIER_30FPS_MS = 10_000;     // 10s → drop to ~30fps
-const TIER_10FPS_MS = 40_000;     // 40s → drop to ~10fps
-const IDLE_TIMEOUT_MS = 300_000;  // 5min → stop animation + isIdle=true
+const FPS_ACTIVE_MS = 10_000;       // 10s at 120 FPS
+const FPS_60_MS = 40_000;           // 40s → drop to 60 FPS
+const FPS_30_MS = 300_000;          // 5min → drop to 30 FPS then 10 FPS
+const IDLE_TIMEOUT_MS = 300_000;    // 5min → isIdle = true (polling behavior)
+
+export type AnimationFPS = 120 | 60 | 30 | 10 | 0;
 
 type IdleContextValue = {
   isIdle: boolean;
-  /** @deprecated Use animSpeedShared for animation control. Kept for backward compat. */
+  /** 1 = idle, 0 = active. Kept for backward compat with any worklet consumers. */
   isIdleShared: SharedValue<number>;
-  /** 0-3 animation speed tier. 3=60fps, 2=30fps, 1=10fps, 0=stopped. */
-  animSpeedShared: SharedValue<number>;
+  /** Explicit animation target FPS: 120, 60, 30, 10, or 0 (stopped). */
+  animationFpsShared: SharedValue<number>;
   resetIdleTimer: () => void;
 };
 
@@ -31,10 +38,8 @@ const IdleContext = createContext<IdleContextValue | null>(null);
 
 export function IdleProvider({ children }: { children: ReactNode }) {
   const [isIdle, setIsIdle] = useState(false);
-  // isIdleShared kept for backward compat (1 = idle, 0 = active).
-  // Updated alongside animSpeedShared so existing consumers don't break.
   const isIdleShared = useSharedValue(0);
-  const animSpeedShared = useSharedValue(3);
+  const animationFpsShared = useSharedValue<number>(120);
   const timer1Ref = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timer2Ref = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timer3Ref = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -48,20 +53,20 @@ export function IdleProvider({ children }: { children: ReactNode }) {
 
   const startTimerChain = () => {
     clearTimers();
-    // Tier 2: ~30fps after 10s
+    // 10s → 60 FPS
     timer1Ref.current = setTimeout(() => {
-      animSpeedShared.value = 2;
-    }, TIER_30FPS_MS);
-    // Tier 1: ~10fps after 40s
+      animationFpsShared.value = 60;
+    }, FPS_ACTIVE_MS);
+    // 40s → 30 FPS
     timer2Ref.current = setTimeout(() => {
-      animSpeedShared.value = 1;
-    }, TIER_10FPS_MS);
-    // Tier 0: stopped after 5min + isIdle = true for polling
+      animationFpsShared.value = 30;
+    }, FPS_60_MS);
+    // 5min → 10 FPS + isIdle = true for polling
     timer3Ref.current = setTimeout(() => {
+      animationFpsShared.value = 10;
       isIdleRef.current = true;
       setIsIdle(true);
       isIdleShared.value = 1;
-      animSpeedShared.value = 0;
     }, IDLE_TIMEOUT_MS);
   };
 
@@ -71,8 +76,8 @@ export function IdleProvider({ children }: { children: ReactNode }) {
       setIsIdle(false);
       isIdleShared.value = 0;
     }
-    // Immediately restore full speed
-    animSpeedShared.value = 3;
+    // Immediately restore full 120 FPS
+    animationFpsShared.value = 120;
     startTimerChain();
   };
 
@@ -93,7 +98,7 @@ export function IdleProvider({ children }: { children: ReactNode }) {
           isIdleShared.value = 1;
         }
         // Stop animation immediately on background
-        animSpeedShared.value = 0;
+        animationFpsShared.value = 0;
       }
     });
 
@@ -104,7 +109,7 @@ export function IdleProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <IdleContext.Provider value={{ isIdle, isIdleShared, animSpeedShared, resetIdleTimer }}>
+    <IdleContext.Provider value={{ isIdle, isIdleShared, animationFpsShared, resetIdleTimer }}>
       {children}
     </IdleContext.Provider>
   );

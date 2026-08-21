@@ -80,7 +80,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     }, 10_000);
     return () => clearInterval(iv);
   }, []);
-  const { animSpeedShared } = useIdle();
+  const { animationFpsShared } = useIdle();
   const now = Date.now();
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
@@ -343,7 +343,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
             height={canvasSize.height}
             gridPathOverride={gridPathOverride}
             isVisible={isVisible && appActive}
-            animSpeedShared={animSpeedShared}
+            animationFpsShared={animationFpsShared}
             solarFlow={{
               active: solarOnline,
               power: offline ? 0 : inverter.solarW,
