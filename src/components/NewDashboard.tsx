@@ -9,6 +9,7 @@ import { GlassCard } from "@/components/GlassCard";
 import { useEnergy } from "@/context/EnergyContext";
 import { useIdle } from "@/context/IdleContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
+import { EnergyIntelligenceCard } from "./EnergyIntelligenceCard";
 import { LiveEnergyScene } from "./LiveEnergyScene";
 import { EnergyReceivedCard, EnergyUsedCard } from "./NewDashboardCards";
 
@@ -65,6 +66,9 @@ const FlowChart = memo(function FlowChart({
   points: FlowPoint[]; width: number; windowStart: number; isLight: boolean;
   cardTheme: { textPrimary: string; textSecondary: string; textMuted: string; overlayBg: string; overlayBorder: string };
 }) {
+  // ── Phase 1: Render counter (no behavior change) ──
+  const _renderCount = useRef(0);
+  _renderCount.current += 1;
   const height = 148;
   const plotW = Math.max(1, width - INSPECTOR_W);
   const graphWidth = Math.max(1, plotW - 36);
@@ -122,6 +126,14 @@ const FlowChart = memo(function FlowChart({
       ],
     };
   }, [points, windowStart, graphWidth, selectedTs]);
+
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (_renderCount.current > 0) console.log(`[PerfFE] FlowChart renders: ${_renderCount.current}/10s`);
+      _renderCount.current = 0;
+    }, 10_000);
+    return () => clearInterval(iv);
+  }, []);
 
   const selectAtX = (x: number) => {
     const hour = ((x - chartLeft) / graphWidth) * 24;
@@ -238,7 +250,17 @@ const fcStyles = StyleSheet.create({
   inspectorUnit: { fontFamily: "Outfit", fontSize: 8, fontWeight: "600" },
 });
 
-export const NewDashboard = memo(function NewDashboard() {
+export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: { isTabFocused?: boolean }) {
+  // ── Phase 1: Render counter (no behavior change) ──
+  const _renderCount = useRef(0);
+  _renderCount.current += 1;
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (_renderCount.current > 0) console.log(`[PerfFE] NewDashboard renders: ${_renderCount.current}/10s`);
+      _renderCount.current = 0;
+    }, 10_000);
+    return () => clearInterval(iv);
+  }, []);
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const { isIdle, resetIdleTimer } = useIdle();
@@ -258,7 +280,7 @@ export const NewDashboard = memo(function NewDashboard() {
     liveSceneVisible.current = visible;
     setIsLiveSceneVisible(visible);
   };
-  const { activeMeter, energyToday, flowHistory, home, inverter, isOffline, meters, weather, tomznLive, ups, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
+  const { activeMeter, energyToday, flowHistory, home, inverter, intelligence, isOffline, meters, weather, tomznLive, ups, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
   const meterOne = meters.meter1;
   const meterTwo = meters.meter2;
   const chartWidth = Math.min(width - 32, 520);
@@ -355,7 +377,7 @@ export const NewDashboard = memo(function NewDashboard() {
 
   return <View style={styles.screen}><Image source={heroScene.source} style={{ position: "absolute", top: 0, left: 0, width, height }} resizeMode="stretch" /><LinearGradient colors={["rgba(0,0,0,0.25)", "rgba(0,0,0,0.1)", "rgba(0,0,0,0.4)"]} locations={[0, 0.35, 1]} style={{ position: "absolute", top: 0, left: 0, width, height }} />
     <View style={{ position: "absolute", top: 0, left: 0, width: "100%", height: height * 0.50 }} pointerEvents="none">
-      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible} variant="hero" overlayConfig={heroScene.overlay} ups={ups} gridFlow={gridFlow} />
+      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible && isTabFocused} variant="hero" overlayConfig={heroScene.overlay} ups={ups} gridFlow={gridFlow} />
     </View>
     <ScrollView ref={scrollRef} style={{ backgroundColor: "transparent" }} contentContainerStyle={[styles.content, { paddingTop: height * 0.49 }]} showsVerticalScrollIndicator={false} removeClippedSubviews={true} nestedScrollEnabled={true} scrollEventThrottle={isIdle ? 48 : 16} bounces={true} alwaysBounceVertical={true} onScroll={handleScroll}>
     <View style={{ width: "100%", borderTopLeftRadius: 28, borderTopRightRadius: 28, minHeight: height * 0.65 }}>
@@ -375,7 +397,7 @@ export const NewDashboard = memo(function NewDashboard() {
           <Cpu size={16} color={sceneCardTheme.textSecondary} />
           <View style={styles.statusItemText}>
             <Text style={[styles.statusLabel, { color: sceneCardTheme.textSecondary }]}>Inverter</Text>
-            <Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{inverterOff ? "Offline" : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text>
+            <Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : inverter.isOnline === false ? "#F8C653" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{inverterOff ? "Offline" : inverter.isOnline === false ? "Connecting..." : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text>
           </View>
         </View>
         <View style={[styles.statusDivider, { backgroundColor: sceneCardTheme.overlayBorder }]} />
@@ -396,6 +418,12 @@ export const NewDashboard = memo(function NewDashboard() {
         </View>
       </View>
     </GlassCard>
+    {/* Energy Intelligence — backend-computed insight from learned patterns */}
+    <EnergyIntelligenceCard
+      intelligence={intelligence}
+      isLight={sceneIsLight}
+      cardTheme={sceneCardTheme}
+    />
     {/* LiveEnergyScene moved to hero background */}
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8, width: '100%' }}>
       <EnergyReceivedCard

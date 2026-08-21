@@ -1,8 +1,58 @@
 import { GlassCard } from "@/components/GlassCard";
 import { ArrowDown, ArrowUp, Home, Sparkles, SunMedium, TowerControl, Zap } from 'lucide-react-native';
-import { memo } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { Dimensions, StyleSheet, Text, View } from 'react-native';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
+
+// ── Animated bar fill — smooth width transitions on the UI thread ──
+// Used by EnergyReceivedCard and EnergyUsedCard for bar width animations.
+// 200ms ease-out keeps it subtle without lagging behind telemetry.
+const AnimatedBarFill = memo(function AnimatedBarFill({ pct, color, style }: { pct: number; color: string; style?: any }) {
+  const width = useSharedValue(`${Math.max(0, Math.min(100, pct))}%`);
+  useEffect(() => {
+    width.value = withTiming(`${Math.max(0, Math.min(100, pct))}%`, {
+      duration: 200,
+      easing: Easing.out(Easing.quad),
+    });
+  }, [pct, width]);
+  const animStyle = useAnimatedStyle(() => ({
+    width: width.value as any,
+  }));
+  return <Animated.View style={[style, { backgroundColor: color }, animStyle]} />;
+});
+
+// ── Animated marker — smooth position transitions for load gauge marker ──
+const AnimatedMarker = memo(function AnimatedMarker({ pct, color, style }: { pct: number; color: string; style?: any }) {
+  const left = useSharedValue(`${Math.max(0, Math.min(100, pct))}%`);
+  useEffect(() => {
+    left.value = withTiming(`${Math.max(0, Math.min(100, pct))}%`, {
+      duration: 200,
+      easing: Easing.out(Easing.quad),
+    });
+  }, [pct, left]);
+  const animStyle = useAnimatedStyle(() => ({
+    left: left.value as any,
+  }));
+  return <Animated.View style={[style, { backgroundColor: color }, animStyle]} />;
+});
+
+// ── Animated color dot — smooth color transitions for state indicator dots ──
+const AnimatedColorDot = memo(function AnimatedColorDot({ color, style }: { color: string; style?: any }) {
+  const bg = useSharedValue(color);
+  useEffect(() => {
+    bg.value = withTiming(color, { duration: 250 });
+  }, [color, bg]);
+  const animStyle = useAnimatedStyle(() => ({
+    backgroundColor: bg.value,
+  }));
+  return <Animated.View style={[style, animStyle]} />;
+});
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -110,6 +160,15 @@ const cardWidth = (screenWidth - 32) / 2;
 export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy, solarEnergy, gridEnergy, isWapda, isLight = false, cardTheme }: {
   totalEnergy: number; solarEnergy: number; gridEnergy: number; isWapda: boolean; isLight?: boolean; cardTheme?: CardTheme;
 }) {
+  const _renderCount = useRef(0);
+  _renderCount.current += 1;
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (_renderCount.current > 0) console.log(`[PerfFE] EnergyReceivedCard renders: ${_renderCount.current}/10s`);
+      _renderCount.current = 0;
+    }, 10_000);
+    return () => clearInterval(iv);
+  }, []);
   const t = cardTheme ?? useCardTheme(isLight);
   const solarShare = totalEnergy > 0 ? Math.round((solarEnergy / totalEnergy) * 100) : 0;
   const gridShare = totalEnergy > 0 ? 100 - solarShare : 0;
@@ -135,7 +194,7 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
           </View>
           <Text style={[s.sourceBarValue, { color: t.textPrimary }]}>{solarEnergy.toFixed(2)}</Text>
           <View style={[s.sourceBarTrack, { backgroundColor: t.trackBg }]}>
-            <View style={[s.sourceBarFill, { backgroundColor: '#F5C42E', width: `${solarShare}%` }]} />
+            <AnimatedBarFill pct={solarShare} color="#F5C42E" style={s.sourceBarFill} />
           </View>
           <Text style={[s.sourceBarPct, { color: t.textSecondary }]}>{solarShare}%</Text>
         </View>
@@ -147,7 +206,7 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
           </View>
           <Text style={[s.sourceBarValue, { color: t.textPrimary }]}>{gridEnergy.toFixed(2)}</Text>
           <View style={[s.sourceBarTrack, { backgroundColor: t.trackBg }]}>
-            <View style={[s.sourceBarFill, { backgroundColor: '#548EFF', width: `${gridShare}%` }]} />
+            <AnimatedBarFill pct={gridShare} color="#548EFF" style={s.sourceBarFill} />
           </View>
           <Text style={[s.sourceBarPct, { color: t.textSecondary }]}>{gridShare}%</Text>
         </View>
@@ -157,7 +216,7 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
       <View style={s.donutRow}>
         <MiniDonut solarShare={solarShare} gridShare={gridShare} size={44} isLight={isLight} />
         <View style={[s.sourceChip, { backgroundColor: t.overlayBg }]}>
-          <View style={[s.chipDot, { backgroundColor: isWapda ? '#548EFF' : '#F5C42E' }]} />
+          <AnimatedColorDot color={isWapda ? '#548EFF' : '#F5C42E'} style={s.chipDot} />
           <Text style={[s.chipText, { color: t.textSecondary }]}>
             {isWapda ? 'Grid Active' : 'Solar Active'} · {dominant === 'solar' ? 'Sun-fed' : 'Wapda-fed'}
           </Text>
@@ -173,6 +232,15 @@ export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liv
   voltage: number; currentA: number; loadStatus: 'Low' | 'Normal' | 'High';
   normalDrawKw: number; isLight?: boolean; cardTheme?: CardTheme;
 }) {
+  const _renderCount = useRef(0);
+  _renderCount.current += 1;
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (_renderCount.current > 0) console.log(`[PerfFE] EnergyUsedCard renders: ${_renderCount.current}/10s`);
+      _renderCount.current = 0;
+    }, 10_000);
+    return () => clearInterval(iv);
+  }, []);
   const t = cardTheme ?? useCardTheme(isLight);
   const hasTrend = vsYesterdayPercent != null;
   const isLower = hasTrend && vsYesterdayPercent <= 0;
@@ -203,8 +271,8 @@ export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liv
             <View style={s.zoneIdle} />
             <View style={s.zoneNormal} />
             <View style={s.zoneHigh} />
-            <View style={[s.loadGaugeFill, { width: `${loadPct}%` }]} />
-            <View style={[s.loadGaugeMarker, { left: `${loadPct}%`, backgroundColor: t.textPrimary }]} />
+            <AnimatedBarFill pct={loadPct} color="#32E56B" style={s.loadGaugeFill} />
+            <AnimatedMarker pct={loadPct} color={t.textPrimary} style={s.loadGaugeMarker} />
           </View>
           <View style={s.loadGaugeLabels}>
             <Text style={[s.gaugeScaleText, { color: t.textSecondary }]}>0</Text>
@@ -525,7 +593,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
           })()}
 
           <View style={[s.budgetHealthChip, { backgroundColor: t.overlayBg }]}>
-            <View style={[s.budgetHealthDot, { backgroundColor: budgetPct > 50 ? '#32E56B' : budgetPct > 25 ? '#F8C653' : '#EF4C4C' }]} />
+            <AnimatedColorDot color={budgetPct > 50 ? '#32E56B' : budgetPct > 25 ? '#F8C653' : '#EF4C4C'} style={s.budgetHealthDot} />
             <Text style={[s.budgetHealthText, { color: t.textPrimary }]}>{displayDays}</Text>
           </View>
         </View>

@@ -12,7 +12,7 @@ import {
     useFrameCallback,
     useSharedValue,
     withTiming,
-    type SharedValue
+    type SharedValue,
 } from "react-native-reanimated";
 
 import {
@@ -29,6 +29,25 @@ import type {
 } from "./types";
 import { getOverlayWireStyle } from "./wireStyles";
 
+// ── Animation Scheduler Architecture ──
+//
+// ONE useFrameCallback (the scheduler) in HeroOverlayEngine advances a shared
+// `animationClock` value at the target FPS (120/60/30/10/0). The clock only
+// advances when the frame accumulator reaches the target interval (1000/fps).
+//
+// WireStream and WireParticle each have a useFrameCallback that CONSUMES the
+// clock — they read the clock delta and update their stateful values. They do
+// NOT advance the clock; they only read it. Between clock ticks, the delta is
+// zero and they skip all work.
+//
+// This is fundamentally different from the old "skip work inside a 120Hz
+// callback" approach:
+//   - The clock is the single source of animation time, advanced at target FPS
+//   - Visual elements consume the clock delta, not the raw device frame time
+//   - At 30 FPS, the clock advances every ~33ms → visual steps are larger
+//   - At 10 FPS, the clock advances every ~100ms → obvious low-FPS motion
+//   - Real-world speed is preserved via time-based progression (dt/duration)
+
 type WireStreamProps = {
   wireId: string;
   points: HeroOverlayConfig["solarPath"];
@@ -39,7 +58,7 @@ type WireStreamProps = {
   flow: WireFlowState;
   isVisible: boolean;
   hidden?: boolean;
-  isIdleShared?: SharedValue<number>;
+  animationClock: SharedValue<number>;
 };
 
 function parseDashArray(s: string | undefined, fallback: string): number[] {
@@ -60,7 +79,7 @@ function WireStream({
   flow,
   isVisible,
   hidden = false,
-  isIdleShared,
+  animationClock,
 }: WireStreamProps) {
   const pathD = useMemo(
     () => pointsToPathD(points, viewBox, width, height),
@@ -88,9 +107,13 @@ function WireStream({
     [wireStyle.dashArray],
   );
 
+  // ── Stateful animation values ──
   const dashOffset = useSharedValue(0);
   const pulse = useSharedValue(0.5);
-  const dashTravel = useSharedValue(baseDashTravel);
+  const smoothPower = useSharedValue(flow.power);
+  const prevClock = useSharedValue(-1);
+
+  // ── Target opacity (data-driven, animated via withTiming) ──
   const targetOpacity = useSharedValue(
     wireOpacity(
       flow.active,
@@ -101,10 +124,6 @@ function WireStream({
       activeOpacityCeiling,
     ),
   );
-
-  // Smooth power shared value — lerps toward target each frame for gradual speed changes
-  const smoothPower = useSharedValue(flow.power);
-  const direction = flow.reverse ? 1 : -1;
 
   useEffect(() => {
     targetOpacity.value = withTiming(
@@ -128,39 +147,49 @@ function WireStream({
     targetOpacity,
   ]);
 
-  // Continuous frame callback — advances dashOffset and pulse based on current power.
-  // Both speed AND dash travel distance scale continuously with power.
-  // No restarts, no jumps — everything lerps smoothly.
-  useFrameCallback((info) => {
+  const direction = flow.reverse ? 1 : -1;
+
+  // ── Consume the animation clock ──
+  // This callback runs at the device refresh rate but only does work when the
+  // clock has advanced (i.e., at the target FPS). When clockDelta is 0, all
+  // work is skipped. The clock is advanced by the single scheduler in
+  // HeroOverlayEngine — this callback is a consumer, not an independent clock.
+  useFrameCallback(() => {
     "worklet";
     if (!isVisible) return;
-    if (isIdleShared && isIdleShared.value === 1) return;
+    const clockDelta = animationClock.value - prevClock.value;
+    if (clockDelta <= 0) return;
+    prevClock.value = animationClock.value;
 
-    // Lerp smoothPower toward flow.power (target)
-    const target = flow.power;
-    smoothPower.value += (target - smoothPower.value) * 0.08;
+    // Frame-rate independent exponential smoothing for power.
+    // tau = 200ms time constant → same convergence rate at any FPS.
+    const alpha = 1 - Math.exp(-clockDelta / 200);
+    smoothPower.value += (flow.power - smoothPower.value) * alpha;
 
-    // Duration from current smoothed power (continuous sqrt curve)
-    const dur = flowDurationFromPower(smoothPower.value, minDurationMs, maxDurationMs, powerCeilingW);
+    // Duration from smoothed power
+    const dur = flowDurationFromPower(
+      smoothPower.value,
+      minDurationMs,
+      maxDurationMs,
+      powerCeilingW,
+    );
 
-    // Dash travel scales with power — more power = longer travel per cycle
-    // Continuous: travel goes from 40% of base at idle to 160% of base at max
+    // Dash travel scales with power
     const powerRatio = Math.max(0, Math.min(smoothPower.value / powerCeilingW, 1));
     const travelScale = 0.4 + Math.sqrt(powerRatio) * 1.2;
-    dashTravel.value = baseDashTravel * travelScale;
+    const dashTravel = baseDashTravel * travelScale;
 
-    // Speed = dashTravel units per duration ms
-    const speed = dashTravel.value / dur;
-    const dt = info.timeSincePreviousFrame ?? 16;
-    dashOffset.value += speed * dt * direction;
+    // Advance dash offset — time-based, so speed is constant in real-world time
+    const dashSpeed = dashTravel / dur;
+    dashOffset.value += dashSpeed * clockDelta * direction;
 
-    // Pulse oscillates continuously
+    // Advance pulse oscillation
     const pulseDur = dur * 0.6;
-    pulse.value += (dt / pulseDur) * Math.PI;
+    pulse.value += (clockDelta / pulseDur) * Math.PI;
     if (pulse.value > Math.PI * 2) pulse.value -= Math.PI * 2;
   }, isVisible);
 
-  // Animated dash phases — run on the UI thread via derived values.
+  // ── Derived visual values (computed on UI thread from shared values) ──
   const glowPhase = useDerivedValue(() => dashOffset.value);
   const corePhase = useDerivedValue(() => dashOffset.value * 0.85);
   const glowDashOpacity = useDerivedValue(
@@ -249,7 +278,7 @@ function WireStream({
           isVisible={isVisible}
           wireStyle={wireStyle}
           reverse={flow.reverse}
-          isIdleShared={isIdleShared}
+          animationClock={animationClock}
         />
       ))}
     </>
@@ -270,7 +299,7 @@ function WireParticle({
   isVisible,
   wireStyle,
   reverse,
-  isIdleShared,
+  animationClock,
 }: {
   points: HeroOverlayConfig["solarPath"];
   viewBox: HeroOverlayConfig["viewBox"];
@@ -285,26 +314,34 @@ function WireParticle({
   isVisible: boolean;
   wireStyle: OverlayWireStyle;
   reverse?: boolean;
-  isIdleShared?: SharedValue<number>;
+  animationClock: SharedValue<number>;
 }) {
   const progress = useSharedValue(0);
   const smoothPower = useSharedValue(power);
+  const prevClock = useSharedValue(-1);
 
-  // Continuous frame callback — advances progress based on current power.
-  // Speed changes smoothly every frame as power lerps toward target.
-  useFrameCallback((info) => {
+  // ── Consume the animation clock ──
+  // Progress advances by clockDelta/duration each clock tick. At 120 FPS,
+  // clockDelta ≈ 8.33ms (tiny steps). At 10 FPS, clockDelta ≈ 100ms (large
+  // steps). But progress += clockDelta/dur means the total travel time is
+  // the same — only the visual smoothness changes.
+  useFrameCallback(() => {
     "worklet";
     if (!isVisible) return;
-    if (isIdleShared && isIdleShared.value === 1) return;
-    smoothPower.value += (power - smoothPower.value) * 0.08;
+    const clockDelta = animationClock.value - prevClock.value;
+    if (clockDelta <= 0) return;
+    prevClock.value = animationClock.value;
+
+    // Frame-rate independent power smoothing
+    const alpha = 1 - Math.exp(-clockDelta / 200);
+    smoothPower.value += (power - smoothPower.value) * alpha;
     const dur = flowDurationFromPower(
       smoothPower.value,
       wireStyle.minDurationMs ?? 1800,
       wireStyle.maxDurationMs ?? 10000,
       wireStyle.powerCeilingW ?? 6000,
     );
-    const dt = info.timeSincePreviousFrame ?? 16;
-    progress.value = (progress.value + dt / dur) % 1;
+    progress.value = (progress.value + clockDelta / dur) % 1;
   }, isVisible);
 
   const powerRatio = Math.max(
@@ -366,7 +403,7 @@ export type HeroOverlayEngineProps = {
   /** When set, renders a second grid wire (grid → DB bypass path) alongside the normal grid path. */
   gridBypassFlow?: WireFlowState;
   isVisible?: boolean;
-  isIdleShared?: SharedValue<number>;
+  animationFpsShared?: SharedValue<number>;
   /** When true, the solar wire stream is not rendered at all. */
   solarHidden?: boolean;
   /** When true, the grid wire stream is not rendered at all. */
@@ -385,12 +422,61 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
   inverterOutputFlow,
   gridBypassFlow,
   isVisible = true,
-  isIdleShared,
+  animationFpsShared,
   solarHidden = false,
   gridHidden = false,
   inverterOutputHidden = false,
 }: HeroOverlayEngineProps) {
   if (width <= 0 || height <= 0) return null;
+
+  // ── Animation Clock (the single scheduler) ──
+  // ONE useFrameCallback advances animationClock at the target FPS using a
+  // time accumulator. All WireStreams and WireParticles consume this clock
+  // via their own useFrameCallback (reading the clock delta). They do NOT
+  // advance the clock — they only read it. Between clock ticks, the delta
+  // is zero and all consumer work is skipped.
+  const animationClock = useSharedValue(0);
+  const frameAccum = useSharedValue(0);
+  // Dev instrumentation: measure actual animation tick rate
+  const _devTickTs = useSharedValue(0);
+  const _devTickCount = useSharedValue(0);
+
+  useFrameCallback((info) => {
+    "worklet";
+    if (!isVisible) return;
+    const fps = animationFpsShared ? animationFpsShared.value : 120;
+    if (fps === 0) return;
+
+    const dt = info.timeSincePreviousFrame ?? 8.33;
+    const interval = 1000 / fps;
+    frameAccum.value += dt;
+    if (frameAccum.value < interval) return;
+
+    // Advance the clock by the accumulated real time. This ensures:
+    //   - At 120 FPS: clock advances ~8.33ms per tick (every frame on 120Hz)
+    //   - At 60 FPS:  clock advances ~16.67ms per tick (every 2nd frame)
+    //   - At 30 FPS:  clock advances ~33.33ms per tick (every 4th frame)
+    //   - At 10 FPS:  clock advances ~100ms per tick (every 12th frame)
+    // Visual elements see larger clockDelta at lower FPS → larger position
+    // jumps, but same real-world travel duration.
+    animationClock.value += frameAccum.value;
+    frameAccum.value = 0;
+
+    // Dev instrumentation: count ticks per second
+    const now = info.timestamp;
+    const prevTs = _devTickTs.value;
+    if (prevTs === 0) {
+      _devTickTs.value = now;
+      _devTickCount.value = 0;
+    } else if (now - prevTs >= 1000) {
+      const measuredFps = Math.round((_devTickCount.value * 1000) / (now - prevTs));
+      // eslint-disable-next-line no-console
+      console.log(`[AnimFPS] target=${fps} actual≈${measuredFps}`);
+      _devTickTs.value = now;
+      _devTickCount.value = 0;
+    }
+    _devTickCount.value += 1;
+  }, isVisible);
 
   const gridPathPoints = gridPathOverride ?? config.gridPath;
 
@@ -419,7 +505,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           flow={gridFlow}
           isVisible={isVisible}
           hidden={gridHidden}
-          isIdleShared={isIdleShared}
+          animationClock={animationClock}
         />
         {gridBypassFlow && config.gridBypassPath && (
           <WireStream
@@ -432,7 +518,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
             flow={gridBypassFlow}
             isVisible={isVisible}
             hidden={false}
-            isIdleShared={isIdleShared}
+            animationClock={animationClock}
           />
         )}
         <WireStream
@@ -445,7 +531,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           flow={solarFlow}
           isVisible={isVisible}
           hidden={solarHidden}
-          isIdleShared={isIdleShared}
+          animationClock={animationClock}
         />
         <WireStream
           wireId="inverterOutput"
@@ -457,7 +543,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           flow={inverterFlow}
           isVisible={isVisible}
           hidden={inverterOutputHidden}
-          isIdleShared={isIdleShared}
+          animationClock={animationClock}
         />
       </Canvas>
     </View>

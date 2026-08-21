@@ -20,7 +20,7 @@ const OVERLAY_ENABLED_KEY = "overlayEnabled";
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { isLight, ...theme } = useSceneTheme();
-  const { swapChangeover, activeMeter, meters, home, setManualBaseline, setLastMonthTotal, addManualLog, manualLogs } = useEnergy();
+  const { swapChangeover, activeMeter, meters, home, setManualBaseline, setLastMonthTotal, addManualLog, forgetSwap, manualLogs } = useEnergy();
 
   // Installed version
   const installedVersion = `v${Application.nativeApplicationVersion || "1.0.0"}`;
@@ -45,6 +45,12 @@ export default function SettingsScreen() {
   const [meter1Reading, setMeter1Reading] = useState("");
   const [meter2Reading, setMeter2Reading] = useState("");
   const [savingReadings, setSavingReadings] = useState(false);
+
+  // Forget Swap — expandable form inside Changeover Control
+  const [showForgetSwap, setShowForgetSwap] = useState(false);
+  const [forgetM1, setForgetM1] = useState("");
+  const [forgetM2, setForgetM2] = useState("");
+  const [savingForgetSwap, setSavingForgetSwap] = useState(false);
 
   // Last logged reading per meter (from manualLogs)
   const lastLog1 = manualLogs.filter(l => l.meterId === 'meter1').sort((a, b) => b.timestamp - a.timestamp)[0];
@@ -149,8 +155,11 @@ export default function SettingsScreen() {
   };
 
   const handleSaveReadings = async () => {
-    const m1 = Number(meter1Reading);
-    const m2 = Number(meter2Reading);
+    // Only treat a field as filled if the string is non-empty AND parses to a
+    // valid non-negative number. Number("") === 0, so checking the string
+    // directly prevents logging 0 for a meter the user left blank.
+    const m1 = meter1Reading.trim() !== "" ? Number(meter1Reading) : NaN;
+    const m2 = meter2Reading.trim() !== "" ? Number(meter2Reading) : NaN;
     const hasM1 = Number.isFinite(m1) && m1 >= 0;
     const hasM2 = Number.isFinite(m2) && m2 >= 0;
     if (!hasM1 && !hasM2) {
@@ -161,13 +170,35 @@ export default function SettingsScreen() {
     try {
       if (hasM1) await addManualLog("meter1", m1, Date.now(), "Manual reading from settings");
       if (hasM2) await addManualLog("meter2", m2, Date.now(), "Manual reading from settings");
-      Alert.alert("Readings logged", "Manual readings have been recorded.");
+      const logged = [hasM1 && "Meter 1", hasM2 && "Meter 2"].filter(Boolean).join(" and ");
+      Alert.alert("Readings logged", `${logged} reading${hasM1 && hasM2 ? "s" : ""} recorded.`);
       setMeter1Reading("");
       setMeter2Reading("");
     } catch {
       Alert.alert("Could not save readings", "Check the server connection and try again.");
     } finally {
       setSavingReadings(false);
+    }
+  };
+
+  const handleForgetSwap = async () => {
+    const m1 = forgetM1.trim() !== "" ? Number(forgetM1) : NaN;
+    const m2 = forgetM2.trim() !== "" ? Number(forgetM2) : NaN;
+    if (!Number.isFinite(m1) || m1 < 0 || !Number.isFinite(m2) || m2 < 0) {
+      Alert.alert("Enter both readings", "Provide a valid non-negative reading for both meters.");
+      return;
+    }
+    setSavingForgetSwap(true);
+    try {
+      await forgetSwap(m1, m2);
+      Alert.alert("Readings updated", "Both meters re-anchored. The algorithm is preserved — future logs will be relative to these new readings.");
+      setForgetM1("");
+      setForgetM2("");
+      setShowForgetSwap(false);
+    } catch {
+      Alert.alert("Could not save", "Check the server connection and try again.");
+    } finally {
+      setSavingForgetSwap(false);
     }
   };
 
@@ -246,6 +277,65 @@ export default function SettingsScreen() {
                   </View>
                 </Pressable>
               </View>
+            </View>
+
+            {/* Forget Swap — re-anchor both meters without touching the algorithm */}
+            <View style={s.forgetSwapSection}>
+              <Pressable style={s.forgetSwapToggle} onPress={() => setShowForgetSwap(!showForgetSwap)}>
+                <Edit3 size={14} color="#F8C653" />
+                <Text style={s.forgetSwapToggleText}>Forgot to swap?</Text>
+                <Text style={s.forgetSwapChevron}>{showForgetSwap ? "▲" : "▼"}</Text>
+              </Pressable>
+
+              {showForgetSwap && (
+                <View style={s.forgetSwapForm}>
+                  <Text style={[s.forgetSwapDesc, { color: theme.textSecondary }]}>
+                    Enter the current physical readings from both meters. This re-anchors them so future logs are calculated correctly — without affecting the learned ratio.
+                  </Text>
+
+                  <View style={s.inputRow}>
+                    <View style={s.inputWrapper}>
+                      <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 1 (Analog)</Text>
+                      <View style={s.inputContainer}>
+                        <TextInput
+                          value={forgetM1}
+                          onChangeText={setForgetM1}
+                          keyboardType="decimal-pad"
+                          style={s.inputField}
+                          underlineColorAndroid="transparent"
+                          placeholder={`Current: ${meters.meter1.reading.toFixed(1)}`}
+                          placeholderTextColor="rgba(255,255,255,0.25)"
+                        />
+                        <Edit3 size={14} color="#F8C653" />
+                      </View>
+                    </View>
+                    <View style={s.inputWrapper}>
+                      <Text style={[s.inputLabel, { color: theme.textSecondary }]}>Meter 2 (Digital)</Text>
+                      <View style={s.inputContainer}>
+                        <TextInput
+                          value={forgetM2}
+                          onChangeText={setForgetM2}
+                          keyboardType="decimal-pad"
+                          style={s.inputField}
+                          underlineColorAndroid="transparent"
+                          placeholder={`Current: ${meters.meter2.reading.toFixed(1)}`}
+                          placeholderTextColor="rgba(255,255,255,0.25)"
+                        />
+                        <Edit3 size={14} color="#F8C653" />
+                      </View>
+                    </View>
+                  </View>
+
+                  <Pressable
+                    style={[s.primaryBtn, { backgroundColor: '#8B6914' }, savingForgetSwap && s.btnDisabled]}
+                    onPress={handleForgetSwap}
+                    disabled={savingForgetSwap}
+                  >
+                    <Save size={16} color="#F8C653" />
+                    <Text style={[s.primaryBtnText, { color: '#F8C653' }]}>{savingForgetSwap ? "Saving…" : "Update readings"}</Text>
+                  </Pressable>
+                </View>
+              )}
             </View>
           </GlassCard>
         </View>
@@ -673,6 +763,40 @@ const s = StyleSheet.create({
     fontFamily: "Outfit",
     fontSize: 14,
     fontWeight: "700",
+  },
+
+  // Forget Swap
+  forgetSwapSection: {
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  forgetSwapToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  forgetSwapToggleText: {
+    color: '#F8C653',
+    fontFamily: "Outfit",
+    fontSize: 12,
+    fontWeight: "600",
+    flex: 1,
+  },
+  forgetSwapChevron: {
+    color: '#F8C653',
+    fontFamily: "Outfit",
+    fontSize: 9,
+  },
+  forgetSwapForm: {
+    marginTop: 12,
+  },
+  forgetSwapDesc: {
+    fontFamily: "Outfit",
+    fontSize: 10,
+    lineHeight: 14,
+    marginBottom: 12,
   },
 
   // Baselines specific
