@@ -816,16 +816,17 @@ function makeDefaultState(now = Date.now()) {
   };
 }
 
-// Local Tuya poller — uses Python tinytuya to communicate directly with the
-// TOMZN device over TCP (protocol v3.5), bypassing the Tuya cloud API entirely.
-// This avoids IoT Core quota limits and provides unlimited local polling.
+// Tuya cloud poller — uses the Tuya device-sharing SDK to fetch all TOMZN
+// data from the cloud (no local TCP). The Python daemon keeps the cloud
+// session alive across polls and caches status for 10s to balance freshness
+// with API rate limits. force=true busts the cache for instant refresh.
 const TUYA_LOCAL_POLL_SCRIPT = path.join(__dirname, "tuya_local_poll.py");
 
 // ── Persistent TOMZN daemon ──
-// The Python poller runs as a long-lived child process with a persistent TCP
-// connection to the TOMZN device. Node.js communicates via stdin/stdout JSON.
-// This eliminates Python startup + tinytuya import + TCP connect overhead on
-// every 2.5s poll. A watchdog restarts the daemon if it crashes or hangs.
+// The Python poller runs as a long-lived child process with a persistent
+// cloud SDK session. Node.js communicates via stdin/stdout JSON.
+// This eliminates Python startup + SDK import + cloud auth overhead on
+// every poll. A watchdog restarts the daemon if it crashes or hangs.
 let tomznDaemon = null;
 let tomznDaemonRestarting = false;
 let tomznDaemonBuffer = "";
@@ -912,7 +913,7 @@ function startTomznDaemon() {
     });
 
     tomznDaemonRestarting = false;
-    console.log("[TOMZN Daemon] started — persistent TCP connection to TOMZN device");
+    console.log("[TOMZN Daemon] started — persistent Tuya cloud SDK session");
   } catch (err) {
     console.error(`[TOMZN Daemon] failed to start:`, err.message);
     tomznDaemon = null;
@@ -920,7 +921,7 @@ function startTomznDaemon() {
   }
 }
 
-function requestTomzn() {
+function requestTomzn(force = false) {
   const _perfStart = Date.now();
   return new Promise((resolve, reject) => {
     // Ensure daemon is running
@@ -938,11 +939,11 @@ function requestTomzn() {
           if (_dur > perfStats.tomznPollMaxMs) perfStats.tomznPollMaxMs = _dur;
           if (error) {
             const msg = stderr.trim() || error.message;
-            return reject(new Error(`TOMZN local poll failed: ${msg}`));
+            return reject(new Error(`TOMZN cloud poll failed: ${msg}`));
           }
           try {
             const data = JSON.parse(stdout.trim());
-            if (data.error) return reject(new Error(`TOMZN local poll: ${data.error}`));
+            if (data.error) return reject(new Error(`TOMZN cloud poll: ${data.error}`));
             resolve({
               energyKwh: data.energyKwh,
               voltageV: data.voltageV || 0,
@@ -955,16 +956,15 @@ function requestTomzn() {
               fetchedAt: data.fetchedAt,
             });
           } catch (parseErr) {
-            reject(new Error(`TOMZN local poll: invalid JSON output`));
+            reject(new Error(`TOMZN cloud poll: invalid JSON output`));
           }
         });
         return;
       }
     }
 
-    // Send poll request to daemon
+    // Send poll request to daemon (force=true busts the cloud cache)
     const timeout = setTimeout(() => {
-      // Remove from pending queue
       const idx = tomznDaemonPendingResolvers.findIndex((p) => p.reject === reject);
       if (idx >= 0) tomznDaemonPendingResolvers.splice(idx, 1);
       reject(new Error("TOMZN daemon poll timeout (10s)"));
@@ -976,11 +976,10 @@ function requestTomzn() {
     });
 
     try {
-      tomznDaemon.stdin.write(JSON.stringify({ cmd: "poll" }) + "\n");
+      tomznDaemon.stdin.write(JSON.stringify({ cmd: "poll", force }) + "\n");
     } catch (writeErr) {
       clearTimeout(timeout);
       tomznDaemonPendingResolvers.pop();
-      // Daemon pipe broke — restart and retry on next poll
       startTomznDaemon();
       reject(new Error(`TOMZN daemon write failed: ${writeErr.message}`));
     }
@@ -2362,13 +2361,14 @@ function registerUnifiedSolarRoutes(app, db) {
     pollInFlight = (async () => {
       let snapshot;
       try {
-        snapshot = await requestTomzn();
+        snapshot = await requestTomzn(force);
         // Poll succeeded — reset fail counter
         tomznStaleTracker.failCount = 0;
       } catch (pollErr) {
         // ── Poll failure detection ──
-        // Local Tuya poll failed (WiFi dead, device unreachable). Increment fail
-        // counter. After TOMZN_FAIL_THRESHOLD consecutive failures, mark offline.
+        // Cloud poll failed (Tuya API down, session expired, network issue).
+        // Increment fail counter. After TOMZN_FAIL_THRESHOLD consecutive
+        // failures, mark offline.
         tomznStaleTracker.failCount += 1;
         console.error(`[Solar Engine] TOMZN poll failed (${tomznStaleTracker.failCount}/${TOMZN_FAIL_THRESHOLD}):`, pollErr.message);
         if (tomznStaleTracker.failCount >= TOMZN_FAIL_THRESHOLD) {
@@ -2394,10 +2394,9 @@ function registerUnifiedSolarRoutes(app, db) {
         }
       }
       // ── Stale-data detection (fingerprint) ──
-      // Even when the local poll succeeds, the device-sharing SDK may return
-      // cached phase_a values. We fingerprint key values across consecutive
-      // polls. If they're identical for TOMZN_STALE_THRESHOLD polls, override
-      // isOnline to false.
+      // The Tuya cloud API may cache phase_a values on its servers. We
+      // fingerprint key values across consecutive polls. If they're identical
+      // for TOMZN_STALE_THRESHOLD polls, override isOnline to false.
       //
       // STANDBY EXEMPTION: When the user manually turns the TOMZN switch OFF
       // (standby / intentional grid cut), the device is still accessible and

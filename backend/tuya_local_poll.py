@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""TOMZN smart meter poller — persistent daemon mode.
+"""TOMZN smart meter poller — cloud-only daemon.
 
 Reads JSON requests from stdin, writes JSON responses to stdout.
-Keeps the tinytuya TCP connection and cloud SDK session alive across polls,
-eliminating Python startup + import + connection overhead per poll.
+All data comes from the Tuya device-sharing cloud SDK (no local TCP).
 
 Protocol:
-  stdin:  {"cmd": "poll"}\n
-  stdout: {"energyKwh": ...}\n   (success)
-  stdout: {"error": "..."}\n     (failure)
+  stdin:  {"cmd": "poll"}\n              — cached poll (10s TTL)
+  stdin:  {"cmd": "poll", "force": true}\n — force-refresh from cloud
+  stdout: {"energyKwh": ...}\n           (success)
+  stdout: {"error": "..."}\n             (failure)
 
 Also supports one-shot mode (no args → single poll → exit) for backward
 compatibility with the old execFile call pattern.
@@ -21,100 +21,96 @@ import struct
 import time
 import threading
 import signal
+from datetime import datetime, timezone
 
-# ── Local Tuya (real-time energy/frequency) ──
-import tinytuya
+# ── Device-sharing SDK (all data comes from Tuya cloud) ──
+sys.path.insert(0, os.path.expanduser("~/tuya-local-key"))
+from tuya_devices import load_session, build_manager
 
 DEVICE_ID = "bfe285c48ecd96460b5zfm"
-DEVICE_IP = "113.203.197.44"
-LOCAL_KEY = "KDdxg#}[Y_j@1UP@"
-PORT = 6668
-
-# ── Device-sharing SDK (phase_a / cloud status) ──
-sys.path.insert(0, os.path.expanduser("~/tuya-local-key"))
-from tuya_devices import load_session, devices_from_session
-
 SESSION_FILE = os.path.expanduser("~/.config/tuya-smartlife/session.json")
 
-# Cache cloud status for 5 seconds to avoid hammering the API
-_cloud_cache = {"data": None, "ts": 0}
-_CLOUD_CACHE_TTL = 5
+# Cloud cache TTL — the Tuya cloud SDK caches device status on its servers.
+# update_device_cache() fetches fresh data from the cloud API. 10s balances
+# freshness with API rate limits. The app's refresh button sends force=true
+# to bust this cache for an instant update.
+_CLOUD_CACHE_TTL = 10
 
-# Persistent device + cloud session (initialized once, reused across polls)
-_tuya_device = None
+# Persistent cloud manager + device (initialized once, reused across polls)
+_cloud_manager = None
 _cloud_device = None
+_cloud_cache = {"data": None, "ts": 0}
 _init_lock = threading.Lock()
 
 
 def _init_connections():
-    """Initialize the persistent tinytuya device + cloud session."""
-    global _tuya_device, _cloud_device
+    """Initialize the persistent cloud SDK session."""
+    global _cloud_manager, _cloud_device
     with _init_lock:
-        if _tuya_device is None:
-            try:
-                _tuya_device = tinytuya.Device(
-                    dev_id=DEVICE_ID,
-                    address=DEVICE_IP,
-                    local_key=LOCAL_KEY,
-                    version=3.5,
-                    connection_timeout=3,       # fail fast when device is offline
-                    persist=True,               # keep TCP socket open between polls
-                    connection_retry_limit=1,   # single attempt — no 25s retry storm
-                    connection_retry_delay=1,
-                )
-                _tuya_device.set_socketPersistent(True)
-                _tuya_device.set_socketRetryLimit(1)
-            except Exception as e:
-                print(json.dumps({"error": f"tuya init failed: {e}"}), file=sys.stderr)
-                _tuya_device = None
-
-        if _cloud_device is None:
+        if _cloud_manager is None:
             try:
                 session = load_session(SESSION_FILE)
-                if session:
-                    devices = devices_from_session(session, SESSION_FILE)
-                    for dev in devices:
-                        if dev.id == DEVICE_ID:
-                            _cloud_device = dev
-                            break
+                if not session:
+                    print(json.dumps({"error": "no Tuya session found"}), file=sys.stderr)
+                    return
+                _cloud_manager = build_manager(session, SESSION_FILE)
+                _cloud_manager.update_device_cache()
+                _refresh_device_ref()
             except Exception as e:
                 print(json.dumps({"error": f"cloud init failed: {e}"}), file=sys.stderr)
+                _cloud_manager = None
                 _cloud_device = None
 
 
+def _refresh_device_ref():
+    """Re-fetch the device object from device_map after update_device_cache().
+    update_device_cache() may replace device objects with fresh ones, so the
+    old _cloud_device reference would point to stale status."""
+    global _cloud_device
+    if _cloud_manager is None:
+        _cloud_device = None
+        return
+    for dev in list(_cloud_manager.device_map.values()):
+        if dev.id == DEVICE_ID:
+            _cloud_device = dev
+            return
+    _cloud_device = None
+
+
 def _reset_connections():
-    """Reset connections on persistent failure (socket dropped, session expired)."""
-    global _tuya_device, _cloud_device
+    """Reset cloud session on persistent failure (token expired, API down)."""
+    global _cloud_manager, _cloud_device
     with _init_lock:
-        if _tuya_device:
-            try:
-                _tuya_device.close()
-            except Exception:
-                pass
-            _tuya_device = None
+        _cloud_manager = None
         _cloud_device = None
         _cloud_cache["data"] = None
         _cloud_cache["ts"] = 0
 
 
-def get_cloud_status():
-    """Get cloud status with 5s cache. Uses persistent cloud device."""
-    global _cloud_device
+def get_cloud_status(force=False):
+    """Get cloud device status. Uses a 10s cache to avoid API rate limits.
+    When force=True, busts the cache and fetches fresh data from the cloud."""
+    global _cloud_device, _cloud_manager
     now = time.time()
-    if _cloud_cache["data"] and now - _cloud_cache["ts"] < _CLOUD_CACHE_TTL:
+    if not force and _cloud_cache["data"] and now - _cloud_cache["ts"] < _CLOUD_CACHE_TTL:
         return _cloud_cache["data"]
     try:
-        if _cloud_device is None:
+        if _cloud_manager is None:
             _init_connections()
+        if _cloud_manager is None:
+            return None
+        # Fetch fresh device status from the Tuya cloud API.
+        _cloud_manager.update_device_cache()
+        _refresh_device_ref()
         if _cloud_device:
             status = _cloud_device.status if hasattr(_cloud_device, "status") else {}
             if status:
                 _cloud_cache["data"] = status
                 _cloud_cache["ts"] = now
                 return status
-    except Exception:
-        # Cloud session may have expired — reset for next init
-        _cloud_device = None
+    except Exception as e:
+        print(json.dumps({"debug": f"cloud status error: {e}"}), file=sys.stderr)
+        _reset_connections()
     return None
 
 
@@ -132,77 +128,38 @@ def decode_phase_a(b64):
         return None
 
 
-def poll_device():
-    """Poll the TOMZN device with a hard 6s timeout. Returns result dict or raises."""
-    # Ensure connections are initialized
-    if _tuya_device is None:
-        _init_connections()
-
-    local_dps = {}
-    local_ok = False
-    poll_error = None
-
-    # Poll local Tuya in a thread with a hard timeout. tinytuya's own timeout
-    # is 3s × 1 retry = 3s, but the SDK can still hang on session key
-    # negotiation or read. The thread timeout is a safety net.
-    def _do_poll():
-        nonlocal local_dps, local_ok, poll_error
-        if not _tuya_device:
-            poll_error = Exception("tuya device not initialized")
-            return
-        try:
-            data = _tuya_device.status()
-            if data and "Err" in data and data["Err"] != "0":
-                _reset_connections()
-                poll_error = Exception(f"tuya status error: {data.get('Err')}")
-                return
-            local_dps = data.get("dps", {}) if data else {}
-            local_ok = True
-        except Exception as e:
-            _reset_connections()
-            poll_error = Exception(f"local poll failed: {e}")
-
-    t = threading.Thread(target=_do_poll, daemon=True)
-    t.start()
-    t.join(timeout=6)
-    if t.is_alive():
-        # Thread is still running — the device is unreachable or hung.
-        # Reset connections so the next poll starts fresh.
-        _reset_connections()
-        raise Exception("local poll timeout (6s)")
-
-    if poll_error:
-        raise poll_error
-
-    # Cloud status (with cache — only hits API every 5s)
-    cloud = get_cloud_status() if local_ok else {}
+def poll_device(force=False):
+    """Poll the TOMZN device from the Tuya cloud. Returns result dict or raises.
+    All fields (energy, power, voltage, current, frequency, online, switch,
+    fault) come from the cloud device status."""
+    cloud = get_cloud_status(force=force)
     cloud = cloud or {}
 
     # Decode phase_a for voltage/current/power
     phase = decode_phase_a(cloud.get("phase_a", ""))
 
-    # Build result using correct DP mapping
-    energy_raw = local_dps.get("1", cloud.get("forward_energy_total", 0))
+    # All fields from cloud status
+    energy_raw = cloud.get("forward_energy_total", 0)
     energy_kwh = energy_raw / 100 if energy_raw else 0
 
-    freq_raw = local_dps.get("32", cloud.get("supply_frequency", 500))
+    freq_raw = cloud.get("supply_frequency", 500)
     freq_hz = freq_raw / 10 if freq_raw else 50
 
     voltage_v = phase["voltage_v"] if phase else 0
     current_a = phase["current_a"] if phase else 0
     power_w = phase["power_w"] if phase else 0
 
-    if not local_ok:
-        is_online = False
+    online_state = cloud.get("online_state", "offline")
+    is_online = online_state == "online"
+
+    switch_on = cloud.get("switch", False)
+    fault_code = cloud.get("fault", 0)
+
+    # If the cloud reports the device as offline, zero out the live readings
+    if not is_online:
         voltage_v = 0
         current_a = 0
         power_w = 0
-    else:
-        online_state = local_dps.get("35", cloud.get("online_state", "offline"))
-        is_online = online_state == "online"
-
-    switch_on = local_dps.get("16", cloud.get("switch", False))
-    fault_code = local_dps.get("9", cloud.get("fault", 0))
 
     return {
         "energyKwh": round(energy_kwh, 2),
@@ -213,32 +170,20 @@ def poll_device():
         "isOnline": is_online,
         "switchOn": switch_on,
         "faultCode": fault_code,
-        "fetchedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "fetchedAt": datetime.now(timezone.utc).isoformat(),
     }
 
 
 def run_daemon():
     """Persistent daemon mode — read requests from stdin, write to stdout."""
-    # Initialize connections on startup
     _init_connections()
 
-    # Graceful shutdown
-    running = [True]
-
     def _shutdown(signum, frame):
-        running[0] = False
-        # Close socket cleanly
-        if _tuya_device:
-            try:
-                _tuya_device.close()
-            except Exception:
-                pass
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
-    # Read requests from stdin, one JSON object per line
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -252,7 +197,8 @@ def run_daemon():
 
         if req.get("cmd") == "poll":
             try:
-                result = poll_device()
+                force = req.get("force", False)
+                result = poll_device(force=force)
                 print(json.dumps(result))
             except Exception as e:
                 print(json.dumps({"error": str(e)}))
@@ -263,84 +209,17 @@ def run_daemon():
             print(json.dumps({"error": f"unknown command: {req.get('cmd')}"}))
             sys.stdout.flush()
 
-    # Cleanup
-    if _tuya_device:
-        try:
-            _tuya_device.close()
-        except Exception:
-            pass
-
 
 def run_oneshot():
-    """Backward-compatible one-shot mode (original behavior)."""
-    local_dps = {}
-    local_ok = False
-
-    def _poll_tuya():
-        nonlocal local_dps, local_ok
-        try:
-            d = tinytuya.Device(
-                dev_id=DEVICE_ID,
-                address=DEVICE_IP,
-                local_key=LOCAL_KEY,
-                version=3.5,
-                connection_timeout=5,
-            )
-            data = d.status()
-            local_dps = data.get("dps", {})
-            local_ok = True
-        except Exception as e:
-            print(json.dumps({"error": f"local poll failed: {e}"}), file=sys.stderr)
-
-    t = threading.Thread(target=_poll_tuya, daemon=True)
-    t.start()
-    t.join(timeout=7)
-    if t.is_alive():
-        print(json.dumps({"error": "local poll timeout (7s)"}), file=sys.stderr)
-
-    cloud = get_cloud_status() if local_ok else {}
-    cloud = cloud or {}
-
-    phase = decode_phase_a(cloud.get("phase_a", ""))
-
-    energy_raw = local_dps.get("1", cloud.get("forward_energy_total", 0))
-    energy_kwh = energy_raw / 100 if energy_raw else 0
-
-    freq_raw = local_dps.get("32", cloud.get("supply_frequency", 500))
-    freq_hz = freq_raw / 10 if freq_raw else 50
-
-    voltage_v = phase["voltage_v"] if phase else 0
-    current_a = phase["current_a"] if phase else 0
-    power_w = phase["power_w"] if phase else 0
-
-    if not local_ok:
-        is_online = False
-        voltage_v = 0
-        current_a = 0
-        power_w = 0
-    else:
-        online_state = local_dps.get("35", cloud.get("online_state", "offline"))
-        is_online = online_state == "online"
-
-    switch_on = local_dps.get("16", cloud.get("switch", False))
-    fault_code = local_dps.get("9", cloud.get("fault", 0))
-
-    result = {
-        "energyKwh": round(energy_kwh, 2),
-        "voltageV": voltage_v,
-        "currentA": round(current_a, 2),
-        "powerW": power_w,
-        "frequencyHz": round(freq_hz, 1),
-        "isOnline": is_online,
-        "switchOn": switch_on,
-        "faultCode": fault_code,
-        "fetchedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
-    }
-    print(json.dumps(result))
+    """Backward-compatible one-shot mode."""
+    try:
+        result = poll_device()
+        print(json.dumps(result))
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
 
 
 if __name__ == "__main__":
-    # Daemon mode if --daemon flag is passed, one-shot otherwise
     if "--daemon" in sys.argv:
         run_daemon()
     else:

@@ -5,34 +5,34 @@ import { UsageSummaryCard } from "@/components/UsageSummaryCard";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
 import {
-    Activity,
-    AlertCircle,
-    Clock,
-    Cpu,
-    Gauge,
-    Radio,
-    RefreshCw,
-    Sun,
-    Thermometer,
-    TrendingDown,
-    TrendingUp,
-    Zap
+  Activity,
+  AlertCircle,
+  Clock,
+  Cpu,
+  Gauge,
+  Radio,
+  RefreshCw,
+  Sun,
+  Thermometer,
+  TrendingDown,
+  TrendingUp,
+  Zap
 } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
 import {
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
-    useWindowDimensions
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions
 } from "react-native";
 import Animated, {
-    useAnimatedStyle,
-    useSharedValue,
-    withSequence,
-    withSpring,
-    withTiming,
+  useAnimatedStyle,
+  useSharedValue,
+  withSequence,
+  withSpring,
+  withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -71,7 +71,7 @@ const SEVERITY_COLOR = { critical: "#EF4C4C", warning: "#F8C653", info: "#548EFF
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
   const { isLight, ...theme } = useSceneTheme();
-  const { home, inverter, tomznLive, refreshTomzn, tomznHistory } = useEnergy();
+  const { home, inverter, tomznLive, refreshTomznForce, tomznHistory } = useEnergy();
   const [tab, setTab] = useState<Tab>("usage");
   const [refreshing, setRefreshing] = useState(false);
 
@@ -88,11 +88,11 @@ export default function HistoryScreen() {
     );
     setRefreshing(true);
     try {
-      await refreshTomzn();
+      await refreshTomznForce();
     } finally {
       setRefreshing(false);
     }
-  }, [refreshing, refreshTomzn, rotation]);
+  }, [refreshing, refreshTomznForce, rotation]);
 
   const tabs: { key: Tab; label: string; icon: any }[] = [
     { key: "usage", label: "Usage", icon: Activity },
