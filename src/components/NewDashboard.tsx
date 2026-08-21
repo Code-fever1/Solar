@@ -249,7 +249,7 @@ const fcStyles = StyleSheet.create({
   inspectorUnit: { fontFamily: "Outfit", fontSize: 8, fontWeight: "600" },
 });
 
-export const NewDashboard = memo(function NewDashboard() {
+export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: { isTabFocused?: boolean }) {
   // ── Phase 1: Render counter (no behavior change) ──
   const _renderCount = useRef(0);
   _renderCount.current += 1;
@@ -376,7 +376,7 @@ export const NewDashboard = memo(function NewDashboard() {
 
   return <View style={styles.screen}><Image source={heroScene.source} style={{ position: "absolute", top: 0, left: 0, width, height }} resizeMode="stretch" /><LinearGradient colors={["rgba(0,0,0,0.25)", "rgba(0,0,0,0.1)", "rgba(0,0,0,0.4)"]} locations={[0, 0.35, 1]} style={{ position: "absolute", top: 0, left: 0, width, height }} />
     <View style={{ position: "absolute", top: 0, left: 0, width: "100%", height: height * 0.50 }} pointerEvents="none">
-      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible} variant="hero" overlayConfig={heroScene.overlay} ups={ups} gridFlow={gridFlow} />
+      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible && isTabFocused} variant="hero" overlayConfig={heroScene.overlay} ups={ups} gridFlow={gridFlow} />
     </View>
     <ScrollView ref={scrollRef} style={{ backgroundColor: "transparent" }} contentContainerStyle={[styles.content, { paddingTop: height * 0.49 }]} showsVerticalScrollIndicator={false} removeClippedSubviews={true} nestedScrollEnabled={true} scrollEventThrottle={isIdle ? 48 : 16} bounces={true} alwaysBounceVertical={true} onScroll={handleScroll}>
     <View style={{ width: "100%", borderTopLeftRadius: 28, borderTopRightRadius: 28, minHeight: height * 0.65 }}>

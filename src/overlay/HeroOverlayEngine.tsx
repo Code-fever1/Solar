@@ -39,8 +39,17 @@ type WireStreamProps = {
   flow: WireFlowState;
   isVisible: boolean;
   hidden?: boolean;
-  isIdleShared?: SharedValue<number>;
+  animSpeedShared?: SharedValue<number>;
 };
+
+// Target frame intervals per animation speed tier (ms between animation updates).
+// Tier 3 = 60fps (16ms), Tier 2 = 30fps (33ms), Tier 1 = 10fps (100ms), Tier 0 = stopped.
+const FRAME_INTERVAL_MS = [Infinity, 100, 33, 16];
+// Lerp multiplier scaling per tier — at lower FPS, each frame does more lerping
+// so the real-world convergence time stays ~constant.
+// Base lerp 0.08 at 60fps → at 30fps use 0.15, at 10fps use 0.39.
+// Formula: 1 - (1 - 0.08)^(60/targetFps)
+const LERP_MULT = [0, 0.39, 0.15, 0.08];
 
 function parseDashArray(s: string | undefined, fallback: string): number[] {
   const arr = (s ?? fallback)
@@ -60,7 +69,7 @@ function WireStream({
   flow,
   isVisible,
   hidden = false,
-  isIdleShared,
+  animSpeedShared,
 }: WireStreamProps) {
   const pathD = useMemo(
     () => pointsToPathD(points, viewBox, width, height),
@@ -105,6 +114,8 @@ function WireStream({
   // Smooth power shared value — lerps toward target each frame for gradual speed changes
   const smoothPower = useSharedValue(flow.power);
   const direction = flow.reverse ? 1 : -1;
+  // Frame accumulator for adaptive FPS — accumulates dt until target interval is reached
+  const frameAccum = useSharedValue(0);
 
   useEffect(() => {
     targetOpacity.value = withTiming(
@@ -131,14 +142,27 @@ function WireStream({
   // Continuous frame callback — advances dashOffset and pulse based on current power.
   // Both speed AND dash travel distance scale continuously with power.
   // No restarts, no jumps — everything lerps smoothly.
+  // Adaptive FPS: uses a time accumulator to skip frames at lower speed tiers.
+  // dt is scaled by the frame interval ratio so movement speed stays constant
+  // regardless of FPS tier (real-world speed is preserved).
   useFrameCallback((info) => {
     "worklet";
     if (!isVisible) return;
-    if (isIdleShared && isIdleShared.value === 1) return;
+    const speed = animSpeedShared ? animSpeedShared.value : 3;
+    if (speed === 0) return;
 
-    // Lerp smoothPower toward flow.power (target)
+    const dt = info.timeSincePreviousFrame ?? 16;
+    const interval = FRAME_INTERVAL_MS[speed] ?? 16;
+    frameAccum.value += dt;
+    if (frameAccum.value < interval) return;
+    // Carry over remainder to avoid drift
+    const effectiveDt = frameAccum.value;
+    frameAccum.value = 0;
+
+    // Lerp smoothPower toward flow.power (target) — scaled by tier for constant convergence
     const target = flow.power;
-    smoothPower.value += (target - smoothPower.value) * 0.08;
+    const lerpK = LERP_MULT[speed] ?? 0.08;
+    smoothPower.value += (target - smoothPower.value) * lerpK;
 
     // Duration from current smoothed power (continuous sqrt curve)
     const dur = flowDurationFromPower(smoothPower.value, minDurationMs, maxDurationMs, powerCeilingW);
@@ -149,14 +173,13 @@ function WireStream({
     const travelScale = 0.4 + Math.sqrt(powerRatio) * 1.2;
     dashTravel.value = baseDashTravel * travelScale;
 
-    // Speed = dashTravel units per duration ms
-    const speed = dashTravel.value / dur;
-    const dt = info.timeSincePreviousFrame ?? 16;
-    dashOffset.value += speed * dt * direction;
+    // Speed = dashTravel units per duration ms — use effectiveDt for frame-rate independence
+    const dashSpeed = dashTravel.value / dur;
+    dashOffset.value += dashSpeed * effectiveDt * direction;
 
     // Pulse oscillates continuously
     const pulseDur = dur * 0.6;
-    pulse.value += (dt / pulseDur) * Math.PI;
+    pulse.value += (effectiveDt / pulseDur) * Math.PI;
     if (pulse.value > Math.PI * 2) pulse.value -= Math.PI * 2;
   }, isVisible);
 
@@ -249,7 +272,7 @@ function WireStream({
           isVisible={isVisible}
           wireStyle={wireStyle}
           reverse={flow.reverse}
-          isIdleShared={isIdleShared}
+          animSpeedShared={animSpeedShared}
         />
       ))}
     </>
@@ -270,7 +293,7 @@ function WireParticle({
   isVisible,
   wireStyle,
   reverse,
-  isIdleShared,
+  animSpeedShared,
 }: {
   points: HeroOverlayConfig["solarPath"];
   viewBox: HeroOverlayConfig["viewBox"];
@@ -285,26 +308,37 @@ function WireParticle({
   isVisible: boolean;
   wireStyle: OverlayWireStyle;
   reverse?: boolean;
-  isIdleShared?: SharedValue<number>;
+  animSpeedShared?: SharedValue<number>;
 }) {
   const progress = useSharedValue(0);
   const smoothPower = useSharedValue(power);
+  const frameAccum = useSharedValue(0);
 
   // Continuous frame callback — advances progress based on current power.
   // Speed changes smoothly every frame as power lerps toward target.
+  // Adaptive FPS: accumulator-based frame skip preserves real-world speed.
   useFrameCallback((info) => {
     "worklet";
     if (!isVisible) return;
-    if (isIdleShared && isIdleShared.value === 1) return;
-    smoothPower.value += (power - smoothPower.value) * 0.08;
+    const speed = animSpeedShared ? animSpeedShared.value : 3;
+    if (speed === 0) return;
+
+    const dt = info.timeSincePreviousFrame ?? 16;
+    const interval = FRAME_INTERVAL_MS[speed] ?? 16;
+    frameAccum.value += dt;
+    if (frameAccum.value < interval) return;
+    const effectiveDt = frameAccum.value;
+    frameAccum.value = 0;
+
+    const lerpK = LERP_MULT[speed] ?? 0.08;
+    smoothPower.value += (power - smoothPower.value) * lerpK;
     const dur = flowDurationFromPower(
       smoothPower.value,
       wireStyle.minDurationMs ?? 1800,
       wireStyle.maxDurationMs ?? 10000,
       wireStyle.powerCeilingW ?? 6000,
     );
-    const dt = info.timeSincePreviousFrame ?? 16;
-    progress.value = (progress.value + dt / dur) % 1;
+    progress.value = (progress.value + effectiveDt / dur) % 1;
   }, isVisible);
 
   const powerRatio = Math.max(
@@ -366,7 +400,7 @@ export type HeroOverlayEngineProps = {
   /** When set, renders a second grid wire (grid → DB bypass path) alongside the normal grid path. */
   gridBypassFlow?: WireFlowState;
   isVisible?: boolean;
-  isIdleShared?: SharedValue<number>;
+  animSpeedShared?: SharedValue<number>;
   /** When true, the solar wire stream is not rendered at all. */
   solarHidden?: boolean;
   /** When true, the grid wire stream is not rendered at all. */
@@ -385,7 +419,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
   inverterOutputFlow,
   gridBypassFlow,
   isVisible = true,
-  isIdleShared,
+  animSpeedShared,
   solarHidden = false,
   gridHidden = false,
   inverterOutputHidden = false,
@@ -419,7 +453,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           flow={gridFlow}
           isVisible={isVisible}
           hidden={gridHidden}
-          isIdleShared={isIdleShared}
+          animSpeedShared={animSpeedShared}
         />
         {gridBypassFlow && config.gridBypassPath && (
           <WireStream
@@ -432,7 +466,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
             flow={gridBypassFlow}
             isVisible={isVisible}
             hidden={false}
-            isIdleShared={isIdleShared}
+            animSpeedShared={animSpeedShared}
           />
         )}
         <WireStream
@@ -445,7 +479,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           flow={solarFlow}
           isVisible={isVisible}
           hidden={solarHidden}
-          isIdleShared={isIdleShared}
+          animSpeedShared={animSpeedShared}
         />
         <WireStream
           wireId="inverterOutput"
@@ -457,7 +491,7 @@ export const HeroOverlayEngine = memo(function HeroOverlayEngine({
           flow={inverterFlow}
           isVisible={isVisible}
           hidden={inverterOutputHidden}
-          isIdleShared={isIdleShared}
+          animSpeedShared={animSpeedShared}
         />
       </Canvas>
     </View>
