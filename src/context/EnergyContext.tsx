@@ -1,12 +1,12 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
+    createContext,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
 } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import RNEventSource from "react-native-sse";
@@ -14,42 +14,42 @@ import RNEventSource from "react-native-sse";
 import { useIdle } from "@/context/IdleContext";
 import { interpolateUsageHistory, summarizeHistory } from "@/utils/calculations";
 import {
-  applyOfflineBaseline,
-  applyOfflineChangeover,
-  applyOfflineManualReading,
-  estimateOfflineDashboard,
-  type CachedDashboardSnapshot,
-  type CachedTomznLive,
+    applyOfflineBaseline,
+    applyOfflineChangeover,
+    applyOfflineManualReading,
+    estimateOfflineDashboard,
+    type CachedDashboardSnapshot,
+    type CachedTomznLive,
 } from "@/utils/offline-dashboard";
 import type {
-  AlertItem,
-  EnergyFlowPoint,
-  EnergyToday,
-  GridFlow,
-  HistoryPoint,
-  HomeState,
-  IntelligenceState,
-  InverterTelemetry,
-  LiveTelemetry,
-  ManualLog,
-  MeterId,
-  MeterState,
-  Recommendation,
-  WeatherState
+    AlertItem,
+    EnergyFlowPoint,
+    EnergyToday,
+    GridFlow,
+    HistoryPoint,
+    HomeState,
+    IntelligenceState,
+    InverterTelemetry,
+    LiveTelemetry,
+    ManualLog,
+    MeterId,
+    MeterState,
+    Recommendation,
+    WeatherState
 } from "./energy-types";
 
 export type {
-  AlertItem,
-  EnergyFlowPoint,
-  EnergyToday,
-  GridFlow,
-  HistoryPoint,
-  HomeState, IntelligenceState, InverterTelemetry, LiveTelemetry,
-  ManualLog,
-  MeterId,
-  MeterState,
-  Recommendation,
-  WeatherState
+    AlertItem,
+    EnergyFlowPoint,
+    EnergyToday,
+    GridFlow,
+    HistoryPoint,
+    HomeState, IntelligenceState, InverterTelemetry, LiveTelemetry,
+    ManualLog,
+    MeterId,
+    MeterState,
+    Recommendation,
+    WeatherState
 } from "./energy-types";
 
 export interface ManualBaseline {
@@ -291,7 +291,18 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
           const meter = next.meters[meterId];
           // If we have received an update from the server that includes our manual log
           // (or a newer one), we can safely drop the local override.
+          // Also clear if the server reading is within 1 unit of the override —
+          // this handles forget-swap which updates anchors without creating logs.
+          // Also clear if the override is older than 10 minutes — the server has
+          // definitely processed it by now, and keeping it would re-corrupt values
+          // on every poll (TOMZN usage since the override would drift the reading).
+          const serverMatchesOverride = Math.abs(meter.reading - override.reading) < 1;
+          const overrideIsStale = Date.now() - override.timestamp > 10 * 60_000;
           if (meter.lastLoggedAt && (meter.lastLoggedAt >= override.timestamp || meter.lastLoggedReading === override.reading)) {
+            manualReadingOverrideRef.current[meterId] = null;
+            void AsyncStorage.setItem(MANUAL_READINGS_OVERRIDE_KEY, JSON.stringify(manualReadingOverrideRef.current)).catch(() => undefined);
+          } else if (serverMatchesOverride || overrideIsStale) {
+            // Server has processed the reading (anchor updated) — clear override
             manualReadingOverrideRef.current[meterId] = null;
             void AsyncStorage.setItem(MANUAL_READINGS_OVERRIDE_KEY, JSON.stringify(manualReadingOverrideRef.current)).catch(() => undefined);
           } else {
@@ -502,7 +513,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       t.isOnline, t.switchOn, t.powerW, t.voltageV, t.currentA, t.faultCode,
       g.mode, g.direction, g.homeW,
       u?.active ?? null, w.isDay, w.code,
-      intel?.status, intel?.meterRecommendation?.recommendation,
+      intel?.headline, intel?.overallStatus,
+      intel?.meterRecommendation?.recommendation,
+      intel?.meterRecommendation?.shouldSwitch,
     ].join("|");
   };
 
@@ -1005,10 +1018,14 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
   const forgetSwap = async (meter1Reading: number, meter2Reading: number) => {
     const timestamp = Date.now();
-    manualReadingOverrideRef.current = {
-      meter1: { reading: meter1Reading, timestamp },
-      meter2: { reading: meter2Reading, timestamp },
-    };
+    // Forget-swap updates anchor readings directly on the server WITHOUT
+    // creating manual log entries. The manual reading override (which is
+    // designed for manual logs that create lastLoggedAt entries) must NOT be
+    // used here — if it is, the override never gets cleared (because there's
+    // no log entry to match against) and re-corrupts the server's correct
+    // values on every 30s polling cycle.
+    // Instead, clear any existing overrides so the server response is trusted.
+    manualReadingOverrideRef.current = { meter1: null, meter2: null };
     void AsyncStorage.setItem(MANUAL_READINGS_OVERRIDE_KEY, JSON.stringify(manualReadingOverrideRef.current)).catch(() => undefined);
     await submitOrQueue(
       { id: `forget-swap-${timestamp}`, path: "/forget-swap", method: "POST", body: { meter1Reading, meter2Reading, timestamp }, createdAt: timestamp },

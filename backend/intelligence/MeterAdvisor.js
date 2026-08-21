@@ -2,16 +2,20 @@
 
 /**
  * MeterAdvisor — recommends which meter to use based on current conditions
- * and historical performance.
+ * and historical PERFORMANCE only.
  *
- * Scoring is based on REAL measured historical behavior, not arbitrary guesses.
+ * PERFORMANCE = "which meter historically consumes fewer billable units
+ * under conditions like RIGHT NOW?"
+ *
+ * Quota status (remaining units to 200 threshold) is NOT part of this score.
+ * Quota warnings are handled separately by the meter cards on the frontend.
+ * Do NOT mix quota into performance scoring.
  *
  * Score factors (each 0-100, weighted):
- *   1. Historical usage rate in current time bucket (lower = better)
- *   2. Remaining units to 200 threshold (more remaining = better)
- *   3. Projected days to threshold (slower burn = better)
- *   4. Current operating mode match (does this meter perform well in this mode?)
- *   5. Calibration ratio accuracy (closer to 1.0 = more trustworthy)
+ *   1. Historical usage rate in current time bucket (lower = better)   40%
+ *   2. Calibration ratio (meter reads lower = burns slower in billing) 25%
+ *   3. Mode-specific performance (does this meter do well in this mode?) 20%
+ *   4. Calibration confidence (more observations = more trustworthy)    15%
  *
  * Hysteresis:
  *   - Requires minimum score advantage (default 15 points)
@@ -28,95 +32,88 @@ const CONFIG = {
   minPersistenceMs: 5 * 60_000, // 5 minutes
   minConfidence: 0.5,
   cooldownMs: 30 * 60_000,      // 30 minutes between recommendations
-  // Score weights (sum to 1.0)
+  // Score weights (sum to 1.0) — PERFORMANCE ONLY, no quota
   weights: {
-    bucketUsage: 0.30,      // historical usage in this time bucket
-    remainingUnits: 0.25,    // remaining units to 200
-    burnRate: 0.20,          // current consumption rate
-    modeMatch: 0.15,         // mode-specific performance
-    calibration: 0.10,       // calibration accuracy
+    bucketUsage: 0.40,      // historical usage in this time bucket
+    burnRate: 0.25,          // calibration ratio (reads lower = better)
+    modeMatch: 0.20,         // mode-specific performance
+    calibration: 0.15,       // calibration confidence (data volume)
   },
 };
 
 /**
- * Score a single meter.
+ * Score a single meter's PERFORMANCE under current conditions.
  *
  * @param {string} meterId - "meter1" or "meter2"
  * @param {object} meterState - from solar_engine_state
  * @param {object} patternProfile - from DailyPatternLearner
  * @param {string} currentBucketId
  * @param {string} currentMode - hybrid/on-grid/night/bypass
- * @param {number} slabTarget - 200
  * @returns {object} { score, factors, reasonCodes }
  */
-function scoreMeter(meterId, meterState, patternProfile, currentBucketId, currentMode, slabTarget) {
+function scoreMeter(meterId, meterState, patternProfile, currentBucketId, currentMode) {
   const bucket = patternProfile.buckets[currentBucketId];
   const reasonCodes = [];
   const factors = {};
 
-  // ── Factor 1: Historical usage rate in this bucket ──
+  // ── Factor 1: Historical usage rate in this bucket (40%) ──
   // Lower usage = higher score. Compare this meter's avg usage in this bucket.
   const myUsageAvg = meterId === "meter1" ? bucket?.meter1UsageAvg : bucket?.meter2UsageAvg;
   const otherUsageAvg = meterId === "meter1" ? bucket?.meter2UsageAvg : bucket?.meter1UsageAvg;
   const myUsageDays = meterId === "meter1" ? bucket?.meter1UsageDays : bucket?.meter2UsageDays;
+  const otherUsageDays = meterId === "meter1" ? bucket?.meter2UsageDays : bucket?.meter1UsageDays;
 
-  if (myUsageDays > 0 && otherUsageAvg != null && otherUsageAvg > 0) {
-    // Compare: if this meter uses less in this bucket, it scores higher
+  if (myUsageDays > 0 && otherUsageDays > 0 && otherUsageAvg > 0) {
+    // Both meters have data → compare directly
     const ratio = myUsageAvg / otherUsageAvg;
     factors.bucketUsage = Math.round(Math.max(0, Math.min(100, 100 - (ratio - 1) * 50)));
     if (myUsageAvg < otherUsageAvg) {
       reasonCodes.push(`${meterId.toUpperCase()}_LOWER_BUCKET_USAGE`);
     }
+  } else if (myUsageDays > 0 && otherUsageDays === 0) {
+    // This meter has data, other has none → this meter is a known quantity.
+    factors.bucketUsage = 65;
+    reasonCodes.push(`${meterId.toUpperCase()}_HAS_HISTORICAL_DATA`);
+  } else if (myUsageDays === 0 && otherUsageDays > 0) {
+    // This meter has no data, other does → penalty (unknown performance)
+    factors.bucketUsage = 35;
   } else {
-    // No data for this meter in this bucket → neutral
+    // Neither meter has data in this bucket → neutral
     factors.bucketUsage = 50;
   }
 
-  // ── Factor 2: Remaining units to threshold ──
-  const currentReading = meterState.anchorReading ?? meterState.cycleBaselineReading;
-  const baselineReading = meterState.cycleBaselineReading;
-  const usedThisCycle = Math.max(0, currentReading - baselineReading);
-  const remaining = Math.max(0, slabTarget - usedThisCycle);
-  const remainingPct = remaining / slabTarget;
-  factors.remainingUnits = Math.round(Math.max(0, Math.min(100, remainingPct * 100)));
-  if (remaining < 30) {
-    reasonCodes.push(`${meterId.toUpperCase()}_APPROACHING_THRESHOLD`);
-  }
-
-  // ── Factor 3: Burn rate (current consumption speed) ──
-  // Use the meter's calibration ratio to estimate effective burn rate.
+  // ── Factor 2: Calibration ratio / burn rate (25%) ──
   // A meter with ratio < 1.0 (reads lower) burns "slower" in billing terms.
   const ratio = meterState.tomznToMeterRatio || 1.0;
   // Score: ratio closer to 0.9 (reads 10% lower) = higher score
-  // ratio 1.0 = 70, ratio 0.9 = 100, ratio 1.1 = 40
+  // ratio 0.9 = 100, ratio 1.0 = 70, ratio 1.1 = 40
   factors.burnRate = Math.round(Math.max(0, Math.min(100, 100 - Math.abs(ratio - 0.9) * 300)));
   if (ratio < 0.95) {
     reasonCodes.push(`${meterId.toUpperCase()}_FAVORABLE_CALIBRATION`);
   }
 
-  // ── Factor 4: Mode match ──
+  // ── Factor 3: Mode match (20%) ──
   // Does this meter perform well in the current operating mode?
-  // Use the mode frequency × this meter's usage in that bucket.
   let modeFreq = 0;
   if (currentMode === "hybrid") modeFreq = bucket?.hybridFreq || 0;
   else if (currentMode === "on-grid") modeFreq = bucket?.onGridFreq || 0;
   else if (currentMode === "night" || currentMode === "bypass") modeFreq = bucket?.nightFreq || 0;
 
-  // If the current mode is common in this bucket AND this meter has low usage,
-  // it's a good match.
-  if (modeFreq > 0.3 && myUsageAvg != null && otherUsageAvg != null) {
+  if (modeFreq > 0.3 && myUsageDays > 0 && otherUsageDays > 0 && otherUsageAvg > 0) {
     if (myUsageAvg < otherUsageAvg) {
       factors.modeMatch = Math.round(70 + modeFreq * 30);
       reasonCodes.push(`${meterId.toUpperCase()}_GOOD_MODE_MATCH`);
     } else {
       factors.modeMatch = Math.round(40 + modeFreq * 20);
     }
+  } else if (modeFreq > 0.3 && myUsageDays > 0 && otherUsageDays === 0) {
+    factors.modeMatch = 60;
   } else {
     factors.modeMatch = 50; // neutral
   }
 
-  // ── Factor 5: Calibration accuracy ──
-  // More calibration observations = more trustworthy meter
+  // ── Factor 4: Calibration confidence (15%) ──
+  // More calibration observations = more trustworthy meter ratio
   const obsCount = meterState.ratioObservationCount || 0;
   factors.calibration = Math.round(Math.max(20, Math.min(100, 20 + obsCount * 10)));
 
@@ -124,7 +121,6 @@ function scoreMeter(meterId, meterState, patternProfile, currentBucketId, curren
   const w = CONFIG.weights;
   const score = Math.round(
     factors.bucketUsage * w.bucketUsage +
-    factors.remainingUnits * w.remainingUnits +
     factors.burnRate * w.burnRate +
     factors.modeMatch * w.modeMatch +
     factors.calibration * w.calibration
@@ -134,14 +130,14 @@ function scoreMeter(meterId, meterState, patternProfile, currentBucketId, curren
 }
 
 /**
- * Compute meter recommendation with hysteresis.
+ * Compute meter PERFORMANCE recommendation with hysteresis.
  *
  * @param {object} params
  * @param {object} params.meters - { meter1: {...}, meter2: {...} } from state
  * @param {string} params.activeMeter - "meter1" or "meter2"
  * @param {object} params.patternProfile - from DailyPatternLearner
  * @param {string} params.currentMode - hybrid/on-grid/night/bypass
- * @param {number} params.slabTarget - 200
+ * @param {number} params.slabTarget - 200 (unused in scoring, kept for compat)
  * @param {object} params.hysteresisState - persistent state for hysteresis
  * @param {number} params.now
  * @returns {object} recommendation
@@ -154,12 +150,13 @@ function computeMeterRecommendation({
   slabTarget,
   hysteresisState,
   now = Date.now(),
+  currentBucketId: bucketOverride, // optional — for testing specific buckets
 }) {
   const pkHour = Math.floor((Date.now() / 3_600_000 + 5) % 24);
-  const currentBucketId = bucketForHour(pkHour);
+  const currentBucketId = bucketOverride || bucketForHour(pkHour);
 
-  const m1 = scoreMeter("meter1", meters.meter1, patternProfile, currentBucketId, currentMode, slabTarget);
-  const m2 = scoreMeter("meter2", meters.meter2, patternProfile, currentBucketId, currentMode, slabTarget);
+  const m1 = scoreMeter("meter1", meters.meter1, patternProfile, currentBucketId, currentMode);
+  const m2 = scoreMeter("meter2", meters.meter2, patternProfile, currentBucketId, currentMode);
 
   const otherMeter = activeMeter === "meter1" ? "meter2" : "meter1";
   const activeScore = activeMeter === "meter1" ? m1.score : m2.score;
@@ -168,7 +165,6 @@ function computeMeterRecommendation({
 
   // Determine if we should recommend switching
   const confidence = patternProfile.confidence?.level || "insufficient_data";
-  const minConf = CONFIG.minConfidence;
 
   // Check hysteresis: has the advantage persisted long enough?
   if (advantage >= CONFIG.minScoreAdvantage) {
@@ -176,7 +172,6 @@ function computeMeterRecommendation({
       hysteresisState.advantageStart = now;
       hysteresisState.advantageMeter = otherMeter;
     }
-    // Only count persistence if it's for the same meter
     if (hysteresisState.advantageMeter !== otherMeter) {
       hysteresisState.advantageStart = now;
       hysteresisState.advantageMeter = otherMeter;
@@ -190,36 +185,52 @@ function computeMeterRecommendation({
   const cooldownActive = hysteresisState.lastRecommendationAt > 0 &&
     (now - hysteresisState.lastRecommendationAt) < CONFIG.cooldownMs;
 
-  // Determine recommendation
-  let recommendation = activeMeter; // default: keep current
-  let action = "keep_" + activeMeter.replace("meter", "meter_");
-  let shouldRecommend = false;
+  // ── recommendation = the higher-scoring meter ──
+  const betterMeter = m1.score >= m2.score ? "meter1" : "meter2";
+  const betterScore = m1.score >= m2.score ? m1.score : m2.score;
+  const worseScore = m1.score >= m2.score ? m2.score : m1.score;
+  const scoreGap = betterScore - worseScore;
 
-  if (
-    advantage >= CONFIG.minScoreAdvantage &&
+  const recommendation = betterMeter;
+  const isOnBetterMeter = recommendation === activeMeter;
+  const action = isOnBetterMeter
+    ? "keep_" + activeMeter.replace("meter", "meter_")
+    : "consider_switch_to_" + betterMeter.replace("meter", "meter_");
+
+  // shouldSwitch: only true if hysteresis conditions are met
+  const otherIsBetter = recommendation !== activeMeter;
+  const shouldSwitch = otherIsBetter &&
+    scoreGap >= CONFIG.minScoreAdvantage &&
     persistenceMs >= CONFIG.minPersistenceMs &&
     confidence !== "insufficient_data" &&
-    !cooldownActive
-  ) {
-    recommendation = otherMeter;
-    action = "switch_to_" + otherMeter.replace("meter", "meter_");
-    shouldRecommend = true;
+    !cooldownActive;
+
+  if (shouldSwitch) {
     hysteresisState.lastRecommendationAt = now;
   }
 
-  // Combine reason codes from the recommended meter
+  // Combine reason codes from the recommended (better) meter
   const recommendedResult = recommendation === "meter1" ? m1 : m2;
   const reasonCodes = [...recommendedResult.reasonCodes];
 
-  // Add contextual reason codes
-  if (currentMode === "hybrid" && advantage > 10) {
+  if (currentMode === "hybrid" && scoreGap > 10) {
     reasonCodes.push("HYBRID_MODE_ACTIVE");
   }
-  if (currentMode === "on-grid" && advantage > 10) {
+  if (currentMode === "on-grid" && scoreGap > 10) {
     reasonCodes.push("ON_GRID_MODE");
   }
   if (currentBucketId === "evening" || currentBucketId === "late_evening") {
     reasonCodes.push("EVENING_TRANSITION");
+  }
+
+  if (otherIsBetter && !shouldSwitch) {
+    if (scoreGap < CONFIG.minScoreAdvantage) {
+      reasonCodes.push("ADVANTAGE_BELOW_THRESHOLD");
+    } else if (persistenceMs < CONFIG.minPersistenceMs) {
+      reasonCodes.push("ADVANTAGE_NOT_PERSISTED");
+    } else if (cooldownActive) {
+      reasonCodes.push("RECOMMENDATION_COOLDOWN");
+    }
   }
 
   return {
@@ -227,11 +238,12 @@ function computeMeterRecommendation({
     activeMeter,
     meter1Score: m1.score,
     meter2Score: m2.score,
-    advantage: Math.abs(advantage),
-    advantageFavors: advantage > 0 ? otherMeter : activeMeter,
+    advantage: scoreGap,
+    advantageFavors: betterMeter,
     action,
-    shouldRecommend,
-    confidence: confidence === "insufficient_data" ? 0.1 : Math.min(0.95, 0.5 + advantage / 100),
+    shouldSwitch,
+    shouldRecommend: shouldSwitch,
+    confidence: confidence === "insufficient_data" ? 0.1 : Math.min(0.95, 0.5 + scoreGap / 100),
     reasonCodes,
     persistenceMs,
     cooldownActive,

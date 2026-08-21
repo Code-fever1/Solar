@@ -483,6 +483,60 @@ function requestJson(options, body, timeoutMs = 12_000) {
 // The cloud API provides richer data (battery, fan speed, device name, etc.)
 // and works from anywhere without port-forwarding.
 const INVERTER_RATED_W = 10000;
+const net = require("net");
+
+/**
+ * Fast TCP reachability check to the InverterZone cloud API.
+ * Returns true if the cloud server is reachable (TCP connect succeeds within
+ * 2s), false if the connection is refused or times out.
+ *
+ * This is used to distinguish:
+ *   - Cloud API down (TCP fails) → don't mark inverter offline, keep last good
+ *   - Cloud API up but inverter not reporting (TCP succeeds, API returns no
+ *     dataDTO) → mark inverter offline immediately
+ */
+// ── Inverter direct TCP reachability check ──
+// The InverterZone cloud API caches stale data — even when the inverter is
+// offline, the API keeps returning the last known reading. To detect a real
+// offline condition, we TCP-connect directly to the inverter's public IP:port.
+// If the TCP connection succeeds, the inverter is reachable (online). If it
+// fails, the inverter is genuinely offline.
+const INVERTER_DIRECT_IP = "113.203.197.44";
+const INVERTER_DIRECT_PORT = 3286;
+
+function checkInverterDirectReachable() {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(2_000);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.connect(INVERTER_DIRECT_PORT, INVERTER_DIRECT_IP);
+  });
+}
+
+// ── Inverter data fingerprint ──
+// Used to detect stale cached data from the InverterZone cloud API.
+// If the fingerprint is identical across consecutive polls, the cloud is
+// serving cached data and the inverter may be offline.
+let lastInverterFingerprint = "";
+
+function fingerprintInverterData(d) {
+  return [
+    d.gridV, d.gridHz, d.gridW, d.acOutV, d.acOutHz, d.acOutW,
+    d.acOutVa, d.acOutPercent, d.solarW, d.solarV, d.solarA,
+    d.iv_mode, d.heatSinkDegC, d.signal, d.realTime, d.time,
+  ].join("|");
+}
 
 async function requestInverterZone() {
   // 8s timeout — cloud API may be slower than local, but still must not stall /live.
@@ -538,6 +592,10 @@ async function requestInverterZone() {
     timestamp,
     fetchedAt: new Date(timestamp).toISOString(),
     isOnline: true,
+    // Fingerprint of raw API data — used to detect stale cached data from
+    // the InverterZone cloud API. If this is identical across consecutive
+    // polls, the cloud is serving cached data and the inverter may be offline.
+    _fingerprint: fingerprintInverterData(d),
     // Solar (PV)
     solarW: Math.max(0, solarW),
     solarV: Math.max(0, solarV),
@@ -2516,6 +2574,27 @@ function registerUnifiedSolarRoutes(app, db) {
         if (snapshot.isOnline === false) {
           throw new Error("InverterZone returned an offline snapshot");
         }
+        // ── Stale data detection ──
+        // The InverterZone cloud API caches the last known reading. If the
+        // fingerprint is identical to the last poll, the inverter may be
+        // offline (cloud serving stale data). Do a direct TCP check to the
+        // inverter's public IP:port to verify.
+        const currentFingerprint = snapshot._fingerprint || "";
+        const isStaleData = currentFingerprint && currentFingerprint === lastInverterFingerprint;
+        lastInverterFingerprint = currentFingerprint;
+
+        if (isStaleData) {
+          // Data hasn't changed — inverter may be offline. TCP check directly.
+          const inverterReachable = await checkInverterDirectReachable();
+          if (!inverterReachable) {
+            // Inverter is genuinely offline — cloud is serving stale cached data
+            console.error("[Solar Engine] inverter offline (stale cloud data + TCP check failed)");
+            throw new Error("Inverter offline: stale cloud data confirmed by TCP check");
+          }
+          // TCP succeeded — inverter is online, data just hasn't changed
+          // (e.g. nighttime, low load). Keep the snapshot.
+        }
+
         // Only persist to the database once per minute. The 5s background poll
         // still updates the in-memory live cache (via the return value), but DB
         // writes are throttled to avoid flooding the collection with 17,280
@@ -2535,13 +2614,42 @@ function registerUnifiedSolarRoutes(app, db) {
         return snapshot;
       })
       .catch(async (error) => {
-        // Network error / timeout / non-2xx. A single timeout is not a real
-        // inverter outage — keep serving the last good snapshot until we have
-        // INVERTER_FAIL_THRESHOLD consecutive failures (~20s). This stops the
-        // Solar Only → UPS flicker on the hero tag.
+        // The catch handler covers two scenarios:
+        //
+        // 1. Stale cloud data detected (fingerprint identical + TCP check to
+        //    inverter failed) → inverter is genuinely offline. Mark offline NOW.
+        //
+        // 2. API call failed (timeout, network error, no dataDTO) → do a direct
+        //    TCP check to the inverter's public IP:port:
+        //    - TCP succeeds → inverter is online, keep last good snapshot
+        //    - TCP fails → inverter is offline, mark offline NOW
+        //
+        // This eliminates the 4-failure delay (~20s). The user sees "offline"
+        // within one poll cycle (~5s) + TCP check (2s).
         perfStats.inverterPollFailures += 1;
         inverterFailCount += 1;
-        console.error(`[Solar Engine] inverter poll failed (${inverterFailCount}/${INVERTER_FAIL_THRESHOLD}):`, error.message);
+
+        const isStaleDataError = error.message && error.message.includes("stale cloud data");
+        if (isStaleDataError) {
+          // Already confirmed offline via stale data + TCP check — mark offline NOW
+          console.error(`[Solar Engine] inverter offline (stale data confirmed):`, error.message);
+          inverterFailCount = INVERTER_FAIL_THRESHOLD;
+        } else {
+          // API call failed — TCP check the inverter directly
+          const inverterReachable = await checkInverterDirectReachable();
+          if (inverterReachable) {
+            // Inverter is reachable — keep last good snapshot, don't mark offline
+            console.error(`[Solar Engine] inverter poll failed (TCP ok, keeping last good):`, error.message);
+            if (liveInverterRef.value && liveInverterRef.value.isOnline !== false) {
+              return liveInverterRef.value;
+            }
+          } else {
+            // Inverter is not reachable — mark offline NOW
+            console.error(`[Solar Engine] inverter offline (TCP check failed):`, error.message);
+            inverterFailCount = INVERTER_FAIL_THRESHOLD;
+          }
+        }
+
         if (inverterFailCount < INVERTER_FAIL_THRESHOLD && liveInverterRef.value && liveInverterRef.value.isOnline !== false) {
           return liveInverterRef.value;
         }

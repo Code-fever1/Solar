@@ -151,6 +151,9 @@ function createEnergyIntelligenceEngine(collections) {
       tomznPowerW: liveData.tomznLive?.powerW || 0,
       inverterMode: liveData.inverter?.inverterMode || "unknown",
       inverterOnline: liveData.inverter?.isOnline !== false,
+      tomznOnline: liveData.tomznLive?.isOnline !== false,
+      tomznVoltageV: liveData.tomznLive?.voltageV || 0,
+      tomznFaultCode: liveData.tomznLive?.faultCode || 0,
       gridState: gridStateTracker,
       now,
     });
@@ -174,7 +177,6 @@ function createEnergyIntelligenceEngine(collections) {
     });
 
     // ── Notification cooldown ──
-    // Only include notification flag if this status hasn't been notified recently
     let shouldNotify = false;
     if (insight.notificationPriority !== "none" && insight.status !== lastStatus) {
       const lastNotified = notificationCooldowns[insight.status] || 0;
@@ -186,39 +188,22 @@ function createEnergyIntelligenceEngine(collections) {
     lastStatus = insight.status;
 
     // ── Build final state ──
+    // Use the composite insight from InsightGenerator directly.
+    // It already contains all the fields we need.
     return {
+      headline: insight.headline,
+      overallStatus: insight.overallStatus,
+      suggestions: insight.suggestions,
+      confidence: Math.round(insight.confidence * 100) / 100,
+      confidenceLevel,
+      meterRecommendation: insight.meterRecommendation,
+      details: insight.details,
+      // Backward compat
       status: insight.status,
       title: insight.title,
       message: insight.message,
       severity: insight.severity,
-      confidence: Math.round(insight.confidence * 100) / 100,
       reasonCodes: insight.reasonCodes,
-      meterRecommendation: insight.meterRecommendation,
-      // Detailed sub-states (for debugging / future UI expansion)
-      details: {
-        gridState: gridResult.state,
-        gridLabel: gridResult.label,
-        solarAnomaly: solarAnomaly.type ? {
-          expectedW: solarAnomaly.expectedW,
-          actualW: solarAnomaly.actualW,
-          deviationPct: solarAnomaly.deviationPct,
-          probableCause: solarAnomaly.probableCause,
-        } : null,
-        consumption: consumptionResult.type ? {
-          expectedW: consumptionResult.expectedW,
-          actualW: consumptionResult.actualW,
-          deviationPct: consumptionResult.deviationPct,
-        } : null,
-        meterScores: {
-          meter1: meterRec.meter1Score,
-          meter2: meterRec.meter2Score,
-          advantage: meterRec.advantage,
-          advantageFavors: meterRec.advantageFavors,
-        },
-        confidenceLevel,
-        bucketId: currentBucketId,
-        mode: currentMode,
-      },
       notification: shouldNotify ? {
         priority: insight.notificationPriority,
         status: insight.status,

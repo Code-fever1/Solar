@@ -61,6 +61,11 @@ function analyzeConsumption({
   let anomalyType = null;
   let severity = "none";
 
+  // ── Evening awareness: load naturally decreases in evening as solar drops ──
+  // Don't alert on low consumption during evening/late_evening if it's within
+  // the historical pattern. Only alert if it's truly abnormal.
+  const isEvening = bucketId === "evening" || bucketId === "late_evening";
+
   if (ratio >= CONFIG.veryHighThreshold) {
     isAnomalous = true;
     anomalyType = "very_high";
@@ -70,9 +75,16 @@ function analyzeConsumption({
     anomalyType = "high";
     severity = "medium";
   } else if (ratio <= CONFIG.lowThreshold && expectedW > 300) {
-    isAnomalous = true;
-    anomalyType = "low";
-    severity = "low";
+    // For evening low consumption: only alert if it's VERY low (below 0.3)
+    // Normal evening load decrease is not an anomaly.
+    if (isEvening && ratio > 0.3) {
+      // Evening load decrease within normal range — don't alert
+      isAnomalous = false;
+    } else {
+      isAnomalous = true;
+      anomalyType = "low";
+      severity = "low";
+    }
   }
 
   if (isAnomalous) {

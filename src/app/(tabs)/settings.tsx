@@ -155,8 +155,11 @@ export default function SettingsScreen() {
   };
 
   const handleSaveReadings = async () => {
-    const m1 = Number(meter1Reading);
-    const m2 = Number(meter2Reading);
+    // Only treat a field as filled if the string is non-empty AND parses to a
+    // valid non-negative number. Number("") === 0, so checking the string
+    // directly prevents logging 0 for a meter the user left blank.
+    const m1 = meter1Reading.trim() !== "" ? Number(meter1Reading) : NaN;
+    const m2 = meter2Reading.trim() !== "" ? Number(meter2Reading) : NaN;
     const hasM1 = Number.isFinite(m1) && m1 >= 0;
     const hasM2 = Number.isFinite(m2) && m2 >= 0;
     if (!hasM1 && !hasM2) {
@@ -167,7 +170,8 @@ export default function SettingsScreen() {
     try {
       if (hasM1) await addManualLog("meter1", m1, Date.now(), "Manual reading from settings");
       if (hasM2) await addManualLog("meter2", m2, Date.now(), "Manual reading from settings");
-      Alert.alert("Readings logged", "Manual readings have been recorded.");
+      const logged = [hasM1 && "Meter 1", hasM2 && "Meter 2"].filter(Boolean).join(" and ");
+      Alert.alert("Readings logged", `${logged} reading${hasM1 && hasM2 ? "s" : ""} recorded.`);
       setMeter1Reading("");
       setMeter2Reading("");
     } catch {
@@ -178,8 +182,8 @@ export default function SettingsScreen() {
   };
 
   const handleForgetSwap = async () => {
-    const m1 = Number(forgetM1);
-    const m2 = Number(forgetM2);
+    const m1 = forgetM1.trim() !== "" ? Number(forgetM1) : NaN;
+    const m2 = forgetM2.trim() !== "" ? Number(forgetM2) : NaN;
     if (!Number.isFinite(m1) || m1 < 0 || !Number.isFinite(m2) || m2 < 0) {
       Alert.alert("Enter both readings", "Provide a valid non-negative reading for both meters.");
       return;

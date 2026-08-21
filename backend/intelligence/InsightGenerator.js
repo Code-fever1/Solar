@@ -1,33 +1,38 @@
 "use strict";
 
 /**
- * InsightGenerator — combines all analyzers into a single current insight.
+ * InsightGenerator — combines all analyzers into a SINGLE composite insight.
  *
- * Picks the highest-priority current insight and generates:
- *   - status: UI state type
- *   - title: short headline
- *   - message: human-readable explanation
- *   - recommendation: meter recommendation (if applicable)
- *   - confidence: 0-1
- *   - reasonCodes: array of machine-readable reason codes
- *   - severity: none/info/low/medium/high
+ * Instead of priority-based candidate selection (which caused the card to
+ * flicker between statuses as grid state fluctuated), this produces a
+ * stable composite insight with:
+ *   - headline: short status ("System Healthy", "Consider Meter 1", etc.)
+ *   - suggestions: array of 0-N contextual suggestions
+ *   - meterAdvice: always present, shows the better meter
+ *   - overallStatus: "healthy" | "info" | "warning" | "alert"
  *
- * Priority order (highest first):
- *   1. WAPDA_CUTOFF — critical, grid is down
- *   2. WAPDA_RESTORED — grid just came back
- *   3. SOLAR_ANOMALY (high) — major unexplained solar drop
- *   4. HIGH_CONSUMPTION (high) — very high load
- *   5. METER_RECOMMENDATION — actionable meter switch
- *   6. SOLAR_ANOMALY (medium/low) — sustained but not critical
- *   7. HIGH_CONSUMPTION (medium) — sustained high load
- *   8. WAPDA_STANDBY — informational
- *   9. WAPDA_IMPORTING — informational
- *   10. NORMAL — everything looks good
- *   11. INSUFFICIENT_DATA — learning
+ * The card always renders the same layout — no jumping between card types.
  */
 
+const BUCKET_LABELS = {
+  night: "nighttime",
+  morning: "morning",
+  late_morning: "late morning",
+  midday: "midday",
+  afternoon: "afternoon",
+  evening: "evening",
+  late_evening: "late evening",
+};
+
+const MODE_LABELS = {
+  hybrid: "hybrid",
+  "on-grid": "on-grid",
+  night: "night",
+  bypass: "bypass",
+};
+
 /**
- * Generate the top-level insight from all analyzer outputs.
+ * Generate a composite insight from all analyzer outputs.
  *
  * @param {object} params
  * @param {object} params.gridState - from GridStateAnalyzer
@@ -36,7 +41,7 @@
  * @param {object} params.meterRec - from MeterAdvisor
  * @param {string} params.confidenceLevel - from pattern profile
  * @param {number} params.confidence - overall confidence 0-1
- * @returns {object} insight
+ * @returns {object} composite insight
  */
 function generateInsight({
   gridState,
@@ -46,241 +51,242 @@ function generateInsight({
   confidenceLevel,
   confidence,
 }) {
-  // ── Build candidate insights ──
-  const candidates = [];
+  const suggestions = [];
+  let overallStatus = "healthy";
+  let headline = "System Healthy";
+  const bucketLabel = meterRec.bucketId ? BUCKET_LABELS[meterRec.bucketId] || meterRec.bucketId : "";
+  const modeLabel = meterRec.bucketId ? MODE_LABELS["hybrid"] || "hybrid" : "hybrid";
 
-  // WAPDA cutoff
+  // ═══════════════════════════════════════════════════════════════
+  // 1. GRID STATE — WAPDA cutoff/restored/unstable are alerts
+  // ═══════════════════════════════════════════════════════════════
   if (gridState.state === "CUTOFF") {
-    candidates.push({
+    overallStatus = "alert";
+    headline = "WAPDA Unavailable";
+    suggestions.push({
+      type: "grid",
       priority: 100,
-      status: "WAPDA_CUTOFF",
-      title: gridState.label,
-      message: gridState.message,
-      severity: gridState.severity,
-      confidence: Math.max(0.8, confidence),
-      reasonCodes: ["WAPDA_CUTOFF", "GRID_UNAVAILABLE"],
-      notificationPriority: "high",
+      text: gridState.message || "WAPDA is down. Running on solar & battery.",
+      severity: "high",
     });
-  }
-
-  // WAPDA restored
-  if (gridState.state === "RESTORED") {
-    candidates.push({
+  } else if (gridState.state === "RESTORED") {
+    overallStatus = "info";
+    headline = "WAPDA Restored";
+    suggestions.push({
+      type: "grid",
       priority: 95,
-      status: "WAPDA_RESTORED",
-      title: gridState.label,
-      message: gridState.message,
-      severity: gridState.severity,
-      confidence: Math.max(0.7, confidence),
-      reasonCodes: ["WAPDA_RESTORED", "GRID_RETURNED"],
-      notificationPriority: "high",
-    });
-  }
-
-  // WAPDA unstable
-  if (gridState.state === "UNSTABLE" && gridState.severity === "medium") {
-    candidates.push({
-      priority: 85,
-      status: "WAPDA_UNSTABLE",
-      title: gridState.label,
-      message: gridState.message,
-      severity: gridState.severity,
-      confidence: Math.max(0.6, confidence),
-      reasonCodes: ["WAPDA_UNSTABLE", "GRID_FLUCTUATING"],
-      notificationPriority: "medium",
-    });
-  }
-
-  // Solar anomaly (high)
-  if (solarAnomaly.type === "solar_anomaly" && solarAnomaly.severity === "high") {
-    candidates.push({
-      priority: 90,
-      status: "SOLAR_ANOMALY",
-      title: "Solar Production Below Normal",
-      message: `Solar is producing ${solarAnomaly.actualW}W vs expected ${solarAnomaly.expectedW}W (${solarAnomaly.deviationPct}% deviation).`,
-      severity: solarAnomaly.severity,
-      confidence: solarAnomaly.confidence,
-      reasonCodes: ["SOLAR_BELOW_NORMAL", `DEVIATION_${solarAnomaly.deviationPct}PCT`, solarAnomaly.probableCause?.toUpperCase()],
-      notificationPriority: "high",
-    });
-  }
-
-  // High consumption (high)
-  if (consumption.type === "high_consumption" && consumption.severity === "high") {
-    candidates.push({
-      priority: 80,
-      status: "HIGH_CONSUMPTION",
-      title: "Home Consumption Unusually High",
-      message: consumption.message,
-      severity: consumption.severity,
-      confidence: consumption.confidence,
-      reasonCodes: ["HIGH_CONSUMPTION", `LOAD_${consumption.deviationPct}PCT_ABOVE_NORMAL`],
-      notificationPriority: "high",
-    });
-  }
-
-  // Meter recommendation (only if shouldRecommend)
-  if (meterRec.shouldRecommend) {
-    const recMeter = meterRec.recommendation === "meter1" ? "Meter 1" : "Meter 2";
-    const activeName = meterRec.activeMeter === "meter1" ? "Meter 1" : "Meter 2";
-    candidates.push({
-      priority: 70,
-      status: "METER_RECOMMENDATION",
-      title: `Consider ${recMeter}`,
-      message: `Your historical data favors ${recMeter} in current conditions. Score: ${meterRec.recommendation === "meter1" ? meterRec.meter1Score : meterRec.meter2Score} vs ${activeName}: ${meterRec.activeMeter === "meter1" ? meterRec.meter1Score : meterRec.meter2Score}.`,
+      text: gridState.message || "WAPDA has returned. Grid power available.",
       severity: "medium",
-      confidence: meterRec.confidence,
-      reasonCodes: meterRec.reasonCodes,
-      notificationPriority: "medium",
-      meterRecommendation: {
-        recommendation: meterRec.recommendation,
-        meter1Score: meterRec.meter1Score,
-        meter2Score: meterRec.meter2Score,
-        advantage: meterRec.advantage,
-        action: meterRec.action,
-      },
+    });
+  } else if (gridState.state === "UNSTABLE" && gridState.severity === "medium") {
+    overallStatus = "warning";
+    headline = "WAPDA Unstable";
+    suggestions.push({
+      type: "grid",
+      priority: 85,
+      text: gridState.message || "WAPDA is fluctuating. Avoid switching meters.",
+      severity: "medium",
+    });
+  } else if (gridState.state === "INVERTER_OFF") {
+    // Inverter is offline but WAPDA grid is available via bypass.
+    // This is a warning (inverter issue) but NOT a WAPDA cutoff.
+    overallStatus = "warning";
+    headline = "Inverter Offline";
+    suggestions.push({
+      type: "grid",
+      priority: 75,
+      text: gridState.message || "Inverter is offline. Home running on WAPDA via bypass.",
+      severity: "medium",
     });
   }
 
-  // Solar anomaly (medium)
-  if (solarAnomaly.type === "solar_anomaly" && solarAnomaly.severity === "medium") {
-    candidates.push({
-      priority: 60,
-      status: "SOLAR_ANOMALY",
-      title: "Solar Production Below Normal",
-      message: `Solar is producing ${solarAnomaly.actualW}W vs expected ${solarAnomaly.expectedW}W.`,
-      severity: solarAnomaly.severity,
-      confidence: solarAnomaly.confidence,
-      reasonCodes: ["SOLAR_BELOW_NORMAL", solarAnomaly.probableCause?.toUpperCase()],
-      notificationPriority: "medium",
+  // ═══════════════════════════════════════════════════════════════
+  // 2. SOLAR ANOMALY — only if truly abnormal (not evening decline)
+  // ═══════════════════════════════════════════════════════════════
+  if (solarAnomaly.type === "solar_anomaly") {
+    const sa = solarAnomaly;
+    const causeMap = {
+      cloud_weather: "Cloud cover reducing production",
+      pv_abnormality: "PV panels may need inspection",
+      inverter_condition: "Inverter may not be operating optimally",
+      unexplained_production_drop: "Production below the learned pattern",
+    };
+    const cause = causeMap[sa.probableCause] || "Production below normal";
+
+    if (sa.severity === "high") {
+      if (overallStatus === "healthy") overallStatus = "warning";
+      if (overallStatus === "info") overallStatus = "warning";
+      headline = "Solar Production Low";
+      suggestions.push({
+        type: "solar",
+        priority: 80,
+        text: `${cause} (${sa.actualW}W vs expected ${sa.expectedW}W).`,
+        severity: sa.severity,
+      });
+    } else if (sa.severity === "medium") {
+      if (overallStatus === "healthy") overallStatus = "info";
+      headline = headline === "System Healthy" ? "Solar Below Normal" : headline;
+      suggestions.push({
+        type: "solar",
+        priority: 60,
+        text: `${cause} (${sa.actualW}W vs expected ${sa.expectedW}W).`,
+        severity: sa.severity,
+      });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 3. CONSUMPTION — only if truly abnormal
+  // ═══════════════════════════════════════════════════════════════
+  if (consumption.type === "high_consumption") {
+    if (consumption.severity === "high") {
+      if (overallStatus === "healthy") overallStatus = "warning";
+      headline = headline === "System Healthy" ? "High Consumption" : headline;
+      suggestions.push({
+        type: "consumption",
+        priority: 70,
+        text: consumption.message || `Home load is unusually high.`,
+        severity: consumption.severity,
+      });
+    } else if (consumption.severity === "medium") {
+      if (overallStatus === "healthy") overallStatus = "info";
+      suggestions.push({
+        type: "consumption",
+        priority: 50,
+        text: consumption.message || `Home load is above normal.`,
+        severity: consumption.severity,
+      });
+    }
+  }
+  // Low consumption: only suggest if very low (not evening normal decrease)
+  if (consumption.type === "low_consumption" && consumption.severity !== "none") {
+    if (overallStatus === "healthy") overallStatus = "info";
+    suggestions.push({
+      type: "consumption",
+      priority: 20,
+      text: consumption.message || `Home consumption is low.`,
+      severity: "low",
     });
   }
 
-  // High consumption (medium)
-  if (consumption.type === "high_consumption" && consumption.severity === "medium") {
-    candidates.push({
-      priority: 55,
-      status: "HIGH_CONSUMPTION",
-      title: "Home Consumption High",
-      message: consumption.message,
-      severity: consumption.severity,
-      confidence: consumption.confidence,
-      reasonCodes: ["HIGH_CONSUMPTION", `LOAD_${consumption.deviationPct}PCT_ABOVE_NORMAL`],
-      notificationPriority: "medium",
-    });
-  }
+  // ═══════════════════════════════════════════════════════════════
+  // 4. METER ADVICE — only when recommending a SWITCH
+  // If already on the better meter, don't show a suggestion at all.
+  // The corner badge already shows which meter is active.
+  // Scores are only shown when a switch is being recommended.
+  // ═══════════════════════════════════════════════════════════════
+  const betterName = meterRec.recommendation === "meter1" ? "Meter 1" : "Meter 2";
+  const activeName = meterRec.activeMeter === "meter1" ? "Meter 1" : "Meter 2";
+  const isOnBetter = meterRec.recommendation === meterRec.activeMeter;
+  const scoreGap = Math.abs(meterRec.meter1Score - meterRec.meter2Score);
 
-  // Low consumption
-  if (consumption.type === "low_consumption") {
-    candidates.push({
-      priority: 30,
-      status: "LOW_CONSUMPTION",
-      title: "Home Consumption Low",
-      message: consumption.message,
-      severity: consumption.severity,
-      confidence: consumption.confidence,
-      reasonCodes: ["LOW_CONSUMPTION"],
-      notificationPriority: "none",
-    });
-  }
+  if (!isOnBetter) {
+    // The other meter is better — show a switch recommendation
+    let meterText = "";
+    let meterPriority = 30;
 
-  // WAPDA standby
-  if (gridState.state === "STANDBY") {
-    candidates.push({
-      priority: 25,
-      status: "WAPDA_STANDBY",
-      title: gridState.label,
-      message: gridState.message,
-      severity: "info",
-      confidence: confidence,
-      reasonCodes: ["WAPDA_STANDBY", "SOLAR_COVERING_LOAD"],
-      notificationPriority: "none",
-    });
-  }
-
-  // WAPDA importing (normal)
-  if (gridState.state === "IMPORTING") {
-    candidates.push({
-      priority: 15,
-      status: "WAPDA_IMPORTING",
-      title: gridState.label,
-      message: gridState.message,
-      severity: "info",
-      confidence: confidence,
-      reasonCodes: ["WAPDA_IMPORTING"],
-      notificationPriority: "none",
-    });
-  }
-
-  // If insufficient data, override with learning state
-  if (confidenceLevel === "insufficient_data" && candidates.length === 0) {
-    candidates.push({
-      priority: 5,
-      status: "INSUFFICIENT_DATA",
-      title: "Learning Your Home's Energy Pattern",
-      message: "Collecting data to provide personalized energy insights. Check back in a few days.",
-      severity: "info",
-      confidence: 0.1,
-      reasonCodes: ["INSUFFICIENT_DATA", "LEARNING_IN_PROGRESS"],
-      notificationPriority: "none",
-    });
-  }
-
-  // Default: normal
-  if (candidates.length === 0) {
-    // Build a "keep meter" insight with context
-    const activeName = meterRec.activeMeter === "meter1" ? "Meter 1" : "Meter 2";
-    let normalMessage = "Energy looks good.";
-    let normalReasons = ["NORMAL_OPERATION"];
-
-    // Add context about why keeping the current meter is good
-    if (meterRec.reasonCodes.length > 0) {
-      const hasFavorableCal = meterRec.reasonCodes.some((r) => r.includes("FAVORABLE_CALIBRATION"));
-      const hasLowerUsage = meterRec.reasonCodes.some((r) => r.includes("LOWER_BUCKET_USAGE"));
-      if (hasFavorableCal || hasLowerUsage) {
-        normalMessage = `Keep ${activeName}. Current conditions favor your active meter.`;
-        normalReasons = ["NORMAL_OPERATION", ...meterRec.reasonCodes.slice(0, 2)];
-      }
+    if (confidenceLevel === "insufficient_data") {
+      meterText = `${betterName} may consume less under current conditions, but still learning your patterns.`;
+      meterPriority = 10;
+    } else if (meterRec.shouldSwitch) {
+      // Hysteresis says: switch now
+      meterText = `Consider switching to ${betterName} (${meterRec.meter1Score} vs ${meterRec.meter2Score}). It historically consumes less under current conditions.`;
+      meterPriority = 75;
+      if (overallStatus === "healthy") overallStatus = "info";
+      headline = `Consider ${betterName}`;
+    } else if (scoreGap < 15) {
+      // Other meter is slightly better but not enough to switch
+      meterText = `${betterName} shows slightly lower consumption (${meterRec.meter1Score} vs ${meterRec.meter2Score}) but not enough to justify switching.`;
+      meterPriority = 15;
+    } else {
+      // Other meter is better but hysteresis hasn't triggered yet
+      meterText = `${betterName} historically consumes less (${meterRec.meter1Score} vs ${meterRec.meter2Score}) under current conditions. Consider switching.`;
+      meterPriority = 40;
+      if (overallStatus === "healthy") overallStatus = "info";
     }
 
-    candidates.push({
-      priority: 10,
-      status: "NORMAL",
-      title: "Energy Looks Good",
-      message: normalMessage,
+    suggestions.push({
+      type: "meter",
+      priority: meterPriority,
+      text: meterText,
+      severity: meterRec.shouldSwitch ? "medium" : "info",
+    });
+  }
+  // If isOnBetter → no meter suggestion at all. The corner badge shows M1/M2.
+
+  // ═══════════════════════════════════════════════════════════════
+  // 5. INSUFFICIENT DATA
+  // ═══════════════════════════════════════════════════════════════
+  if (confidenceLevel === "insufficient_data" && suggestions.length <= 1) {
+    overallStatus = "info";
+    headline = "Learning Your Pattern";
+    suggestions.unshift({
+      type: "system",
+      priority: 5,
+      text: "Collecting data to learn your home's energy patterns. Check back in a few days.",
       severity: "info",
-      confidence: confidence,
-      reasonCodes: normalReasons,
-      notificationPriority: "none",
-      meterRecommendation: {
-        recommendation: meterRec.recommendation,
-        meter1Score: meterRec.meter1Score,
-        meter2Score: meterRec.meter2Score,
-        advantage: meterRec.advantage,
-        action: meterRec.action,
-      },
     });
   }
 
-  // Pick highest priority
-  candidates.sort((a, b) => b.priority - a.priority);
-  const top = candidates[0];
+  // ═══════════════════════════════════════════════════════════════
+  // 6. SORT SUGGESTIONS BY PRIORITY (highest first)
+  // ═══════════════════════════════════════════════════════════════
+  suggestions.sort((a, b) => b.priority - a.priority);
 
+  // ═══════════════════════════════════════════════════════════════
+  // 7. BUILD FINAL OUTPUT
+  // ═══════════════════════════════════════════════════════════════
   return {
-    status: top.status,
-    title: top.title,
-    message: top.message,
-    severity: top.severity,
-    confidence: top.confidence,
-    reasonCodes: top.reasonCodes || [],
-    notificationPriority: top.notificationPriority || "none",
-    meterRecommendation: top.meterRecommendation || {
+    headline,
+    overallStatus,
+    suggestions,
+    confidence,
+    confidenceLevel,
+    meterRecommendation: {
       recommendation: meterRec.recommendation,
+      activeMeter: meterRec.activeMeter,
       meter1Score: meterRec.meter1Score,
       meter2Score: meterRec.meter2Score,
       advantage: meterRec.advantage,
+      advantageFavors: meterRec.advantageFavors,
       action: meterRec.action,
+      shouldSwitch: meterRec.shouldSwitch,
     },
+    details: {
+      gridState: gridState.state,
+      gridLabel: gridState.label,
+      solarAnomaly: solarAnomaly.type ? {
+        expectedW: solarAnomaly.expectedW,
+        actualW: solarAnomaly.actualW,
+        deviationPct: solarAnomaly.deviationPct,
+        probableCause: solarAnomaly.probableCause,
+        isEvening: solarAnomaly.isEvening,
+      } : null,
+      consumption: consumption.type ? {
+        expectedW: consumption.expectedW,
+        actualW: consumption.actualW,
+        deviationPct: consumption.deviationPct,
+      } : null,
+      meterScores: {
+        meter1: meterRec.meter1Score,
+        meter2: meterRec.meter2Score,
+        advantage: meterRec.advantage,
+        advantageFavors: meterRec.advantageFavors,
+      },
+      confidenceLevel,
+      bucketId: meterRec.bucketId,
+      mode: "hybrid",
+    },
+    // Backward compat fields
+    status: overallStatus === "healthy" ? "NORMAL" :
+            overallStatus === "alert" ? "WAPDA_CUTOFF" :
+            overallStatus === "warning" ? (gridState.state === "INVERTER_OFF" ? "INVERTER_OFF" : solarAnomaly.type ? "SOLAR_ANOMALY" : "HIGH_CONSUMPTION") :
+            "NORMAL",
+    title: headline,
+    message: suggestions.length > 0 ? suggestions[0].text : "All systems normal.",
+    severity: overallStatus === "alert" ? "high" : overallStatus === "warning" ? "medium" : "info",
+    reasonCodes: suggestions.map((s) => s.type.toUpperCase()),
+    notificationPriority: overallStatus === "alert" ? "high" : overallStatus === "warning" ? "medium" : "none",
   };
 }
 
