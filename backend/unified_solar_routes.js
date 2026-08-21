@@ -15,8 +15,9 @@ const path = require("path");
 const PRIMARY_STATE_ID = "primary";
 const METER_IDS = new Set(["meter1", "meter2"]);
 const PAKISTAN_OFFSET = "+05:00";
-const INVERTER_LOCAL_HOST = "113.203.197.44";
-const INVERTER_LOCAL_PORT = 3286;
+const INVERTER_ZONE_DEVICE_ID = "500291B991A9";
+const INVERTER_ZONE_API_HOST = "inverterzone.com";
+const INVERTER_ZONE_API_PATH = "/api/getRealtimeData";
 const INVERTER_POLL_MAX_AGE_MS = 2_500;
 // Device poll cadence is presence-based: 2.5s while any app is connected,
 // 30s when nobody is watching. Presence = live SSE clients, or a /live?force
@@ -24,10 +25,10 @@ const INVERTER_POLL_MAX_AGE_MS = 2_500;
 const POLL_INTERVAL_ACTIVE_MS = 2_500;
 const POLL_INTERVAL_IDLE_MS = 30_000;
 const CLIENT_PRESENCE_TTL_MS = 45_000;
-// A single InverterZone timeout must NOT flip the inverter to offline.
-// The local port-forward drops packets often (logs show 6s bursts of timeouts).
-// Require several consecutive failures before publishing an offline snapshot,
-// matching TOMZN's fail-threshold pattern. ~28s at the 7s background poll.
+// A single InverterZone cloud API timeout must NOT flip the inverter to offline.
+// The cloud API may have transient failures. Require several consecutive
+// failures before publishing an offline snapshot, matching TOMZN's fail-threshold
+// pattern. ~28s at the 7s background poll.
 const INVERTER_FAIL_THRESHOLD = 4;
 // Live cache is refreshed at most every 2.5s so the dashboard stays responsive
 // without hitting Tuya on every frontend poll.
@@ -474,104 +475,69 @@ function requestJson(options, body, timeoutMs = 12_000) {
   });
 }
 
-// ── Local inverter poller ──
-// Connects directly to the Fronus inverter's web API at 113.203.197.44:3286
-// (port-forwarded to 10.1.10.4:80). Returns real-time data every 7s instead of
-// the 15s cloud delay from InverterZone.
-// QPIGS format (InverterZone dongle firmware parseLive() mapping):
-//   [0]AC_in_V  [1]AC_in_Hz  [2]AC_out_V  [3]AC_out_Hz
-//   [4]AC_out_VA  [5]AC_out_W  [6]AC_out_load%  [7]home_load_W (not used by IZ FW)
-//   [8]Bat_V  [9]Bat_Charge_A  [10]Bat_%  [11]Inv_Bus_Temp_C
-//   [12]PV_Input_A  [13]PV_Input_V  [14](unused)  [15]Bat_Discharge_A
-//   [16-18](unused)  [19]status_bitmask (NOT PV power despite IZ FW label)
-// PVPOWER format (dual MPPT): pv1V pv1A pv1W pv2V pv2A pv2W ...
-// QMOD: L=Line, B=Battery, S=Standby, F=Fault, P=PowerOn
+// ── InverterZone cloud API poller ──
+// Fetches real-time inverter data from the InverterZone cloud API at
+// https://inverterzone.com/api/getRealtimeData (POST, form-encoded deviceId).
+// This replaces the previous direct-IP connection to 113.203.197.44:3286.
+// The cloud API provides richer data (battery, fan speed, device name, etc.)
+// and works from anywhere without port-forwarding.
 const INVERTER_RATED_W = 10000;
 
 async function requestInverterZone() {
-  // 4s timeout — a hung inverter must not stall /live or the 5s poller.
-  // Transient timeouts are absorbed by INVERTER_FAIL_THRESHOLD, not shown as offline.
+  // 8s timeout — cloud API may be slower than local, but still must not stall /live.
+  const body = `deviceId=${INVERTER_ZONE_DEVICE_ID}`;
   const response = await requestJson({
-    hostname: INVERTER_LOCAL_HOST,
-    port: INVERTER_LOCAL_PORT,
-    path: "/livejson",
-    method: "GET",
-    headers: { Accept: "application/json" },
-  }, null, 4_000);
-  if (!response || !response.LiveData) {
+    hostname: INVERTER_ZONE_API_HOST,
+    path: INVERTER_ZONE_API_PATH,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Content-Length": Buffer.byteLength(body),
+    },
+  }, body, 8_000);
+  if (!response || !response.dataDTO) {
     return makeOfflineInverterSnapshot();
   }
-  const live = response.LiveData;
-  const esp = response.EspData || {};
-  const dev = response.DeviceData || {};
-  const qpigs = (live.QPIGS || "").split(/\s+/);
-  const pvpower = (live.PVPOWER || "").split(/\s+/);
+  const d = response.dataDTO;
 
-  if (qpigs.length < 16) {
-    return makeOfflineInverterSnapshot();
-  }
-
-  const gridV = finiteNumber(qpigs[0], 0);
-  const gridHz = finiteNumber(qpigs[1], 0);
-  const acOutV = finiteNumber(qpigs[2], 0);
-  const acOutHz = finiteNumber(qpigs[3], 0);
-  const acOutVA = finiteNumber(qpigs[4], 0);
-  const acOutW = finiteNumber(qpigs[5], 0);
-  const loadPercent = finiteNumber(qpigs[6], 0);  // AC_out_load%
-  const busV = finiteNumber(qpigs[7], 0);         // DC bus voltage (NOT home load!)
-  const batteryV = finiteNumber(qpigs[8], 0);
-  const batteryChargeA = finiteNumber(qpigs[9], 0);
-  const batteryPerc = finiteNumber(qpigs[10], 0);
-  const temperatureC = finiteNumber(qpigs[11], 0);  // heatsink temp
-  const pvInputA = finiteNumber(qpigs[12], 0);      // PV1 input current
-
-  // Dual MPPT solar from PVPOWER
-  // Below 20W total, panels are effectively disconnected (phantom readings).
+  // Solar standby: below 20W total, panels are effectively disconnected.
   const SOLAR_STANDBY_W = 20;
-  const pv1W_raw = finiteNumber(pvpower[2], 0);
-  const pv2W_raw = finiteNumber(pvpower[5], 0);
-  const pv1V = finiteNumber(pvpower[0], 0);
-  const pv2V = finiteNumber(pvpower[3], 0);
-  const pv1A = finiteNumber(pvpower[1], 0);
-  const pv2A = finiteNumber(pvpower[4], 0);
-  const solarW_raw = pv1W_raw + pv2W_raw;
+  const solarW_raw = finiteNumber(d.solarW, 0);
   const solarStandby = solarW_raw < SOLAR_STANDBY_W;
-  const pv1W = solarStandby ? 0 : pv1W_raw;
-  const pv2W = solarStandby ? 0 : pv2W_raw;
   const solarW = solarStandby ? 0 : solarW_raw;
-  const solarV = solarStandby ? 0 : (pv1V + pv2V) / 2;
-  const solarA = solarStandby ? 0 : pv1A + pv2A;
+  const solarV = solarStandby ? 0 : finiteNumber(d.solarV, 0);
+  const solarA = solarStandby ? 0 : finiteNumber(d.solarA, 0);
+  const pv1W = solarStandby ? 0 : finiteNumber(d.solarW1, 0);
+  const pv1V = solarStandby ? 0 : finiteNumber(d.solarV1, 0);
+  const pv1A = solarStandby ? 0 : finiteNumber(d.solarA1, 0);
+  const pv2W = solarStandby ? 0 : finiteNumber(d.solarW2, 0);
+  const pv2V = solarStandby ? 0 : finiteNumber(d.solarV2, 0);
+  const pv2A = solarStandby ? 0 : finiteNumber(d.solarA2, 0);
 
-  // Grid power calculation:
-  // HYBRID (acOutW >= 25W): inverter AC output powers the home.
-  //   acOutW = home load. Grid flow = acOutW - solarW.
-  //   If acOutW > solarW → import (grid supplies deficit).
-  //   If acOutW < solarW → export (excess solar to grid).
-  // ON-GRID (acOutW < 25W): home on changeover (WAPDA), inverter LOAD port
-  //   disconnected (acOutW ≈ 0). Solar feeds GRID port directly.
-  //   Grid flow = -solarW (all solar exports, home load is on grid separately).
-  //   TOMZN meter measures the actual home draw from grid.
-  const rawGridW = acOutW >= ON_GRID_LOAD_THRESHOLD_W
-    ? acOutW - solarW    // hybrid: home load vs solar
-    : -solarW;           // on-grid: solar exports to grid
+  // Grid power — the cloud API provides gridW directly (measured, not calculated).
+  const gridV = finiteNumber(d.gridV, 0);
+  const gridHz = finiteNumber(d.gridHz, 0);
+  const gridConnected = Boolean(d.grid);
+  const acOutW = finiteNumber(d.acOutW, 0);
+  // Use cloud's gridW if available, otherwise fall back to calculated value.
+  const cloudGridW = finiteNumber(d.gridW, null);
+  const rawGridW = cloudGridW != null
+    ? cloudGridW
+    : (acOutW >= ON_GRID_LOAD_THRESHOLD_W ? acOutW - solarW : -solarW);
   const gridW = (gridV > 0 && Math.abs(rawGridW) >= 200) ? Math.max(0, rawGridW) : 0;
+  const gridDirection = rawGridW < 0 ? "export" : "import";
 
-  // QMOD mode mapping
+  // Mode mapping: L=Line, B=Battery, S=Standby, F=Fault, P=PowerOn
   const modeMap = { L: "L", B: "B", S: "S", F: "F", P: "P" };
-  const inverterMode = modeMap[live.QMOD] || "unknown";
-
-  // Fault detection: QMOD="F" means the inverter is in fault state.
-  // QPIWS contains warning/status bits that are non-zero during normal operation,
-  // so we can't use it as a simple fault flag.
-  const hasFault = live.QMOD === "F";
-
-  // loadPercent from QPIGS[6] is the inverter's own load percentage
+  const inverterMode = modeMap[d.iv_mode || d.type] || "unknown";
+  const hasFault = (d.iv_mode || d.type) === "F" || d.fault === "FAULT";
 
   const timestamp = Date.now();
   return {
     timestamp,
     fetchedAt: new Date(timestamp).toISOString(),
     isOnline: true,
+    // Solar (PV)
     solarW: Math.max(0, solarW),
     solarV: Math.max(0, solarV),
     solarA: Math.max(0, solarA),
@@ -581,24 +547,48 @@ async function requestInverterZone() {
     pv2V: Math.max(0, pv2V),
     pv2A: Math.max(0, pv2A),
     pv2W: Math.max(0, pv2W),
+    // Grid
     gridW,
     gridWRaw: rawGridW,
     gridV,
     gridHz,
-    gridConnected: gridV > 0,
-    gridDirection: rawGridW < 0 ? "export" : "import",
-    loadW: Math.max(0, acOutW),       // inverter AC output = home load (hybrid mode)
-    loadVa: Math.max(0, acOutVA),
-    loadPercent: Math.max(0, loadPercent),
-    acOutV,
-    acOutHz,
+    gridConnected,
+    gridDirection,
+    // Load (AC Output)
+    loadW: Math.max(0, acOutW),
+    loadVa: Math.max(0, finiteNumber(d.acOutVa, 0)),
+    loadPercent: Math.max(0, finiteNumber(d.acOutPercent, 0)),
+    acOutV: finiteNumber(d.acOutV, 0),
+    acOutHz: finiteNumber(d.acOutHz, 0),
+    // Inverter status
     inverterMode,
-    inverterFault: hasFault ? "FAULT" : "NO",
-    temperatureC,
-    ratedOutputW: INVERTER_RATED_W,
-    signal: finiteNumber(esp.Wifi_RSSI),
-    firmware: dev.QVFW || null,
-    sourceTime: null,
+    inverterFault: hasFault ? "FAULT" : (d.fault || "NO"),
+    temperatureC: finiteNumber(d.heatSinkDegC, 0),
+    ratedOutputW: finiteNumber(d.acOutRatingW, INVERTER_RATED_W),
+    signal: finiteNumber(d.signal, null),
+    firmware: d.inverterSoftware || null,
+    // Battery (new from cloud API)
+    batteryV: finiteNumber(d.battV, 0),
+    batteryPercent: finiteNumber(d.battPercent, 0),
+    batteryChargeA: finiteNumber(d.battChargeA, 0),
+    batteryDischargeA: finiteNumber(d.battDischargeA, 0),
+    batteryType: d.battType || null,
+    // Additional cloud-only fields
+    busV: finiteNumber(d.busV, 0),
+    fanSpeed: finiteNumber(d.fanSpeed, null),
+    deviceName: d.name || null,
+    pvInstalled: finiteNumber(d.pvInstalled, 0),
+    peakSolar: finiteNumber(d.peakSolar, 0),
+    peakLoad: finiteNumber(d.peakLoad, 0),
+    netMetering: d.netMetering || null,
+    outputSource: d.outputSource || null,
+    chargeSource: d.chargeSource || null,
+    protocol: d.protocol || null,
+    chargingStatus: d.chargingStatus || null,
+    inputVoltType: d.inputVoltType || null,
+    localIp: d.localIp || null,
+    currentVersion: d.currentVersion || null,
+    sourceTime: d.realTime || null,
   };
 }
 
@@ -614,6 +604,8 @@ function makeOfflineInverterSnapshot() {
     solarW: 0,
     solarV: 0,
     solarA: 0,
+    pv1V: 0, pv1A: 0, pv1W: 0,
+    pv2V: 0, pv2A: 0, pv2W: 0,
     gridW: 0,
     gridWRaw: 0,
     gridV: 0,
@@ -630,6 +622,26 @@ function makeOfflineInverterSnapshot() {
     temperatureC: 0,
     ratedOutputW: 0,
     signal: null,
+    firmware: null,
+    batteryV: 0,
+    batteryPercent: 0,
+    batteryChargeA: 0,
+    batteryDischargeA: 0,
+    batteryType: null,
+    busV: 0,
+    fanSpeed: null,
+    deviceName: null,
+    pvInstalled: 0,
+    peakSolar: 0,
+    peakLoad: 0,
+    netMetering: null,
+    outputSource: null,
+    chargeSource: null,
+    protocol: null,
+    chargingStatus: null,
+    inputVoltType: null,
+    localIp: null,
+    currentVersion: null,
     sourceTime: null,
   };
 }
@@ -2620,10 +2632,31 @@ function registerUnifiedSolarRoutes(app, db) {
       ratedOutputW: latestInverter.ratedOutputW || 0,
       signal: latestInverter.signal ?? null,
       firmware: latestInverter.firmware || null,
+      // Cloud API extra fields
+      batteryV: latestInverter.batteryV ?? 0,
+      batteryPercent: latestInverter.batteryPercent ?? 0,
+      batteryChargeA: latestInverter.batteryChargeA ?? 0,
+      batteryDischargeA: latestInverter.batteryDischargeA ?? 0,
+      batteryType: latestInverter.batteryType ?? null,
+      busV: latestInverter.busV ?? 0,
+      fanSpeed: latestInverter.fanSpeed ?? null,
+      deviceName: latestInverter.deviceName ?? null,
+      pvInstalled: latestInverter.pvInstalled ?? 0,
+      peakSolar: latestInverter.peakSolar ?? 0,
+      peakLoad: latestInverter.peakLoad ?? 0,
+      netMetering: latestInverter.netMetering ?? null,
+      outputSource: latestInverter.outputSource ?? null,
+      chargeSource: latestInverter.chargeSource ?? null,
+      protocol: latestInverter.protocol ?? null,
+      chargingStatus: latestInverter.chargingStatus ?? null,
+      inputVoltType: latestInverter.inputVoltType ?? null,
+      localIp: latestInverter.localIp ?? null,
+      currentVersion: latestInverter.currentVersion ?? null,
+      sourceTime: latestInverter.sourceTime ?? null,
       isOnline: latestInverter.isOnline !== false,
       isLive: Date.now() - latestInverter.timestamp < 10 * 60 * 1000,
       fetchedAt: latestInverter.fetchedAt || new Date(latestInverter.timestamp).toISOString(),
-    } : { solarW: 0, solarV: 0, solarA: 0, pv1V: 0, pv1A: 0, pv1W: 0, pv2V: 0, pv2A: 0, pv2W: 0, gridW: 0, gridWRaw: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, firmware: null, isOnline: false, isLive: false, fetchedAt: "" };
+    } : { solarW: 0, solarV: 0, solarA: 0, pv1V: 0, pv1A: 0, pv1W: 0, pv2V: 0, pv2A: 0, pv2W: 0, gridW: 0, gridWRaw: 0, gridV: 0, gridHz: 0, gridConnected: false, gridDirection: "import", loadW: 0, loadVa: 0, loadPercent: 0, acOutV: 0, acOutHz: 0, inverterMode: "unknown", inverterFault: "UNKNOWN", temperatureC: 0, ratedOutputW: 0, signal: null, firmware: null, batteryV: 0, batteryPercent: 0, batteryChargeA: 0, batteryDischargeA: 0, batteryType: null, busV: 0, fanSpeed: null, deviceName: null, pvInstalled: 0, peakSolar: 0, peakLoad: 0, netMetering: null, outputSource: null, chargeSource: null, protocol: null, chargingStatus: null, inputVoltType: null, localIp: null, currentVersion: null, sourceTime: null, isOnline: false, isLive: false, fetchedAt: "" };
     // Compute grid flow (mode + direction + computed home) for the live hero.
     // Uses liveFlowState for on-grid zero-crossing tracking across 5s polls.
     // When the TOMZN meter is offline (WAPDA cut off, WiFi dead), Tuya cloud
