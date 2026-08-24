@@ -19,7 +19,7 @@
       "predictiveBackGestureEnabled": false,
       "package": "com.voltix.app",
       "usesCleartextTraffic": true,
-      "versionCode": 17
+      "versionCode": 20
     },
     "web": {
       "output": "static",

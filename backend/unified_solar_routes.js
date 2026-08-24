@@ -41,6 +41,14 @@ const TOMZN_LIVE_MAX_AGE_MS = 2_500;
 // Secondary signal: when the inverter switches to battery mode (QMOD="B"),
 // the grid is down, which means TOMZN (grid meter) is also offline.
 //
+// TCP PROBE: When the fingerprint is stale (TOMZN_TCP_CHECK_THRESHOLD identical
+// readings), we do a direct TCP connect to the home router's public IP. If the
+// home network is unreachable, the TOMZN device (on that network) is definitely
+// offline — mark it offline immediately instead of waiting for the full 10-count.
+// Once latched offline via TCP, the device stays offline until EITHER the Tuya
+// API returns new/different data (fingerprint changes) OR the TCP probe succeeds
+// again on a subsequent poll.
+//
 // STANDBY EXEMPTION: When the user manually turns the TOMZN switch OFF
 // (standby / intentional grid cut), the device stays accessible and replies
 // to polls — it just reports 0V/0A/0W. Both the fingerprint detection and
@@ -50,7 +58,12 @@ const TOMZN_LIVE_MAX_AGE_MS = 2_500;
 // poll failures (device truly unreachable).
 const TOMZN_STALE_THRESHOLD = 10;
 const TOMZN_FAIL_THRESHOLD = 10;
-const tomznStaleTracker = { fingerprint: null, count: 0, failCount: 0 };
+const TOMZN_TCP_CHECK_THRESHOLD = 3;  // after 3 identical readings, TCP-probe
+const TOMZN_TCP_CACHE_TTL_MS = 10_000;  // cache TCP result for 10s
+const tomznStaleTracker = { fingerprint: null, count: 0, failCount: 0, forceOffline: false };
+// Cached TCP probe result for TOMZN — avoids pinging the home router on every
+// 2.5s poll. Reset on backend restart.
+let tomznTcpCache = null;
 // Seed the stale tracker from the database on startup so we don't restart the
 // 10-count from zero every time the backend restarts or the app reopens.
 // Checks the last N stored snapshots — if their fingerprints are identical,
@@ -153,6 +166,22 @@ function pingHome() {
     socket.once("timeout", () => done(false));
     socket.connect(HOME_PING_PORT, HOME_PUBLIC_IP);
   });
+}
+
+// Cached TCP probe for TOMZN reachability. The TOMZN device sits on the home
+// network behind NAT, so we can't TCP-connect to it directly from Azure. But
+// if the home router (HOME_PUBLIC_IP:HOME_PING_PORT) is unreachable, the TOMZN
+// device is definitely offline too. This is used as an early offline signal
+// when the Tuya cloud API returns stale/cached data. Result is cached for
+// TOMZN_TCP_CACHE_TTL_MS to avoid pinging on every 2.5s poll.
+async function pingTomznTcp() {
+  const now = Date.now();
+  if (tomznTcpCache && now - tomznTcpCache.timestamp < TOMZN_TCP_CACHE_TTL_MS) {
+    return tomznTcpCache.reachable;
+  }
+  const reachable = await pingHome();
+  tomznTcpCache = { reachable, timestamp: now };
+  return reachable;
 }
 
 const DEFAULT_METERS = {
@@ -374,8 +403,34 @@ function determineGridFlow(inverter, tomznPowerW, flowState, now) {
   }
 
   // ON-GRID: loadW ≤ 25W, solar producing, inverter online. Home powered by
-  // WAPDA via changeover; inverter injects solar to the WAPDA bus. home =
-  // solarW ± tomznW (sign from multi-signal direction detection). loadW ≈ 0.
+  // WAPDA via changeover; inverter injects solar to the WAPDA bus. TOMZN
+  // measures NET grid flow (can't distinguish import vs export).
+  //
+  // TOMZN = |grid_import - grid_export| (magnitude only, direction unknown)
+  //
+  // When the inverter is NOT exporting (gridWRaw >= 0): solar offsets home via
+  //   the bus, reducing what TOMZN sees. TOMZN = home - solarW.
+  //   So home = TOMZN + solarW.
+  //
+  // When the inverter IS exporting (gridWRaw < 0): solar exports |gridWRaw|
+  //   watts back through the meter, reducing TOMZN's reading.
+  //   TOMZN = home - |export|. The exported solar goes to the grid, NOT to home.
+  //   So home = TOMZN + |export| = tomznW + |gridWRaw|.
+  //
+  //   Example: solar=600, export=300, home=1184, TOMZN=884 (net after export).
+  //   home = 884 + 300 = 1184. ✓
+  //
+  // IMPORTANT: The homeW formula depends on whether the INVERTER is exporting
+  // (gridWRaw < 0), NOT on the NET direction. Even when net flow is "import"
+  // (tomznW > solarW), the inverter may still be exporting (gridWRaw < 0),
+  // which reduces TOMZN's reading. The formula must use |gridWRaw| in that case.
+  const gridWRaw = finiteNumber(inverter?.gridWRaw, 0);
+  const exportW = Math.max(0, -gridWRaw); // positive export amount (0 when importing)
+  // Threshold: below 50W, gridWRaw is noise/jitter, treat as not exporting.
+  const inverterExporting = exportW > 50;
+  // homeW: inverter exporting → home = TOMZN + |export|. Not → home = TOMZN + solar.
+  const computedHomeW = inverterExporting ? (tomznW + exportW) : (tomznW + solarW);
+
   const direction = flowState
     ? updateOnGridDirection(inverter, solarW, tomznW, flowState, now)
     : (tomznW > solarW + NEAR_ZERO_W ? "import" : "import"); // no state → conservative
@@ -384,17 +439,15 @@ function determineGridFlow(inverter, tomznPowerW, flowState, now) {
   // home is drawing grid + solar (import). This catches any direction-detection
   // edge case (stale zero-crossing state, inverter gridWRaw noise) that wrongly
   // says "export" when tomzn > solar. Without this, the UI would show e.g. 800W
-  // export from 600W solar — impossible. Forces import: home = solarW + tomznW.
+  // export from 600W solar — impossible. Forces import.
   if (direction === "export" && tomznW > solarW) {
     if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
-    return { mode: "on-grid", direction: "import", homeW: solarW + tomznW, gridExchangeW: tomznW, isExporting: false };
+    return { mode: "on-grid", direction: "import", homeW: computedHomeW, gridExchangeW: tomznW, isExporting: false };
   }
   if (direction === "export") {
-    // Export magnitude is tomznW (≤ solarW from the guard above), so home =
-    // solarW - tomznW is always ≥ 0. Export ≤ solar production.
-    return { mode: "on-grid", direction: "export", homeW: solarW - tomznW, gridExchangeW: -tomznW, isExporting: true };
+    return { mode: "on-grid", direction: "export", homeW: computedHomeW, gridExchangeW: -exportW, isExporting: true };
   }
-  return { mode: "on-grid", direction: "import", homeW: solarW + tomznW, gridExchangeW: tomznW, isExporting: false };
+  return { mode: "on-grid", direction: "import", homeW: computedHomeW, gridExchangeW: tomznW, isExporting: false };
 }
 
 // Build a set of export 5-minute buckets from a day's inverter + TOMZN history,
@@ -528,7 +581,19 @@ function checkInverterDirectReachable() {
 // Used to detect stale cached data from the InverterZone cloud API.
 // If the fingerprint is identical across consecutive polls, the cloud is
 // serving cached data and the inverter may be offline.
+//
+// STALE THRESHOLD: The inverter updates its telemetry every 1-2 minutes, but
+// the backend polls every 2.5s. Requiring only 1 identical fingerprint before
+// TCP-checking causes false offline detection — the data simply hasn't had time
+// to change. We require INVERTER_STALE_THRESHOLD consecutive identical readings
+// before doing the TCP check, giving the inverter time to produce new data
+// naturally. Once the TCP check fails and the inverter is latched offline, it
+// stays offline until EITHER new data arrives (fingerprint changes) OR the TCP
+// probe succeeds again on a subsequent poll.
+const INVERTER_STALE_THRESHOLD = 5;  // 5 × 2.5s = ~12.5s before TCP check
 let lastInverterFingerprint = "";
+let inverterStaleCount = 0;
+let inverterForceOffline = false;  // latch: stays offline until recovery
 
 function fingerprintInverterData(d) {
   return [
@@ -557,11 +622,19 @@ async function requestInverterZone() {
 
   // Solar standby: below 20W total, panels are effectively disconnected.
   const SOLAR_STANDBY_W = 20;
-  const solarW_raw = finiteNumber(d.solarW, 0);
+  let solarW_raw = finiteNumber(d.solarW, 0);
+  // DC physics guard: solarW ≈ solarV × solarA. If the firmware reports
+  // substantial solarW but solarA is 0 (no current), the wattage is garbage.
+  // This can happen during the same L→B mode transition glitch that corrupts
+  // acOutW. If solarA = 0 and solarW > 20W, clamp to 0 (no current = no power).
+  const solarA_raw = finiteNumber(d.solarA, 0);
+  if (solarA_raw <= 0 && solarW_raw > SOLAR_STANDBY_W) {
+    solarW_raw = 0;
+  }
   const solarStandby = solarW_raw < SOLAR_STANDBY_W;
   const solarW = solarStandby ? 0 : solarW_raw;
   const solarV = solarStandby ? 0 : finiteNumber(d.solarV, 0);
-  const solarA = solarStandby ? 0 : finiteNumber(d.solarA, 0);
+  const solarA = solarStandby ? 0 : solarA_raw;
   const pv1W = solarStandby ? 0 : finiteNumber(d.solarW1, 0);
   const pv1V = solarStandby ? 0 : finiteNumber(d.solarV1, 0);
   const pv1A = solarStandby ? 0 : finiteNumber(d.solarA1, 0);
@@ -573,7 +646,27 @@ async function requestInverterZone() {
   const gridV = finiteNumber(d.gridV, 0);
   const gridHz = finiteNumber(d.gridHz, 0);
   const gridConnected = Boolean(d.grid);
-  const acOutW = finiteNumber(d.acOutW, 0);
+  let acOutW = finiteNumber(d.acOutW, 0);
+
+  // ── Firmware glitch guard: L→B mode transition garbage ──
+  // When WAPDA grid cuts off while in on-grid (Line) mode, the inverter
+  // transitions to Battery mode (B). Its firmware glitches and reports a
+  // false ~5533W on the AC output (acOutW) while the apparent power (acOutVa)
+  // is 0 or ~28VA. This is physically impossible: real power (W) can NEVER
+  // exceed apparent power (VA) in AC circuits (W = VA × power_factor, PF ≤ 1).
+  //
+  // Without this guard, determineGridFlow() sees loadW=5533 > 25W → enters
+  // hybrid mode → reports 5533W home consumption to the frontend.
+  //
+  // Fix: if acOutW exceeds acOutVa by more than 100W (tolerance for measurement
+  // noise), the acOutW is garbage → clamp to 0. This also catches any future
+  // firmware glitch where W and VA disagree by a large margin.
+  const acOutVa = finiteNumber(d.acOutVa, 0);
+  const LOAD_W_VA_TOLERANCE_W = 100;
+  if (acOutW > acOutVa + LOAD_W_VA_TOLERANCE_W) {
+    acOutW = 0;
+  }
+
   // Use cloud's gridW if available, otherwise fall back to calculated value.
   const cloudGridW = finiteNumber(d.gridW, null);
   const rawGridW = cloudGridW != null
@@ -615,7 +708,7 @@ async function requestInverterZone() {
     gridDirection,
     // Load (AC Output)
     loadW: Math.max(0, acOutW),
-    loadVa: Math.max(0, finiteNumber(d.acOutVa, 0)),
+    loadVa: Math.max(0, acOutVa),
     loadPercent: Math.max(0, finiteNumber(d.acOutPercent, 0)),
     acOutV: finiteNumber(d.acOutV, 0),
     acOutHz: finiteNumber(d.acOutHz, 0),
@@ -1164,12 +1257,16 @@ async function recordTomzn({ stateCollection, snapshots, allocations, inverterSn
     // Update lastImportEnergyKwh to current reading (only when not exporting).
     // This is the base for the next import-period delta calculation.
     state.lastImportEnergyKwh = energyKwh;
+  } else {
+    // When exporting: don't create an allocation (export energy is not
+    // consumption), but DO update lastImportEnergyKwh to the current reading.
+    // TOMZN's counter increases during export too (it can't distinguish
+    // import vs export), so if we freeze lastImportEnergyKwh, the export-
+    // period counter increase leaks into the next import-period delta as
+    // a false consumption spike. By tracking the counter during export, the
+    // next non-export delta only counts the actual import increase.
+    state.lastImportEnergyKwh = energyKwh;
   }
-  // When exporting: don't create allocation, don't update lastImportEnergyKwh.
-  // The TOMZN counter still increases during export, but we exclude that increase
-  // by keeping lastImportEnergyKwh frozen at the pre-export value. When export
-  // ends, the delta = energyKwh - lastImportEnergyKwh only counts the actual
-  // import increase since the pre-export reading.
 
   const newState = { ...state, lastTomzn: record, updatedAt: now };
   await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, newState, { upsert: true });
@@ -2472,10 +2569,16 @@ function registerUnifiedSolarRoutes(app, db) {
           throw pollErr;
         }
       }
-      // ── Stale-data detection (fingerprint) ──
+      // ── Stale-data detection (fingerprint + TCP probe) ──
       // The Tuya cloud API may cache phase_a values on its servers. We
       // fingerprint key values across consecutive polls. If they're identical
       // for TOMZN_STALE_THRESHOLD polls, override isOnline to false.
+      //
+      // TCP PROBE: After TOMZN_TCP_CHECK_THRESHOLD (3) identical readings, we
+      // do a direct TCP connect to the home router. If the home network is
+      // unreachable, the TOMZN device is definitely offline — mark it offline
+      // immediately and latch it. The latch stays until EITHER the Tuya API
+      // returns new data (fingerprint changes) OR the TCP probe succeeds again.
       //
       // STANDBY EXEMPTION: When the user manually turns the TOMZN switch OFF
       // (standby / intentional grid cut), the device is still accessible and
@@ -2490,17 +2593,41 @@ function registerUnifiedSolarRoutes(app, db) {
       const fingerprint = `${snapshot.energyKwh}|${snapshot.powerW}|${snapshot.voltageV}|${snapshot.currentA}`;
       if (!tuyaReportsOnline || !switchOn) {
         // Device reported offline, OR switch is off (standby) — reset fingerprint
-        // counter. In standby, identical readings are normal, not stale.
+        // counter and clear the TCP offline latch. In standby, identical readings
+        // are normal, not stale.
         tomznStaleTracker.fingerprint = null;
         tomznStaleTracker.count = 0;
+        tomznStaleTracker.forceOffline = false;
       } else {
         if (fingerprint === tomznStaleTracker.fingerprint) {
           tomznStaleTracker.count += 1;
         } else {
+          // New data from Tuya — fingerprint changed. Clear the TCP offline latch
+          // because the device is clearly alive and reporting fresh values.
           tomznStaleTracker.fingerprint = fingerprint;
           tomznStaleTracker.count = 0;
+          tomznStaleTracker.forceOffline = false;
         }
-        if (tomznStaleTracker.count >= TOMZN_STALE_THRESHOLD) {
+        // TCP probe: after a few identical readings, check if the home network
+        // is actually reachable. If not, the TOMZN device is offline — latch it
+        // immediately instead of waiting for the full 10-count.
+        if (tomznStaleTracker.count >= TOMZN_TCP_CHECK_THRESHOLD && !tomznStaleTracker.forceOffline) {
+          const tcpReachable = await pingTomznTcp();
+          if (!tcpReachable) {
+            console.log(`[Solar Engine] TOMZN TCP probe failed at ${tomznStaleTracker.count} identical readings — marking offline immediately`);
+            tomznStaleTracker.forceOffline = true;
+          }
+        }
+        // Once latched offline via TCP, keep checking — if the TCP probe succeeds
+        // again on a subsequent poll, clear the latch (device is back on the network).
+        if (tomznStaleTracker.forceOffline) {
+          const tcpReachable = await pingTomznTcp();
+          if (tcpReachable) {
+            console.log("[Solar Engine] TOMZN TCP probe succeeded — clearing offline latch");
+            tomznStaleTracker.forceOffline = false;
+          }
+        }
+        if (tomznStaleTracker.count >= TOMZN_STALE_THRESHOLD || tomznStaleTracker.forceOffline) {
           snapshot.isOnline = false;
         }
       }
@@ -2574,21 +2701,46 @@ function registerUnifiedSolarRoutes(app, db) {
         if (snapshot.isOnline === false) {
           throw new Error("InverterZone returned an offline snapshot");
         }
-        // ── Stale data detection ──
+        // ── Stale data detection (fingerprint + TCP probe) ──
         // The InverterZone cloud API caches the last known reading. If the
-        // fingerprint is identical to the last poll, the inverter may be
-        // offline (cloud serving stale data). Do a direct TCP check to the
-        // inverter's public IP:port to verify.
+        // fingerprint is identical across consecutive polls, the cloud may be
+        // serving stale data. We require INVERTER_STALE_THRESHOLD consecutive
+        // identical readings before doing a TCP check — the inverter updates
+        // every 1-2 minutes but we poll every 2.5s, so a few identical readings
+        // are normal, not a sign of staleness.
+        //
+        // Once the TCP check fails and the inverter is latched offline, it
+        // stays offline until EITHER new data arrives (fingerprint changes) OR
+        // the TCP probe succeeds again on a subsequent poll.
         const currentFingerprint = snapshot._fingerprint || "";
-        const isStaleData = currentFingerprint && currentFingerprint === lastInverterFingerprint;
-        lastInverterFingerprint = currentFingerprint;
+        if (currentFingerprint && currentFingerprint === lastInverterFingerprint) {
+          inverterStaleCount += 1;
+        } else {
+          // New data — fingerprint changed. Clear the stale counter and the
+          // offline latch (the inverter is clearly alive and reporting fresh data).
+          lastInverterFingerprint = currentFingerprint;
+          inverterStaleCount = 0;
+          inverterForceOffline = false;
+        }
 
-        if (isStaleData) {
-          // Data hasn't changed — inverter may be offline. TCP check directly.
+        if (inverterForceOffline) {
+          // Latched offline — keep TCP-checking each poll. If the inverter
+          // comes back on the network, clear the latch and keep the snapshot.
+          const inverterReachable = await checkInverterDirectReachable();
+          if (inverterReachable) {
+            console.log("[Solar Engine] inverter TCP probe succeeded — clearing offline latch");
+            inverterForceOffline = false;
+          } else {
+            // Still offline — don't keep the stale snapshot
+            throw new Error("Inverter offline: stale cloud data confirmed by TCP check (latched)");
+          }
+        } else if (inverterStaleCount >= INVERTER_STALE_THRESHOLD) {
+          // Enough consecutive identical readings — TCP check to verify.
           const inverterReachable = await checkInverterDirectReachable();
           if (!inverterReachable) {
             // Inverter is genuinely offline — cloud is serving stale cached data
-            console.error("[Solar Engine] inverter offline (stale cloud data + TCP check failed)");
+            console.error(`[Solar Engine] inverter offline (stale cloud data after ${inverterStaleCount} identical + TCP check failed)`);
+            inverterForceOffline = true;
             throw new Error("Inverter offline: stale cloud data confirmed by TCP check");
           }
           // TCP succeeded — inverter is online, data just hasn't changed
@@ -2893,6 +3045,12 @@ function registerUnifiedSolarRoutes(app, db) {
   const liveFingerprint = (payload) => [
     payload.inverter?.isOnline, payload.inverter?.inverterMode, payload.inverter?.solarW,
     payload.inverter?.loadW, payload.inverter?.gridW, payload.inverter?.acOutV,
+    payload.inverter?.pv1V, payload.inverter?.pv1A, payload.inverter?.pv1W,
+    payload.inverter?.pv2V, payload.inverter?.pv2A, payload.inverter?.pv2W,
+    payload.inverter?.batteryV, payload.inverter?.batteryPercent,
+    payload.inverter?.temperatureC, payload.inverter?.acOutHz,
+    payload.inverter?.gridV, payload.inverter?.gridHz,
+    payload.inverter?.loadVa, payload.inverter?.loadPercent,
     payload.tomznLive?.isOnline, payload.tomznLive?.switchOn, payload.tomznLive?.powerW,
     payload.tomznLive?.voltageV, payload.tomznLive?.currentA, payload.tomznLive?.faultCode,
     payload.gridFlow?.mode, payload.gridFlow?.direction, payload.gridFlow?.homeW,

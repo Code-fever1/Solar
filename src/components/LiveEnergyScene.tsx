@@ -15,6 +15,7 @@ type SceneProps = {
   inverter: InverterTelemetry;
   weather: WeatherState;
   offline: boolean;
+  connecting?: boolean;
   tomznLive: TomznLive;
   inverterOff: boolean;
   loadStatus?: "Low" | "Normal" | "High";
@@ -60,6 +61,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   inverter,
   weather,
   offline,
+  connecting = false,
   tomznLive,
   inverterOff,
   loadStatus,
@@ -176,11 +178,23 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   // Export is impossible when grid is unavailable (TOMZN offline, wapda cut off,
   // or inverter in battery mode B — no grid connection to export to).
   const canExport = !gridUnavailable && inverter?.inverterMode !== "B";
+  // In on-grid mode, use the inverter's gridWRaw directly to detect export.
+  // The backend's gridFlow.direction can say "import" even when the inverter
+  // is exporting (gridWRaw < 0), because direction is based on NET flow (TOMZN
+  // magnitude vs solar). The inverter's gridWRaw is the authoritative signal
+  // for whether solar is being fed back to the grid. Threshold: > 50W (noise).
+  const inverterExporting = onGridMode && canExport && (inverter?.gridWRaw ?? 0) < -50;
   const isExporting = gridFlow
-    ? (gridFlow.direction === "export" && exportPhysicallyPossible && canExport)
+    ? (onGridMode
+      ? (inverterExporting && exportPhysicallyPossible)
+      : (gridFlow.direction === "export" && exportPhysicallyPossible && canExport))
     : (canExport && !offline && !inverterOff && inverter?.isOnline !== false && (inverter?.gridWRaw ?? 0) < 0 && (inverter?.solarW ?? 0) > Math.max(0, tomznLive.powerW ?? 0));
-  // Clamp export magnitude to solarW — can't export more than is being produced.
-  const exportW = Math.min(Math.max(0, tomznLive.powerW || 0), Math.max(0, solarNow));
+  // Export magnitude: in on-grid mode use |gridWRaw| (the inverter's measured
+  // export). Otherwise clamp to min(tomzn, solar) — can't export more than
+  // is being produced or what TOMZN sees.
+  const exportW = onGridMode
+    ? Math.max(0, -(inverter?.gridWRaw ?? 0))
+    : Math.min(Math.max(0, tomznLive.powerW || 0), Math.max(0, solarNow));
   const gridDisplayW = isExporting ? -exportW : gridPowerW;
 
   // Pace algorithm — uses TOMZN powerW (total home draw) for BOTH label and color.
@@ -251,8 +265,16 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     : (tomznLive.powerW || 0) <= 500 ? "↓ Low"
     : "On Pace";
   const { modeLabel, modeColor } = (() => {
+    if (connecting) return { modeLabel: "Connecting", modeColor: "#F8C653" };
     if (offline) return { modeLabel: "System Offline", modeColor: "#EF4C4C" };
-    // Solar / Hybrid / On-Grid take priority over UPS. A leftover `ups` object
+    // On-grid mode takes PRIORITY over hybrid/solar-only. In on-grid mode,
+    // both solar and grid are active (solar injects to WAPDA bus, grid supplies
+    // home via changeover), so the hybrid checks below would wrongly trigger.
+    // The backend's gridFlow.mode is the authoritative mode determination.
+    if (onGridMode && isExporting) return { modeLabel: "On-Grid · Exporting", modeColor: "#6E9BFF" };
+    if (onGridMode && gridImporting) return { modeLabel: "On-Grid · Importing", modeColor: "#6E9BFF" };
+    if (onGridMode) return { modeLabel: "On-Grid", modeColor: "#6E9BFF" };
+    // Solar / Hybrid take priority over UPS. A leftover `ups` object
     // from a stale cache or a single inverter timeout must never cover a
     // still-producing inverter (the Solar Only → UPS flicker).
     if (solarProducing && gridImporting) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
@@ -263,12 +285,6 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     if (ups && inverterOff) return { modeLabel: ups.active ? "UPS" : "Power Down", modeColor: ups.active ? "#F8C653" : "#EF4C4C" };
     if (wapdaCutOff) return { modeLabel: "Wapda Cut Off", modeColor: "#EF4C4C" };
     if (inverterOff && gridImporting) return { modeLabel: "Bypass Mode", modeColor: "#F8C653" };
-    // On-grid mode: changeover on WAPDA, loadW ≈ 0, solar injecting to grid bus.
-    // Blue labels with middle dot: "On-Grid · Exporting" / "On-Grid · Importing".
-    // Home is computed (solarW ± tomznPowerW), not loadW.
-    if (onGridMode && isExporting) return { modeLabel: "On-Grid · Exporting", modeColor: "#6E9BFF" };
-    if (onGridMode && gridImporting) return { modeLabel: "On-Grid · Importing", modeColor: "#6E9BFF" };
-    if (onGridMode) return { modeLabel: "On-Grid", modeColor: "#6E9BFF" };
     if (isExporting && canExport) return { modeLabel: "Exporting", modeColor: "#6E9BFF" };
     if (solarLow && gridImporting) return { modeLabel: "Wapda Importing", modeColor: paceColor };
     if (gridImporting) return { modeLabel: "Wapda Importing", modeColor: paceColor };
@@ -303,9 +319,9 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     setSolarTextVisible(!solarAllZero);
   }, [solarAllZero, inverterOff, offline]);
 
-  const solarP = formatPowerShort(offline ? 0 : inverter.solarW);
-  const homeP = formatPowerShort(homeW);
-  const gridP = formatPowerShort(gridUnavailable ? 0 : gridDisplayW);
+  const solarP = connecting ? { value: "—", unit: "" } : formatPowerShort(offline ? 0 : inverter.solarW);
+  const homeP = connecting ? { value: "—", unit: "" } : formatPowerShort(homeW);
+  const gridP = connecting ? { value: "—", unit: "" } : formatPowerShort(gridUnavailable ? 0 : gridDisplayW);
   // Bypass mode: inverter is off, so grid feeds the home directly via the
   // bypass path (grid → DB). This applies whether wapda is actively importing
   // or idle — the physical routing doesn't change just because power stops flowing.
@@ -369,9 +385,9 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
               idleOpacity: 0.14,
             }}
             gridBypassFlow={gridBypassFlow}
-            solarHidden={inverterOff || offline || solarAllZero}
-            gridHidden={gridUnavailable || (solarProducing && !gridImporting && !isExporting && !onGridMode)}
-            inverterOutputHidden={inverterOff || offline}
+            solarHidden={connecting || inverterOff || offline || solarAllZero}
+            gridHidden={connecting || gridUnavailable || (solarProducing && !gridImporting && !isExporting && !onGridMode)}
+            inverterOutputHidden={connecting || inverterOff || offline}
           />
         )}
 
@@ -383,7 +399,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
             overlayConfig ? labelPositionStyle(overlayConfig.solarLabelPosition, overlayConfig.viewBox) : null,
           ]}
         >
-          {!inverterOff && !offline && solarTextVisible && (
+          {!connecting && !inverterOff && !offline && solarTextVisible && (
             <>
               <View style={styles.powerRow}>
                 <Text style={[styles.powerValue, { color: "#FFD54F" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{solarP.value}</Text>
@@ -401,7 +417,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
             overlayConfig ? labelPositionStyle(overlayConfig.homeLabelPosition, overlayConfig.viewBox) : null,
           ]}
         >
-          {!inverterOff && !offline && (
+          {!connecting && !inverterOff && !offline && (
             <>
               <View style={styles.powerRow}>
                 <Text style={[styles.powerValue, { color: onGridMode ? "#6E9BFF" : homeActive ? "#45E376" : "#8A8A8A" }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{homeP.value}</Text>
@@ -419,7 +435,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
             overlayConfig ? labelPositionStyle(overlayConfig.gridLabelPosition, overlayConfig.viewBox) : null,
           ]}
         >
-          {!gridUnavailable && (
+          {!connecting && !gridUnavailable && (
             <>
               <View style={styles.powerRow}>
                 <Text style={[styles.powerValue, { color: isExporting ? "#6E9BFF" : (gridImporting ? gridArcColor : gridColor) }, isDayTime ? styles.textOutlineDay : styles.textOutlineNight]}>{gridP.value}</Text>
@@ -444,7 +460,10 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
             <View style={styles.footerPillContent}>
               <View style={[styles.footerDot, { backgroundColor: modeColor }]} />
               <Text style={[styles.footerText, { color: modeColor }]}>{modeLabel}</Text>
-              {!isExporting && (tomznDrawing || (relayOnIdle && solarProducing)) && (
+              {/* In on-grid mode, the mode label already carries the direction
+                  ("On-Grid · Importing" / "On-Grid · Exporting") — don't show
+                  the pace label (On Pace / High / Low / Critical). */}
+              {!onGridMode && !isExporting && (tomznDrawing || (relayOnIdle && solarProducing)) && (
                 <Text style={[styles.footerText, { color: paceColor, fontWeight: '700', marginLeft: 4 }]}>
                   · {paceLabel}
                 </Text>

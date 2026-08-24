@@ -74,7 +74,7 @@ const SEVERITY_COLOR = { critical: "#EF4C4C", warning: "#F8C653", info: "#548EFF
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
   const { isLight, ...theme } = useSceneTheme();
-  const { home, inverter, tomznLive, refreshTomznForce, tomznHistory } = useEnergy();
+  const { home, inverter, tomznLive, refreshTomznForce, tomznHistory, liveReady } = useEnergy();
   const [tab, setTab] = useState<Tab>("usage");
   const [refreshing, setRefreshing] = useState(false);
 
@@ -171,9 +171,10 @@ export default function HistoryScreen() {
 
         {/* Tab Content */}
         {tab === "usage" && <UsageTab />}
-        {tab === "fronus" && <FronusTab inverter={inverter} />}
+        {tab === "fronus" && <FronusTab inverter={inverter} liveReady={liveReady} />}
         {tab === "tomzn" && (
           <TomznTab
+            liveReady={liveReady}
             tomznLive={tomznLive}
             home={home}
             tomznHistory={tomznHistory}
@@ -200,12 +201,12 @@ function UsageTab() {
 
 /* ─────────────────── Fronus (Inverter) Tab ─────────────────── */
 
-function FronusTab({ inverter }: { inverter: any }) {
+function FronusTab({ inverter, liveReady }: { inverter: any; liveReady: boolean }) {
   const { isLight, ...theme } = useSceneTheme();
   const isLive = inverter?.isLive;
   const isOnline = inverter?.isOnline !== false;
-  const statusColor = isLive && isOnline ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
-  const statusText = isLive && isOnline ? "LIVE" : isOnline ? "STALE" : "OFFLINE";
+  const statusColor = !liveReady ? "#F8C653" : isLive && isOnline ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
+  const statusText = !liveReady ? "CONNECTING" : isLive && isOnline ? "LIVE" : isOnline ? "STALE" : "OFFLINE";
   const fetchedAt = inverter?.fetchedAt
     ? new Date(inverter.fetchedAt).toLocaleString()
     : "Never";
@@ -353,6 +354,7 @@ function TomznTab({
   onRefresh,
   refreshing,
   spinStyle,
+  liveReady,
 }: {
   tomznLive: any;
   home: any;
@@ -360,12 +362,13 @@ function TomznTab({
   onRefresh: () => void;
   refreshing: boolean;
   spinStyle: any;
+  liveReady: boolean;
 }) {
   const { isLight, ...theme } = useSceneTheme();
   const isLive = tomznLive?.isLive;
   const isOnline = tomznLive?.isOnline;
-  const statusColor = isLive ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
-  const statusText = isLive ? "LIVE" : isOnline ? "STALE" : "OFFLINE";
+  const statusColor = !liveReady ? "#F8C653" : isLive ? "#32E56B" : isOnline ? "#F8C653" : "#EF4C4C";
+  const statusText = !liveReady ? "CONNECTING" : isLive ? "LIVE" : isOnline ? "STALE" : "OFFLINE";
   const fetchedAt = tomznLive?.fetchedAt
     ? new Date(tomznLive.fetchedAt).toLocaleString()
     : "Never";

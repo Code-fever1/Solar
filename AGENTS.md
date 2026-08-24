@@ -73,7 +73,7 @@ Files to deploy (depending on what changed):
 
 - Backend device poll is presence-based: **3s while the app (or overlay) is watching**, **30s when nobody is connected**. Presence = SSE `/live/stream` clients, or any `/live` / `/dashboard/sync` in the last 45s. App open immediately bumps the loop to 3s. After the last client leaves, it drops back to 30s. Backend never stops.
 - Hero is **push, not pull**: backend only SSE-broadcasts when TOMZN/inverter/UPS/weather actually changes. The app keeps the SSE open (even when idle) and paints the hero on those events. No 3s/5s live HTTP timer while the app is open.
-- On app open / foreground: `fetchLive(false)` first (cached live payload, ~100ms) so hero + Solar Only/UPS tag paint immediately, then `fetchLive(true)` + dashboard sync + flow history in the background
+- On app open / foreground / idle-wake: `hydrateFromServer()` hits `/live` first (server in-memory cache, ~100ms) and paints hero + Fronus + Tomzn from that only. Disk cache may fill meters/usage but never the live slice. Dashboard + flow-history merge in after. Do **not** call `/live?force=true` on open (that waits on Tuya 4–8s and shuffles the first frame). Device freshness comes from the backend poller + SSE.
 - `dataVersion` tracking: backend increments on every data mutation, frontend sends its version, backend returns `{changed:false}` if match
 - Inverter offline requires 4 consecutive poll failures (~20s). A single timeout/hang-up keeps the last good snapshot. UPS only when inverter is actually offline (not mode B / not producing)
 - TOMZN `energyKwh=0` is treated as offline garbage, never as a real counter. Last known positive kWh is recovered from DB on restart so today's usage cannot become 0 or ~200

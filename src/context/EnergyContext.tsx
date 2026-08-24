@@ -99,6 +99,7 @@ type EnergyContextValue = {
   period: "day" | "week" | "month" | "year";
   loading: boolean;
   isOffline: boolean;
+  liveReady: boolean;
   pendingSyncCount: number;
   lastSyncedAt: number | null;
   setPeriod: (period: "day" | "week" | "month" | "year") => void;
@@ -193,6 +194,12 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isOffline, setIsOffline] = useState(false);
+  // True only after the server /live payload (or SSE) has painted once.
+  // Disk cache must never flip this — that's the stale → Offline shuffle.
+  const [liveReady, setLiveReady] = useState(false);
+  const liveReadyRef = useRef(false);
+  const liveHydrateRef = useRef<Promise<boolean> | null>(null);
+  const skipIdleHydrateRef = useRef(true);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const cacheRef = useRef<StoredDashboard | null>(null);
@@ -472,18 +479,35 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const markLiveReady = () => {
+    if (!liveReadyRef.current) {
+      liveReadyRef.current = true;
+      setLiveReady(true);
+    }
+  };
+
   const showOfflineEstimate = (cause: unknown) => {
     setError(cause instanceof Error ? cause.message : "Unable to reach solar server");
+    // A dashboard timeout must not wipe the hero / Fronus / Tomzn live slice.
+    // Only flip System Offline when we still have no server live at all.
+    if (liveReadyRef.current) return;
     setIsOffline(true);
     const cached = cacheRef.current;
-    if (cached) applySnapshot(estimateOfflineDashboard(cached.snapshot, cached.savedAt), { persist: false, clearError: false });
+    if (cached) applySnapshot(estimateOfflineDashboard(cached.snapshot, cached.savedAt), { persist: false, clearError: false, live: false });
   };
 
   const loadDashboard = async (refresh = true) => {
     perfRef.current.loadDashboardCalls += 1;
     try {
       const data = await request(`/dashboard?refresh=${refresh ? "true" : "false"}`);
-      applySnapshot(data);
+      // Use { live: false } so the dashboard fetch only updates the dashboard
+      // slice (meters, energy, analytics) without overwriting the live slice
+      // (inverter, tomznLive, gridFlow). SSE maintains fresher live data than
+      // the dashboard's inverter snapshot (which may be up to 60s stale from
+      // the last DB persist). Overwriting live data here causes the FronusTab
+      // to flicker: SSE pushes full inverter → dashboard overwrites with stale
+      // DB snapshot missing fields → SSE pushes full inverter again → repeat.
+      applySnapshot(data, { live: false });
       await flushPendingOperations();
     } catch (cause) {
       showOfflineEstimate(cause);
@@ -510,6 +534,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     const intel = d.intelligence;
     return [
       i.isOnline, i.inverterMode, i.solarW, i.loadW, i.gridW, i.acOutV,
+      i.pv1V, i.pv1A, i.pv1W, i.pv2V, i.pv2A, i.pv2W,
+      i.batteryV, i.batteryPercent, i.temperatureC, i.acOutHz,
+      i.gridV, i.gridHz, i.loadVa, i.loadPercent,
       t.isOnline, t.switchOn, t.powerW, t.voltageV, t.currentA, t.faultCode,
       g.mode, g.direction, g.homeW,
       u?.active ?? null, w.isDay, w.code,
@@ -531,6 +558,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       setIsOffline(false);
       setError(null);
       setLoading(false);
+      markLiveReady();
       return;
     }
     lastLiveSigRef.current = sig;
@@ -599,12 +627,13 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     setIsOffline(false);
     setError(null);
     setLoading(false);
+    markLiveReady();
   };
 
-  // Lightweight live fetch — used on app open with force=true to bypass the
-  // backend cache and get truly fresh data from Tuya/inverter APIs instantly.
-  // During normal operation the SSE subscription (startLiveStream) handles
-  // updates — this is only for the initial foreground burst.
+  // Lightweight live fetch. On open / resume we only hit /live (server memory,
+  // ~100ms) so the hero + Fronus + Tomzn cards paint immediately. force=true
+  // waits on Tuya/inverter (4–8s) and used to shuffle the first frame through
+  // stale / offline / real. Device freshness comes from the backend poller + SSE.
   const fetchLive = async (force = false): Promise<boolean> => {
     perfRef.current.fetchLiveCalls += 1;
     try {
@@ -613,6 +642,34 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       return true;
     } catch {
       return false;
+    }
+  };
+
+  // Single-flight open/resume hydrate: paint server live first, then merge
+  // the rest. Dedupes bootstrap + AppState + idle-wake so they cannot race.
+  const hydrateFromServer = async (): Promise<boolean> => {
+    if (liveHydrateRef.current) return liveHydrateRef.current;
+    liveHydrateRef.current = (async () => {
+      let ok = await fetchLive(false);
+      if (!ok) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        ok = await fetchLive(false);
+      }
+      if (ok) {
+        dataVersionRef.current = 0;
+        void loadDashboard(false);
+        void loadFlowHistory();
+        return true;
+      }
+      if (!liveReadyRef.current) setIsOffline(true);
+      setLoading(false);
+      startRetryLoopRef.current?.();
+      return false;
+    })();
+    try {
+      return await liveHydrateRef.current;
+    } finally {
+      liveHydrateRef.current = null;
     }
   };
 
@@ -631,9 +688,16 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       }
       const data = await request(`/dashboard/sync?since=${dataVersionRef.current}`);
       if (data.changed) {
-        // Full dashboard changed — apply it and update version
+        // Full dashboard changed — apply it and update version.
+        // Pass { live: false } so the dashboard slice (meters, energy, analytics)
+        // updates WITHOUT overwriting the live slice (inverter.loadW, tomznLive,
+        // gridFlow). The SSE stream maintains fresher live data than the
+        // dashboard's inverter snapshot (which may be up to 60s stale from the
+        // last DB persist). Overwriting live data here causes the hero's load
+        // value to flicker: SSE pushes 500W → sync overwrites with 300W → SSE
+        // pushes 500W again → repeat.
         dataVersionRef.current = data.dataVersion;
-        applySnapshot(data.dashboard);
+        applySnapshot(data.dashboard, { live: false });
       } else if (data.tomznLive || data.inverter) {
         // Nothing changed — patch only the live hero data into the existing snapshot
         dataVersionRef.current = data.dataVersion;
@@ -661,6 +725,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let disposed = false;
     const bootstrap = async () => {
+      // Kick /live immediately — do not wait on AsyncStorage. The hero, Fronus,
+      // and Tomzn cards should paint the server snapshot first (~100ms).
+      const livePromise = hydrateFromServer();
       try {
         const rawLastMonth = await AsyncStorage.getItem(LAST_MONTH_TOTAL_KEY);
         if (rawLastMonth != null) lastMonthTotalRef.current = Number(rawLastMonth) || null;
@@ -678,34 +745,32 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         const cached = raw ? JSON.parse(raw) as StoredDashboard : null;
         if (!disposed && cached?.snapshot?.meters && Number.isFinite(cached.savedAt)) {
           cacheRef.current = { snapshot: normaliseSnapshot(cached.snapshot), savedAt: cached.savedAt };
-          // Paint the last snapshot instantly so the hero + tag appear on first
-          // frame. Do NOT mark the app offline or stamp lastSyncedAt with the
-          // cache age — that was the "7h ago" flash and the stale UPS tag.
-          applySnapshot(cacheRef.current.snapshot, { persist: false, clearError: false });
-          setLoading(false);
+          // Keep meters / usage from disk, but never paint stale live telemetry
+          // into the hero. applySnapshot({ live: false }) used to copy yesterday's
+          // inverter/TOMZN into liveData and flash Offline / UPS / wrong watts.
+          applySnapshot(cacheRef.current.snapshot, { persist: false, clearError: false, live: false });
         }
         const queued = await readPendingOperations();
         if (!disposed) setPendingSyncCount(queued.length);
       } catch {
         // A bad cache must never prevent the fresh server engine from loading.
       }
-      if (!disposed) {
-        // Phase 1 (instant): cached in-memory live payload. Backend does not
-        // hit Tuya/inverter, so the hero + Solar Only / UPS tag update in ~100ms.
-        const initialFetchOk = await fetchLive(false);
-        // Phase 2 (background): force a real device poll + full dashboard + chart.
-        // Reset dataVersion so we get the complete snapshot, not {changed:false}.
-        if (initialFetchOk) {
-          dataVersionRef.current = 0;
-          void fetchLive(true);
-          void loadDashboard(false);
-          void loadFlowHistory();
-        } else {
-          setIsOffline(true);
-          startRetryLoopRef.current?.();
-        }
-      }
+      if (disposed) return;
+      await livePromise;
     };
+    // Retry controller must exist before bootstrap's first /live can fail.
+    let retryInterval: ReturnType<typeof setInterval> | null = null;
+    const startRetryLoop = () => {
+      if (retryInterval) return;
+      retryInterval = setInterval(async () => {
+        const ok = await hydrateFromServer();
+        if (!ok) return;
+        if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
+        startLiveStreamRef.current?.();
+      }, 3_000);
+    };
+    startRetryLoopRef.current = startRetryLoop;
+
     void bootstrap();
 
     // Live data: SSE subscription — the backend polls TOMZN + inverter every
@@ -818,42 +883,18 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
 
     const onAppStateChange = (state: AppStateStatus) => {
       if (state === "active") {
-        // JS was suspended — SSE, timers, and today-usage are stale even if
-        // the native overlay kept polling /live. Force a full dashboard rebuild
-        // (not delta-sync) so Energy Used + meter cards catch up immediately.
+        // JS was suspended — SSE and timers are stale. Paint server /live
+        // first so the hero is current, then merge dashboard/chart. Do not
+        // call /live?force=true here: that waits on Tuya and shuffles the UI.
         lastUsageTickRef.current = null;
-        dataVersionRef.current = 0;
-        void fetchLive(false);
-        void fetchLive(true);
-        void loadDashboard(false);
-        void loadFlowHistory();
         startLiveStream();
         startDashboardPolling();
-        startRetryLoopRef.current?.();
+        void hydrateFromServer();
       }
     };
     const subscription = AppState.addEventListener("change", onAppStateChange);
     startLiveStream();
     startDashboardPolling();
-
-    // Fast retry loop: when offline, retry every 3s instead of waiting 30s.
-    // Stops as soon as a request succeeds (internet restored).
-    let retryInterval: ReturnType<typeof setInterval> | null = null;
-    const startRetryLoop = () => {
-      if (retryInterval) return;
-      retryInterval = setInterval(async () => {
-        const ok = await fetchLive(false);
-        if (!ok) return;
-        if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
-        dataVersionRef.current = 0;
-        void fetchLive(true);
-        void loadDashboard(false);
-        void loadFlowHistory();
-        startLiveStream();
-      }, 3_000);
-    };
-    // Expose so onAppStateChange can restart it if needed
-    startRetryLoopRef.current = startRetryLoop;
 
     // Expose polling controllers to the idle effect
     startLiveStreamRef.current = startLiveStream;
@@ -905,15 +946,19 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isIdle) {
       startIdlePollingRef.current?.();
-    } else {
-      stopIdlePollingRef.current?.();
-      lastUsageTickRef.current = null;
-      dataVersionRef.current = 0;
-      void fetchLive(true);
-      void loadDashboard(false);
-      startLiveStreamRef.current?.();
-      startDashboardPollingRef.current?.();
+      return;
     }
+    stopIdlePollingRef.current?.();
+    startLiveStreamRef.current?.();
+    startDashboardPollingRef.current?.();
+    // Skip the mount pass — bootstrap already hydrates. Wake (idle → active)
+    // uses the same live-first path as cold open / foreground.
+    if (skipIdleHydrateRef.current) {
+      skipIdleHydrateRef.current = false;
+      return;
+    }
+    lastUsageTickRef.current = null;
+    void hydrateFromServer();
   }, [isIdle]);
 
   // Phase 5: Live fields derive from liveData (updated by SSE live events)
@@ -924,13 +969,23 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const meters = snapshot?.meters || EMPTY_METERS;
   const home = snapshot?.home || (error ? { ...EMPTY_HOME, explanation: error } : EMPTY_HOME);
   const live = snapshot?.live || EMPTY_LIVE;
-  const tomznLive = liveData?.tomznLive || snapshot?.tomznLive || EMPTY_TOMZN;
-  const gridFlow = liveData?.gridFlow ?? snapshot?.gridFlow ?? null;
-  const inverter = (liveData?.inverter || snapshot?.inverter)
-    ? { ...EMPTY_INVERTER, ...(liveData?.inverter || snapshot?.inverter) }
-    : EMPTY_INVERTER;
-  const weather = liveData?.weather || snapshot?.weather || EMPTY_WEATHER;
-  const ups = liveData?.ups ?? snapshot?.ups ?? null;
+  const tomznLive = liveData?.tomznLive || EMPTY_TOMZN;
+  const gridFlow = liveData?.gridFlow ?? null;
+  // Memoized inverter — merges liveData (fresher, from SSE) with snapshot
+  // (fallback, from 30s sync). Memoization prevents a new object reference on
+  // every render (which caused the FronusTab to flicker — every setLastSyncedAt
+  // triggered a re-render with a new inverter object, and the || operator could
+  // switch between liveData and snapshot sources, showing stale/empty values
+  // briefly before SSE pushed fresh data back).
+  // Live telemetry only — never fall back to the disk dashboard snapshot.
+  // Cache fallback was the stale → Offline → shuffle on open / resume.
+  const inverter = useMemo(() => {
+    const live = liveData?.inverter;
+    if (!live) return EMPTY_INVERTER;
+    return { ...EMPTY_INVERTER, ...live };
+  }, [liveData?.inverter]);
+  const weather = liveData?.weather || EMPTY_WEATHER;
+  const ups = liveData?.ups ?? null;
   const intelligence = liveData?.intelligence ?? null;
   const energyToday = snapshot?.energyToday || EMPTY_ENERGY_TODAY;
   // Prefer the dedicated 24h flow-history endpoint (fresh data even after offline period),
@@ -1123,7 +1178,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const value = useMemo<EnergyContextValue>(() => ({
     live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
     history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, ups, intelligence, summary,
-    period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
+    period, loading, isOffline, liveReady, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     calibrateMeter: (meterId, reading) => { void addManualLog(meterId, reading, Date.now(), "Manual calibration"); },
     setManualBaseline, setLastMonthTotal, addManualLog, forgetSwap, editManualLog, deleteManualLog,
     clearAlerts: () => undefined,
@@ -1135,7 +1190,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   }), [
     live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
     history, manualLogs, manualBaselines, tomznHistory, snapshot?.meta, ups, intelligence, summary,
-    period, loading, isOffline, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
+    period, loading, isOffline, liveReady, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     setManualBaseline, setLastMonthTotal, addManualLog, forgetSwap, editManualLog, deleteManualLog,
     refreshTomzn, refreshAll, refreshTomznForce, refreshInverterForce, loadDashboard,
   ]);
