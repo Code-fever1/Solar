@@ -44,10 +44,13 @@ export function UsageSummaryCard() {
 
   // --- Bar colours: white = avg, RGB-lerp INTO white from each side ---
   // Today = always blue. Other bars merge toward white as they approach avg.
+  // Baseline MUST match the "AVG DAILY USAGE" number printed on the card
+  // (home.averageDaily), otherwise a bar below the displayed avg can look red.
   const nonZeroBars = dailyData.filter((d) => d.val > 0);
-  const avgBarVal   = nonZeroBars.length
+  const localAvg    = nonZeroBars.length
     ? nonZeroBars.reduce((s, d) => s + d.val, 0) / nonZeroBars.length
     : 1;
+  const avgBarVal   = home.averageDaily > 0 ? home.averageDaily : localAvg;
 
   // RGB lerp helper
   const lerpRgb = (

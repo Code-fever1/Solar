@@ -280,7 +280,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
     liveSceneVisible.current = visible;
     setIsLiveSceneVisible(visible);
   };
-  const { activeMeter, energyToday, flowHistory, home, inverter, intelligence, isOffline, meters, weather, tomznLive, ups, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
+  const { activeMeter, energyToday, flowHistory, home, inverter, intelligence, isOffline, liveReady, meters, weather, tomznLive, ups, gridFlow, refreshAll, refreshTomznForce, refreshInverterForce } = useEnergy();
   const meterOne = meters.meter1;
   const meterTwo = meters.meter2;
   const chartWidth = Math.min(width - 32, 520);
@@ -377,7 +377,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
 
   return <View style={styles.screen}><Image source={heroScene.source} style={{ position: "absolute", top: 0, left: 0, width, height }} resizeMode="stretch" /><LinearGradient colors={["rgba(0,0,0,0.25)", "rgba(0,0,0,0.1)", "rgba(0,0,0,0.4)"]} locations={[0, 0.35, 1]} style={{ position: "absolute", top: 0, left: 0, width, height }} />
     <View style={{ position: "absolute", top: 0, left: 0, width: "100%", height: height * 0.50 }} pointerEvents="none">
-      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} tomznLive={tomznLive} inverterOff={inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible && isTabFocused} variant="hero" overlayConfig={heroScene.overlay} ups={ups} gridFlow={gridFlow} />
+      <LiveEnergyScene inverter={inverter} weather={weather} offline={isOffline} connecting={!liveReady && !isOffline} tomznLive={tomznLive} inverterOff={liveReady && inverterOff} loadStatus={home.loadStatus} normalDrawKw={home.normalDrawKw} isVisible={isLiveSceneVisible && isTabFocused} variant="hero" overlayConfig={heroScene.overlay} ups={ups} gridFlow={gridFlow} />
     </View>
     <ScrollView ref={scrollRef} style={{ backgroundColor: "transparent" }} contentContainerStyle={[styles.content, { paddingTop: height * 0.49 }]} showsVerticalScrollIndicator={false} removeClippedSubviews={true} nestedScrollEnabled={true} scrollEventThrottle={isIdle ? 48 : 16} bounces={true} alwaysBounceVertical={true} onScroll={handleScroll}>
     <View style={{ width: "100%", borderTopLeftRadius: 28, borderTopRightRadius: 28, minHeight: height * 0.65 }}>
@@ -389,7 +389,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
           <Sun size={16} color={sceneCardTheme.textSecondary} />
           <View style={styles.statusItemText}>
             <Text style={[styles.statusLabel, { color: sceneCardTheme.textSecondary }]}>Solar</Text>
-            <Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : solarLive ? "#32E56B" : solarAllZero ? "#F8C653" : "#32E56B" }]}>{inverterOff ? "Off" : solarLive ? "Online" : solarAllZero ? "Standby" : "Online"}</Text>
+            <Text style={[styles.statusValue, { color: !liveReady ? "#F8C653" : inverterOff ? "#EF4C4C" : solarLive ? "#32E56B" : solarAllZero ? "#F8C653" : "#32E56B" }]}>{!liveReady ? "…" : inverterOff ? "Off" : solarLive ? "Online" : solarAllZero ? "Standby" : "Online"}</Text>
           </View>
         </View>
         <View style={[styles.statusDivider, { backgroundColor: sceneCardTheme.overlayBorder }]} />
@@ -397,7 +397,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
           <Cpu size={16} color={sceneCardTheme.textSecondary} />
           <View style={styles.statusItemText}>
             <Text style={[styles.statusLabel, { color: sceneCardTheme.textSecondary }]}>Inverter</Text>
-            <Text style={[styles.statusValue, { color: inverterOff ? "#EF4C4C" : inverter.isOnline === false ? "#F8C653" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{inverterOff ? "Offline" : inverter.isOnline === false ? "Connecting..." : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text>
+            <Text style={[styles.statusValue, { color: !liveReady ? "#F8C653" : inverterOff ? "#EF4C4C" : inverter.isOnline === false ? "#F8C653" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{!liveReady ? "…" : inverterOff ? "Offline" : inverter.isOnline === false ? "Connecting..." : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text>
           </View>
         </View>
         <View style={[styles.statusDivider, { backgroundColor: sceneCardTheme.overlayBorder }]} />
@@ -405,7 +405,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
           <RadioTower size={16} color={sceneCardTheme.textSecondary} />
           <View style={styles.statusItemText}>
             <Text style={[styles.statusLabel, { color: sceneCardTheme.textSecondary }]}>Grid</Text>
-            <Text style={[styles.statusValue, { color: wapdaCutOff ? "#EF4C4C" : wapdaUnavailable ? "#EF4C4C" : wapdaStandby ? "#F8C653" : tomznLive.isOnline ? (tomznLive.powerW > 0 ? "#548EFF" : "#F8C653") : "#EF4C4C" }]}>{wapdaCutOff ? "Offline" : wapdaUnavailable ? "Unavailable" : wapdaStandby ? "Standby" : tomznLive.isOnline ? (tomznLive.powerW > 0 ? "Available" : "Idle") : "Offline"}</Text>
+            <Text style={[styles.statusValue, { color: !liveReady ? "#F8C653" : wapdaCutOff ? "#EF4C4C" : wapdaUnavailable ? "#EF4C4C" : wapdaStandby ? "#F8C653" : tomznLive.isOnline ? (tomznLive.powerW > 0 ? "#548EFF" : "#F8C653") : "#EF4C4C" }]}>{!liveReady ? "…" : wapdaCutOff ? "Offline" : wapdaUnavailable ? "Unavailable" : wapdaStandby ? "Standby" : tomznLive.isOnline ? (tomznLive.powerW > 0 ? "Available" : "Idle") : "Offline"}</Text>
           </View>
         </View>
         <View style={[styles.statusDivider, { backgroundColor: sceneCardTheme.overlayBorder }]} />
@@ -436,7 +436,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
       />
       <EnergyUsedCard
         totalHomeUsage={home.todayUsage}
-        liveLoadW={gridOffline ? 0 : (inverterOff ? tomznLive.powerW : inverter.loadW)}
+        liveLoadW={gridOffline ? 0 : (inverterOff ? tomznLive.powerW : (gridFlow?.mode === "on-grid" && gridFlow?.homeW ? gridFlow.homeW : inverter.loadW))}
         peakLoadW={peakLoadW}
         vsYesterdayPercent={home.usageChangePercent ?? null}
         voltage={gridOffline ? 0 : (tomznLive.voltageV || inverter.gridV)}

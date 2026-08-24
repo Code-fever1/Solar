@@ -181,32 +181,6 @@ export function NewMetersScreen() {
           </Pressable>
         </View>
 
-        {/* ── Meter Cards ── */}
-        <View style={s.meterCardsRow}>
-          <MeterCard
-            meter={meter1}
-            isActive={activeMeter === 'meter1'}
-            isLight={isLight}
-            cardBg={theme.card}
-            accentColor="#32E56B"
-            typeLabel="Analog"
-            typePillStyle={s.typePillAnalog}
-            typePillTextStyle={s.typePillAnalogText}
-            vsYesterday={home.usageChangePercent || 0}
-          />
-          <MeterCard
-            meter={meter2}
-            isActive={activeMeter === 'meter2'}
-            isLight={isLight}
-            cardBg={theme.card}
-            accentColor="#548EFF"
-            typeLabel="Digital"
-            typePillStyle={s.typePillDigital}
-            typePillTextStyle={s.typePillDigitalText}
-            vsYesterday={home.usageChangePercent || 0}
-          />
-        </View>
-
         {/* ── AI Forecast & Budget ── */}
         <ForecastBudgetCard
           expectedUnits={home.projectedMonthly}
@@ -233,6 +207,32 @@ export function NewMetersScreen() {
           billingEndTs={meta?.billingEnd as number | undefined}
           isLight={isLight}
         />
+
+        {/* ── Meter Cards ── */}
+        <View style={s.meterCardsRow}>
+          <MeterCard
+            meter={meter1}
+            isActive={activeMeter === 'meter1'}
+            isLight={isLight}
+            cardBg={theme.card}
+            accentColor="#32E56B"
+            typeLabel="Analog"
+            typePillStyle={s.typePillAnalog}
+            typePillTextStyle={s.typePillAnalogText}
+            vsYesterday={home.usageChangePercent || 0}
+          />
+          <MeterCard
+            meter={meter2}
+            isActive={activeMeter === 'meter2'}
+            isLight={isLight}
+            cardBg={theme.card}
+            accentColor="#548EFF"
+            typeLabel="Digital"
+            typePillStyle={s.typePillDigital}
+            typePillTextStyle={s.typePillDigitalText}
+            vsYesterday={home.usageChangePercent || 0}
+          />
+        </View>
 
         {/* ── Bottom Section: Smart Tips ── */}
         <View style={s.bottomRow}>
