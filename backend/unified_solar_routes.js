@@ -210,13 +210,11 @@ function finiteNumber(value, fallback = null) {
 //     the Tomzn meter. loadW ≤ 25W (jitter) because the inverter's load output
 //     isn't connected to home. home = solarW ± tomznPowerW (Tomzn is unsigned).
 //
-//     Direction detection (4 signals, strongest first):
-//       1. HARD RULE: tomzn > solar → import (export is always < solar).
-//       2. INVERTER GRID DIRECTION: gridWRaw < -50 with solar > 100 → export.
-//          The inverter directly reports feeding back. Trustworthy because
-//          Signal 1 already caught tomzn > solar.
-//       3. CORRELATION: solar↑ + tomzn↑ → export, solar↑ + tomzn↓ → import.
-//       4. Zero-crossing fallback for near-zero grid flow.
+//     Direction detection (TOMZN-only, never gridWRaw):
+//       1. HARD RULE: tomzn > solar → import.
+//       2. CORRELATION: solar↑ + tomzn↑ → export (excess left the house).
+//                       solar↑ + tomzn↓ → import (solar covering more of home).
+//       3. Hold last direction when the trend is unclear.
 //
 //   BYPASS (inverter off): home = tomznPowerW, import.
 //   NIGHT (no solar): home = tomznPowerW or loadW, import.
@@ -233,112 +231,51 @@ function createGridFlowState() {
   return { lastDirection: "import", atCrossing: false, crossingFromDirection: null, recentPowers: [] };
 }
 
-// Update the on-grid direction using THREE signals, strongest first:
-//
-//   SIGNAL 1 — HARD RULE: tomzn > solar → definitely import.
-//     Export = solarW - home is always < solarW (home > 0), so tomzn > solar
-//     can't be export. This catches the original bug (solar=120, tomzn=500).
-//
-//   SIGNAL 2 — INVERTER GRID DIRECTION: the Fronus inverter directly reports
-//     whether it's feeding power back to the grid (gridFeed > 0 → "export",
-//     gridWRaw < 0). This is the most direct signal — the inverter KNOWS. It's
-//     trustworthy here because Signal 1 already filtered out the dangerous case
-//     (small trickle with low solar + high tomzn). Only trust when solar is
-//     substantial (> 100W) and |gridWRaw| is meaningful (> 50W, not jitter).
-//
-//   SIGNAL 3 — CORRELATION: how tomznW changes relative to solarW over time.
-//     EXPORT: tomzn = solar - home → tomzen tracks solar (positive correlation)
-//       solar↑ → tomzn↑ (more excess), solar↓ → tomzn↓ (less excess)
-//     IMPORT: tomzn = home - solar → tomzen inversely tracks solar (negative)
-//       solar↑ → tomzn↓ (solar covers more), solar↓ → tomzn↑ (more grid needed)
-//
-//   SIGNAL 4 — Zero-crossing fallback for near-zero grid flow.
+// Update on-grid direction from TOMZN vs solar only. Never use gridWRaw —
+// that is solar dumped on the inverter bus, not household net after home load.
 function updateOnGridDirection(inverter, solarW, tomznW, state, now) {
-  // Track (solarW, tomznW) pairs for correlation analysis.
   state.recentPowers = (state.recentPowers || [])
     .filter((p) => now - p.timestamp < RECENT_WINDOW_MS)
     .concat([{ solarW, powerW: tomznW, timestamp: now }]);
 
-  // SIGNAL 1 — HARD RULE: tomzn > solar → definitely import.
+  // HARD RULE: export can never exceed solar, so tomzn > solar is import.
   if (tomznW > solarW + NEAR_ZERO_W) {
     state.lastDirection = "import";
     state.atCrossing = false;
-    state.crossingFromDirection = null;
     return "import";
   }
-
-  // When tomznW is 0, TOMZN might be offline (not zero draw). In that case,
-  // gridWRaw is unreliable — the grid may be down. Default to import (safe).
   if (tomznW <= 0) {
     state.lastDirection = "import";
     state.atCrossing = false;
     return "import";
   }
 
-  // SIGNAL 2 — INVERTER GRID DIRECTION: direct signal from the inverter.
-  // Trustworthy here because Signal 1 already caught the dangerous case
-  // (tomzn > solar). Now tomzn ≤ solar, so solar is at least as big as the
-  // grid flow — a genuine export signal from the inverter is reliable.
-  const gridWRaw = finiteNumber(inverter?.gridWRaw, 0);
-  const gridDirection = inverter?.gridDirection || "import";
-  if (solarW > 100 && Math.abs(gridWRaw) > 50) {
-    if (gridDirection === "export" || gridWRaw < -50) {
-      state.lastDirection = "export";
-      state.atCrossing = false;
-      state.crossingFromDirection = null;
-      return "export";
-    }
-    if (gridDirection === "import" && gridWRaw > 50) {
-      state.lastDirection = "import";
-      state.atCrossing = false;
-      state.crossingFromDirection = null;
-      return "import";
-    }
-  }
-
-  // SIGNAL 3 — CORRELATION: solar vs tomzn trend over the last 30s.
-  // Need at least 4 samples with meaningful changes for a reliable read.
+  // CORRELATION over the last ~90s. Need real moves, not 2–3W jitter.
+  //   EXPORT: tomzn = solar - home  →  solar and tomzn move together
+  //   IMPORT: tomzn = home - solar  →  solar and tomzn move opposite
   const recent = state.recentPowers || [];
-  if (recent.length >= 4) {
-    const cutoff = now - 30_000;
+  if (recent.length >= 3) {
+    const cutoff = now - 90_000;
     const samples = recent.filter((p) => p.timestamp >= cutoff);
-    if (samples.length >= 4) {
+    if (samples.length >= 3) {
       let posCorr = 0, negCorr = 0;
       for (let i = 1; i < samples.length; i += 1) {
         const dSolar = samples[i].solarW - samples[i - 1].solarW;
         const dTomzn = samples[i].powerW - samples[i - 1].powerW;
-        if (Math.abs(dSolar) < 10 && Math.abs(dTomzn) < 10) continue;
-        if ((dSolar > 10 && dTomzn > 10) || (dSolar < -10 && dTomzn < -10)) posCorr += 1;
-        else if ((dSolar > 10 && dTomzn < -10) || (dSolar < -10 && dTomzn > 10)) negCorr += 1;
+        if (Math.abs(dSolar) < 25 || Math.abs(dTomzn) < 15) continue;
+        if ((dSolar > 0 && dTomzn > 0) || (dSolar < 0 && dTomzn < 0)) posCorr += 1;
+        else negCorr += 1;
       }
-      if (posCorr + negCorr >= 2) {
+      if (posCorr + negCorr >= 2 && posCorr !== negCorr) {
         const direction = posCorr > negCorr ? "export" : "import";
         state.lastDirection = direction;
         state.atCrossing = false;
-        state.crossingFromDirection = null;
         return direction;
       }
     }
   }
 
-  // SIGNAL 4 — Zero-crossing fallback: near-zero = at the crossing point.
-  if (tomznW <= NEAR_ZERO_W) {
-    if (!state.atCrossing) {
-      state.atCrossing = true;
-      state.crossingFromDirection = state.lastDirection;
-    }
-    return state.lastDirection;
-  }
-  if (state.atCrossing && tomznW > NEAR_ZERO_W + 10) {
-    state.lastDirection = state.crossingFromDirection === "export" ? "import" : "export";
-    state.atCrossing = false;
-    state.crossingFromDirection = null;
-    return state.lastDirection;
-  }
-
-  // No strong signal — maintain last direction, default import (conservative).
-  if (!state.lastDirection) state.lastDirection = "import";
-  return state.lastDirection;
+  return state.lastDirection || "import";
 }
 
 // Determine grid flow for a single snapshot. Returns:
@@ -381,73 +318,38 @@ function determineGridFlow(inverter, tomznPowerW, flowState, now) {
   // load output, that IS home consumption. Direction from energy balance:
   // loadW vs solarW.
   if (loadW >= ON_GRID_LOAD_THRESHOLD_W) {
+    // Hybrid: home IS the inverter AC output. Excess solar leaves through the
+    // inverter's grid port straight into TOMZN, so gridWRaw < 0 means the
+    // house is exporting. Do not infer direction from unsigned TOMZN.
+    const gridWRaw = finiteNumber(inverter?.gridWRaw, 0);
+    const inverterExportW = Math.max(0, -gridWRaw);
     const balance = loadW - solarW;
+    if (inverterExportW > 50) {
+      if (flowState) { flowState.lastDirection = "export"; flowState.atCrossing = false; }
+      return { mode: "hybrid", direction: "export", homeW: loadW, gridExchangeW: -inverterExportW, isExporting: true };
+    }
     if (balance > ENERGY_BALANCE_THRESHOLD_W) {
       if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
-      return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: balance, isExporting: false };
-    }
-    if (balance < -ENERGY_BALANCE_THRESHOLD_W) {
-      // Excess solar (solarW > loadW). TOMZN's counter still ticks during this
-      // surplus because it cannot tell import from export. Treat hybrid surplus
-      // as export so meter today-units and home import stay import-only.
-      // Idle only when the surplus is tiny and TOMZN sees no flow.
-      if (tomznW < 20 && Math.abs(balance) < 80) {
-        if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
-        return { mode: "hybrid", direction: "idle", homeW: loadW, gridExchangeW: 0, isExporting: false };
-      }
-      if (flowState) { flowState.lastDirection = "export"; flowState.atCrossing = false; }
-      return { mode: "hybrid", direction: "export", homeW: loadW, gridExchangeW: balance, isExporting: true };
+      return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: Math.max(tomznW, balance), isExporting: false };
     }
     if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
-    return { mode: "hybrid", direction: "idle", homeW: loadW, gridExchangeW: 0, isExporting: false };
+    if (tomznW < 20) return { mode: "hybrid", direction: "idle", homeW: loadW, gridExchangeW: 0, isExporting: false };
+    return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: tomznW, isExporting: false };
   }
 
-  // ON-GRID: loadW ≤ 25W, solar producing, inverter online. Home powered by
-  // WAPDA via changeover; inverter injects solar to the WAPDA bus. TOMZN
-  // measures NET grid flow (can't distinguish import vs export).
-  //
-  // TOMZN = |grid_import - grid_export| (magnitude only, direction unknown)
-  //
-  // When the inverter is NOT exporting (gridWRaw >= 0): solar offsets home via
-  //   the bus, reducing what TOMZN sees. TOMZN = home - solarW.
-  //   So home = TOMZN + solarW.
-  //
-  // When the inverter IS exporting (gridWRaw < 0): solar exports |gridWRaw|
-  //   watts back through the meter, reducing TOMZN's reading.
-  //   TOMZN = home - |export|. The exported solar goes to the grid, NOT to home.
-  //   So home = TOMZN + |export| = tomznW + |gridWRaw|.
-  //
-  //   Example: solar=600, export=300, home=1184, TOMZN=884 (net after export).
-  //   home = 884 + 300 = 1184. ✓
-  //
-  // IMPORTANT: The homeW formula depends on whether the INVERTER is exporting
-  // (gridWRaw < 0), NOT on the NET direction. Even when net flow is "import"
-  // (tomznW > solarW), the inverter may still be exporting (gridWRaw < 0),
-  // which reduces TOMZN's reading. The formula must use |gridWRaw| in that case.
-  const gridWRaw = finiteNumber(inverter?.gridWRaw, 0);
-  const exportW = Math.max(0, -gridWRaw); // positive export amount (0 when importing)
-  // Threshold: below 50W, gridWRaw is noise/jitter, treat as not exporting.
-  const inverterExporting = exportW > 50;
-  // homeW: inverter exporting → home = TOMZN + |export|. Not → home = TOMZN + solar.
-  const computedHomeW = inverterExporting ? (tomznW + exportW) : (tomznW + solarW);
-
+  // ON-GRID: TOMZN is unsigned net after home load. Direction from correlation:
+  //   solar↑ tomzn↑ → EXPORT  home = solar - tomzn   (excess left the house)
+  //   solar↑ tomzn↓ → IMPORT  home = solar + tomzn   (solar covering more of home)
+  // Never add solar + tomzn while exporting — that treats leftover solar as
+  // extra home load (the bug: solar 800 + tomzn 200 shown as 1000 W home).
   const direction = flowState
     ? updateOnGridDirection(inverter, solarW, tomznW, flowState, now)
-    : (tomznW > solarW + NEAR_ZERO_W ? "import" : "import"); // no state → conservative
-  // Physical guard: export can NEVER exceed solar production. If tomzn reports
-  // more power than solar is producing (tomznW > solarW), it cannot be export —
-  // home is drawing grid + solar (import). This catches any direction-detection
-  // edge case (stale zero-crossing state, inverter gridWRaw noise) that wrongly
-  // says "export" when tomzn > solar. Without this, the UI would show e.g. 800W
-  // export from 600W solar — impossible. Forces import.
-  if (direction === "export" && tomznW > solarW) {
-    if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
-    return { mode: "on-grid", direction: "import", homeW: computedHomeW, gridExchangeW: tomznW, isExporting: false };
+    : "import";
+  if (direction === "export" && tomznW < solarW) {
+    return { mode: "on-grid", direction: "export", homeW: Math.max(0, solarW - tomznW), gridExchangeW: -tomznW, isExporting: true };
   }
-  if (direction === "export") {
-    return { mode: "on-grid", direction: "export", homeW: computedHomeW, gridExchangeW: -exportW, isExporting: true };
-  }
-  return { mode: "on-grid", direction: "import", homeW: computedHomeW, gridExchangeW: tomznW, isExporting: false };
+  if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
+  return { mode: "on-grid", direction: "import", homeW: solarW + tomznW, gridExchangeW: tomznW, isExporting: false };
 }
 
 // Build a set of export 5-minute buckets from a day's inverter + TOMZN history,
@@ -927,7 +829,12 @@ function pakistanTimestamp(year, month, day, hour = 0) {
 function billingCycleStart(timestamp = Date.now(), billingDay = 28) {
   const parts = pakistanParts(timestamp);
   let { year, month } = parts;
-  if (parts.day < billingDay) {
+  // The cycle ticks at 12:00 PKT on billingDay, not at midnight.
+  // Before noon on the 28th, `day < 28` is already false, so a day-only
+  // check jumped the forecast to Aug→Sep 12 hours early and queried
+  // cycle usage from a future timestamp (meters showed 0).
+  const thisMonthTick = pakistanTimestamp(year, month, billingDay, 12);
+  if (timestamp < thisMonthTick) {
     month -= 1;
     if (month === 0) { month = 12; year -= 1; }
   }
@@ -940,6 +847,18 @@ function nextBillingCycleStart(timestamp = Date.now(), billingDay = 28) {
   let month = parts.month + 1;
   let year = parts.year;
   if (month === 13) { month = 1; year += 1; }
+  return pakistanTimestamp(year, month, billingDay, 12);
+}
+
+// Previous cycle start = one month before the given cycle start. Direct month
+// arithmetic is used because billingCycleStart(cycleStart - 1, billingDay)
+// returns cycleStart itself when the billing day has already been reached
+// (day < billingDay is false on the billing day), which starved lastCycleUsage.
+function prevBillingCycleStart(cycleStart, billingDay = 28) {
+  const parts = pakistanParts(cycleStart);
+  let { year, month } = parts;
+  month -= 1;
+  if (month === 0) { month = 12; year -= 1; }
   return pakistanTimestamp(year, month, billingDay, 12);
 }
 
@@ -1342,26 +1261,53 @@ function forEachReadingInterval(readings, callback) {
 // before the 28th leak into the new monthly allowance.
 async function rolloverBillingCycle({ stateCollection, allocations, invalidateStateCache }, state, now = Date.now()) {
   const cycleStart = billingCycleStart(now, state.billingDay);
-  const needsRollover = Array.from(METER_IDS).some((meterId) => (state.meters[meterId].cycleBaselineAt || 0) < cycleStart);
+  // Guard: only roll over AFTER the cycle boundary has actually passed.
+  // Without this, at midnight on the 28th, billingCycleStart() returns
+  // 12pm (future), the old baseline is already < that future timestamp,
+  // and the rollover fires 12 hours early — resetting usage to 0.
+  const needsRollover = now >= cycleStart && Array.from(METER_IDS).some((meterId) => (state.meters[meterId].cycleBaselineAt || 0) < cycleStart);
   if (!needsRollover) return state;
 
   // Before resetting baselines, capture the total usage from the ending cycle
   // and save it as lastMonthTotalOverride for trend comparison.
+  // The cycle that just ended started at prevCycleStart and ended at cycleStart.
+  const prevCycleStart = prevBillingCycleStart(cycleStart, state.billingDay);
   let cycleTotal = 0;
   for (const meterId of METER_IDS) {
     const meter = state.meters[meterId];
     if ((meter.cycleBaselineAt || 0) >= cycleStart) continue;
+    // oldBaselineReading = the meter reading at the start of the ending cycle.
+    const oldBaselineReading = meter.cycleBaselineReading ?? meter.anchorReading ?? 0;
     const anchorAt = meter.anchorAt || meter.cycleBaselineAt || cycleStart;
     const rawUsageUpToCycleStart = anchorAt < cycleStart
       ? await meterUsageSince(allocations, meterId, anchorAt, cycleStart)
       : 0;
     const usageUpToCycleStart = calibratedUnits(meter, rawUsageUpToCycleStart);
-    cycleTotal += usageUpToCycleStart;
-    meter.cycleBaselineReading = round((meter.anchorReading ?? meter.cycleBaselineReading) + usageUpToCycleStart, 2);
+    // newBaselineReading = best estimate of the meter reading at cycleStart.
+    // anchorReading is a confirmed physical reading; allocations extend it to
+    // the boundary. This is more accurate than oldBaseline + all allocations
+    // because the anchor corrects accumulated TOMZN drift.
+    const newBaselineReading = round((meter.anchorReading ?? meter.cycleBaselineReading) + usageUpToCycleStart, 2);
+    // Full-cycle consumption = reading at cycle end minus reading at cycle start.
+    // Using only usageUpToCycleStart (anchor→cycleStart) was the bug: when a
+    // manual reading was logged late in the cycle, anchorAt jumped forward and
+    // the rollover only counted ~2 days of allocations → 22 instead of ~333.
+    // The reading-difference method captures the entire cycle regardless of
+    // when the anchor was last moved.
+    const fullCycleUsage = Math.max(0, round(newBaselineReading - oldBaselineReading, 1));
+    cycleTotal += fullCycleUsage;
+    meter.cycleBaselineReading = newBaselineReading;
     meter.cycleBaselineAt = cycleStart;
   }
-  if (cycleTotal > 0) {
+  // Only auto-write lastMonthTotal if the user has NOT manually overridden it
+  // for this exact cycle. lastMonthTotalOverrideCycleStart records which cycle
+  // an override pertains to; a manual save sets it to prevCycleStart so the
+  // rollover respects the user's value for that cycle (but next month's
+  // rollover, a different cycle, refreshes it normally).
+  if (cycleTotal > 0 && state.lastMonthTotalOverrideCycleStart !== prevCycleStart) {
     state.lastMonthTotalOverride = round(cycleTotal, 1);
+    state.lastMonthTotalOverrideCycleStart = prevCycleStart;
+    state.lastMonthTotalAuto = true;
   }
   state.updatedAt = now;
   await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
@@ -1453,12 +1399,16 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     ? liveOverride
     : state.lastTomzn;
   const cycleStart = billingCycleStart(now, state.billingDay);
-  const prevCycleStart = billingCycleStart(cycleStart - 1, state.billingDay);
+  const prevCycleStart = prevBillingCycleStart(cycleStart, state.billingDay);
   const todayStart = startOfPakistanDay(now);
   const [cycleUsage, todayUsage, recentUsage, logs, firstAllocation, recentAllocations, recentSnapshots, inverterHistory, latestInverterSnapshot, latestWeather, lastCycleUsage, todayTomznSnapshots] = await Promise.all([
     usageByMeter(allocations, cycleStart, now),
     usageByMeter(allocations, todayStart, now),
-    usageByMeter(allocations, Math.max(cycleStart, now - 7 * 86_400_000), now),
+    // Pace is continuous across billing cycles — the household's daily
+    // consumption rate does not reset on the 28th. Clamping the 7-day window
+    // to cycleStart starved averageDaily to 0 right after a rollover, which
+    // collapsed confidence to 20 and the forecast to a bootstrap ~161.
+    usageByMeter(allocations, now - 7 * 86_400_000, now),
     manualLogs.find({}).sort({ timestamp: -1 }).limit(100).toArray(),
     allocations.find({}).sort({ timestamp: 1 }).limit(1).next(),
     allocations.find({ timestamp: { $gte: todayStart - 7 * 86_400_000, $lte: now } }).sort({ timestamp: 1 }).toArray(),
@@ -1733,14 +1683,21 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
           ? round((sample._tomznPowerW || 0) / 1000, 3)
           : (sample._hasInverter === false ? null : 0),
     }));
-  const windowStart = Math.max(cycleStart, now - 7 * 86_400_000, firstAllocation?.timestamp || now);
+  // Pace window is NOT clamped to cycleStart — consumption rate is continuous
+  // across billing boundaries. Clamping here reset observedDays to ~0 right
+  // after a rollover, zeroing tomznAverageDaily and dropping to bootstrap.
+  const windowStart = Math.max(now - 7 * 86_400_000, firstAllocation?.timestamp || now);
   const observedDays = Math.max(0, (now - windowStart) / 86_400_000);
   const totalObservedDays = Math.max(0, (now - (firstAllocation?.timestamp || now)) / 86_400_000);
   const observedUsage = Object.values(recentUsage).reduce((sum, value) => sum + value, 0);
   // A few minutes of data should not be annualised into a wild monthly forecast.
   // Before 12 hours of TOMZN history exist, forecasts use the bootstrap rate below.
   const tomznAverageDaily = observedDays >= 0.5 ? round(observedUsage / observedDays, 2) : 0;
-  const historicalLogs = logs.filter((log) => log.source === "HISTORICAL_IMPORT" && log.timestamp >= cycleStart);
+  // All historical import logs feed the pace estimate — the daily rate is
+  // continuous and must not be starved by a cycleStart clamp. The downstream
+  // daily/hourly/profile seed loops each filter to their own visible window,
+  // so including pre-cycle logs here does not double-count usage in summaries.
+  const historicalLogs = logs.filter((log) => log.source === "HISTORICAL_IMPORT");
   const firstHistoricalAt = historicalLogs.length ? Math.min(...historicalLogs.map((log) => log.timestamp)) : 0;
   const lastHistoricalAt = historicalLogs.length ? Math.max(...historicalLogs.map((log) => log.timestamp)) : 0;
   
@@ -3210,7 +3167,7 @@ function registerUnifiedSolarRoutes(app, db) {
       if (clientVersion === dataVersion) {
         // Nothing changed — return minimal response with live hero data only
         const live = await buildLivePayload();
-        res.json({ changed: false, dataVersion, tomznLive: live.tomznLive, inverter: live.inverter, gridFlow: live.gridFlow, ups: live.ups, weather: live.weather });
+        res.json({ changed: false, dataVersion, tomznLive: live.tomznLive, inverter: live.inverter, gridFlow: live.gridFlow, ups: live.ups, weather: live.weather, intelligence: live.intelligence });
       } else {
         // Data changed — return full dashboard
         res.json({ changed: true, dataVersion, dashboard: await getCachedDashboard() });
@@ -3435,6 +3392,11 @@ function registerUnifiedSolarRoutes(app, db) {
       if (total == null || total < 0) return res.status(400).json({ error: "A non-negative total is required" });
       const state = await ensureState(stateCollection);
       state.lastMonthTotalOverride = total;
+      // Tag this override with the most recent completed cycle so the rollover
+      // knows it is the user's value for THAT cycle and won't clobber it.
+      const cs = billingCycleStart(Date.now(), state.billingDay);
+      state.lastMonthTotalOverrideCycleStart = billingCycleStart(cs - 1, state.billingDay);
+      state.lastMonthTotalAuto = false;
       state.updatedAt = Date.now();
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
       invalidateStateCache();

@@ -200,6 +200,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const liveReadyRef = useRef(false);
   const liveHydrateRef = useRef<Promise<boolean> | null>(null);
   const skipIdleHydrateRef = useRef(true);
+  const lastIntelligenceRef = useRef<IntelligenceState | null>(null);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const cacheRef = useRef<StoredDashboard | null>(null);
@@ -334,7 +335,8 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
             // Recalculate projected monthly: cycle usage + remaining cycle days × daily rate
             const now = new Date();
             const billingDay = 28;
-            const cycleStartMonth = now.getDate() >= billingDay ? now.getMonth() : now.getMonth() - 1;
+            const pastBillingNoon = now.getDate() > billingDay || (now.getDate() === billingDay && now.getHours() >= 12);
+            const cycleStartMonth = pastBillingNoon ? now.getMonth() : now.getMonth() - 1;
             const cycleStartYear = cycleStartMonth < 0 ? now.getFullYear() - 1 : now.getFullYear();
             const cycleStartIdx = ((cycleStartMonth % 12) + 12) % 12;
             const cycleStartDate = new Date(cycleStartYear, cycleStartIdx, billingDay);
@@ -565,13 +567,18 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     // Phase 5: update live slice only — triggers re-renders for components
     // consuming tomznLive/inverter/gridFlow/weather/ups, but NOT for components
     // consuming home/meters/energyToday.
+    // Intelligence: never wipe it to null when a payload omits it (e.g. the
+    // dashboard/sync response used to skip intelligence, blanking the AI card
+    // until the next SSE event). Keep the last known insight instead.
+    const nextIntelligence = data.intelligence != null ? data.intelligence : lastIntelligenceRef.current;
+    if (nextIntelligence) lastIntelligenceRef.current = nextIntelligence;
     setLiveData({
       tomznLive: data.tomznLive,
       inverter: data.inverter,
       gridFlow: data.gridFlow,
       weather: data.weather,
       ups: data.ups,
-      intelligence: data.intelligence || null,
+      intelligence: nextIntelligence,
     });
     perfRef.current.liveSliceUpdates += 1;
     // Import step — billing/accounting preserved EXACTLY. Only update the

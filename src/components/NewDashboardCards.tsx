@@ -3,10 +3,10 @@ import { ArrowDown, ArrowUp, Home, Sparkles, SunMedium, TowerControl, Zap } from
 import { memo, useEffect, useRef } from 'react';
 import { Dimensions, StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
+    Easing,
+    useAnimatedStyle,
+    useSharedValue,
+    withTiming,
 } from 'react-native-reanimated';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
 
@@ -357,7 +357,8 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   const cycleStartDate = cycleStartTs && Number.isFinite(cycleStartTs)
     ? new Date(cycleStartTs)
     : (() => {
-        const m = now.getDate() >= billingDay ? now.getMonth() : now.getMonth() - 1;
+        const pastBillingNoon = now.getDate() > billingDay || (now.getDate() === billingDay && now.getHours() >= 12);
+        const m = pastBillingNoon ? now.getMonth() : now.getMonth() - 1;
         const y = m < 0 ? now.getFullYear() - 1 : now.getFullYear();
         return new Date(y, ((m % 12) + 12) % 12, billingDay);
       })();

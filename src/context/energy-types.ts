@@ -244,4 +244,8 @@ export type ManualLog = {
   meterId: MeterId;
   reading: number;
   notes?: string;
+  // Backend-populated calibration fields (present for server-synced logs;
+  // absent for offline-created logs).
+  predictedReading?: number; // what the app assumed the meter was at
+  correction?: number;       // actual − assumed (reading − predictedReading)
 };

@@ -1,11 +1,11 @@
 import { GlassCard } from "@/components/GlassCard";
+import { SceneBackground } from "@/components/SceneBackground";
 import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
-import { Activity, ArrowUpRight, Clock, Trash2 } from "lucide-react-native";
+import { Activity, Clock, Trash2 } from "lucide-react-native";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { SceneBackground } from "@/components/SceneBackground";
 
 function formatDateTime(timestamp: number): string {
   const d = new Date(timestamp);
@@ -118,11 +118,16 @@ export default function LogsScreen() {
         {recentLogs.length > 0 ? (
           <GlassCard style={styles.logCard}>
             {recentLogs.map((log, idx) => {
-              const prevLog = recentLogs[idx + 1];
-              const delta = prevLog ? log.reading - prevLog.reading : 0;
               const isMeter1 = log.meterId === 'meter1';
               const meterColor = isMeter1 ? '#32E56B' : '#548EFF';
               const meterLabel = isMeter1 ? 'Meter 1' : 'Meter 2';
+              const hasPrediction = log.predictedReading != null && log.correction != null;
+              const diff = hasPrediction ? log.correction! : 0;
+              const diffColor = !hasPrediction ? theme.textSecondary
+                : Math.abs(diff) <= 0.5 ? '#32E56B'
+                : Math.abs(diff) <= 3 ? '#F8C653'
+                : '#EF4C4C';
+              const diffSign = diff > 0 ? '+' : '';
               return (
                 <View key={log.id} style={[styles.logRow, { borderBottomColor: theme.border }, idx === recentLogs.length - 1 && { borderBottomWidth: 0 }]}>
                   {/* Left: timestamp + meter badge */}
@@ -136,29 +141,39 @@ export default function LogsScreen() {
                     </View>
                   </View>
 
-                  {/* Middle: reading + delta */}
-                  <View style={styles.logMiddle}>
-                    <Text style={[styles.logReading, { color: theme.text }]}>{formatReading(log.reading)}</Text>
-                    <Text style={[styles.logUnit, { color: theme.textSecondary }]}>units</Text>
-                    {delta > 0 && (
-                      <View style={styles.deltaChip}>
-                        <ArrowUpRight size={8} color={meterColor} />
-                        <Text style={[styles.deltaText, { color: meterColor }]}>+{delta.toFixed(1)}</Text>
+                  {/* Middle: Assumed / Diff / Actual with labels above */}
+                  <View style={styles.logReadings}>
+                    {hasPrediction ? (
+                      <>
+                        <View style={styles.readingCol}>
+                          <Text style={[styles.readingLabel, { color: theme.textSecondary }]}>Assumed</Text>
+                          <Text style={[styles.readingValue, { color: theme.textSecondary }]}>{formatReading(log.predictedReading!)}</Text>
+                        </View>
+                        <View style={styles.readingCol}>
+                          <Text style={[styles.readingLabel, { color: theme.textSecondary }]}>Diff</Text>
+                          <Text style={[styles.readingValue, { color: diffColor }]}>({diffSign}{diff.toFixed(1)})</Text>
+                        </View>
+                        <View style={styles.readingCol}>
+                          <Text style={[styles.readingLabel, { color: theme.textSecondary }]}>Actual</Text>
+                          <Text style={[styles.readingValue, { color: theme.text }]}>{formatReading(log.reading)}</Text>
+                        </View>
+                      </>
+                    ) : (
+                      <View style={styles.readingCol}>
+                        <Text style={[styles.readingLabel, { color: theme.textSecondary }]}>Actual</Text>
+                        <Text style={[styles.readingValue, { color: theme.text }]}>{formatReading(log.reading)}</Text>
                       </View>
                     )}
                   </View>
 
-                  {/* Right: notes + delete */}
-                  <View style={styles.logRight}>
-                    {log.notes ? <Text style={[styles.logNote, { color: theme.textSecondary }]} numberOfLines={1}>{log.notes}</Text> : null}
-                    <Pressable
-                      style={styles.deleteBtn}
-                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                      onPress={() => handleDelete(log.id, meterLabel, log.reading)}
-                    >
-                      <Trash2 size={15} color="#FF5252" />
-                    </Pressable>
-                  </View>
+                  {/* Right: delete */}
+                  <Pressable
+                    style={styles.deleteBtn}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    onPress={() => handleDelete(log.id, meterLabel, log.reading)}
+                  >
+                    <Trash2 size={15} color="#FF5252" />
+                  </Pressable>
                 </View>
               );
             })}
@@ -291,7 +306,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    flex: 1.5,
+    flex: 1.2,
   },
   meterBadge: {
     width: 30,
@@ -319,45 +334,32 @@ const styles = StyleSheet.create({
     fontFamily: 'Outfit',
   },
 
-  // Middle
-  logMiddle: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  logReading: {
-    fontSize: 15,
-    fontFamily: 'Outfit',
-    fontWeight: '700',
-  },
-  logUnit: {
-    fontSize: 10,
-    fontFamily: 'Outfit',
-  },
-  deltaChip: {
+  // Readings — Assumed / Diff / Actual
+  logReadings: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 2.2,
+    justifyContent: 'center',
+  },
+  readingCol: {
     alignItems: 'center',
     gap: 2,
-    marginTop: 3,
   },
-  deltaText: {
-    fontSize: 8,
+  readingLabel: {
+    fontSize: 7,
+    fontFamily: 'Outfit',
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  readingValue: {
+    fontSize: 13,
     fontFamily: 'Outfit',
     fontWeight: '700',
+    letterSpacing: -0.3,
   },
 
-  // Right
-  logRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  logNote: {
-    fontSize: 10,
-    fontFamily: 'Outfit',
-    maxWidth: 60,
-  },
   deleteBtn: {
     width: 34,
     height: 34,

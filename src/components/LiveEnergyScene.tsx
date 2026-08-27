@@ -169,31 +169,20 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   //   In on-grid mode, home = solarW ± tomznPowerW (computed by backend), NOT
   //   loadW (which is ~0 because the inverter's load output isn't feeding home).
   const onGridMode = gridFlow?.mode === "on-grid";
+  const hybridMode = gridFlow?.mode === "hybrid";
   const solarNow = inverter?.solarW ?? 0;
-  // Physical law: export can NEVER exceed solar production. If tomzn shows more
-  // power than solar is producing (tomzn > solar), it MUST be import (home drawing
-  // grid + solar), not export. This guards against stale gridFlow.direction or any
-  // backend edge case — the UI will never show e.g. 800W export from 600W solar.
-  const exportPhysicallyPossible = (tomznLive.powerW ?? 0) <= solarNow + 50;
-  // Export is impossible when grid is unavailable (TOMZN offline, wapda cut off,
-  // or inverter in battery mode B — no grid connection to export to).
   const canExport = !gridUnavailable && inverter?.inverterMode !== "B";
-  // In on-grid mode, use the inverter's gridWRaw directly to detect export.
-  // The backend's gridFlow.direction can say "import" even when the inverter
-  // is exporting (gridWRaw < 0), because direction is based on NET flow (TOMZN
-  // magnitude vs solar). The inverter's gridWRaw is the authoritative signal
-  // for whether solar is being fed back to the grid. Threshold: > 50W (noise).
-  const inverterExporting = onGridMode && canExport && (inverter?.gridWRaw ?? 0) < -50;
-  const isExporting = gridFlow
-    ? (onGridMode
-      ? (inverterExporting && exportPhysicallyPossible)
-      : (gridFlow.direction === "export" && exportPhysicallyPossible && canExport))
-    : (canExport && !offline && !inverterOff && inverter?.isOnline !== false && (inverter?.gridWRaw ?? 0) < 0 && (inverter?.solarW ?? 0) > Math.max(0, tomznLive.powerW ?? 0));
-  // Export magnitude: in on-grid mode use |gridWRaw| (the inverter's measured
-  // export). Otherwise clamp to min(tomzn, solar) — can't export more than
-  // is being produced or what TOMZN sees.
-  const exportW = onGridMode
-    ? Math.max(0, -(inverter?.gridWRaw ?? 0))
+  // Hybrid: home = inverter load. Fronus gridWRaw < 0 is leftover solar going
+  // straight into TOMZN — that IS household export.
+  // On-grid: gridWRaw is only "solar on the bus"; direction stays TOMZN-vs-solar.
+  const hybridExportW = Math.max(0, -(inverter?.gridWRaw ?? 0));
+  const hybridExporting = hybridMode && canExport && hybridExportW > 50;
+  const onGridExporting = onGridMode && canExport && gridFlow?.direction === "export"
+    && (tomznLive.powerW ?? 0) < solarNow
+    && (gridFlow?.homeW ?? 0) < solarNow;
+  const isExporting = hybridExporting || onGridExporting || (!onGridMode && !hybridMode && gridFlow?.direction === "export" && canExport);
+  const exportW = hybridExporting
+    ? hybridExportW
     : Math.min(Math.max(0, tomznLive.powerW || 0), Math.max(0, solarNow));
   const gridDisplayW = isExporting ? -exportW : gridPowerW;
 
@@ -274,6 +263,9 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
     if (onGridMode && isExporting) return { modeLabel: "On-Grid · Exporting", modeColor: "#6E9BFF" };
     if (onGridMode && gridImporting) return { modeLabel: "On-Grid · Importing", modeColor: "#6E9BFF" };
     if (onGridMode) return { modeLabel: "On-Grid", modeColor: "#6E9BFF" };
+    if (hybridMode && isExporting) return { modeLabel: "Hybrid · Exporting", modeColor: "#6E9BFF" };
+    if (hybridMode && gridImporting) return { modeLabel: "Hybrid · Importing", modeColor: "#32E56B" };
+    if (hybridMode) return { modeLabel: "Hybrid", modeColor: "#32E56B" };
     // Solar / Hybrid take priority over UPS. A leftover `ups` object
     // from a stale cache or a single inverter timeout must never cover a
     // still-producing inverter (the Solar Only → UPS flicker).

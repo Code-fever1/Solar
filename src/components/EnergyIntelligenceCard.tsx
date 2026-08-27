@@ -71,8 +71,12 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
   isLight = false,
   cardTheme,
 }: Props) {
-  const opacity = useSharedValue(0);
-  const translateY = useSharedValue(8);
+  // Start fully visible. Opacity only dips for the fade when the headline
+  // CHANGES — never start at 0, otherwise a missed/timing-interrupted
+  // animation (tab switch, app background, removeClippedSubviews re-attach)
+  // leaves the card as a hollow glass box with invisible content.
+  const opacity = useSharedValue(1);
+  const translateY = useSharedValue(0);
   const lastHeadlineRef = useRef<string>("");
 
   // ── Cache last valid intelligence so we never show "Loading" after first data ──
@@ -123,10 +127,14 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
   ]);
 
   // ── Fade animation on headline change ──
+  // First paint: fully visible, no animation dependency. Only later headline
+  // changes get the 0→1 fade, so the card can never be stuck invisible.
+  const firstRunRef = useRef(true);
   useEffect(() => {
     const key = display.headline;
     if (lastHeadlineRef.current === key) return;
     lastHeadlineRef.current = key;
+    if (firstRunRef.current) { firstRunRef.current = false; return; }
     opacity.value = 0;
     translateY.value = 6;
     opacity.value = withTiming(1, { duration: 300, easing: Easing.out(Easing.quad) });

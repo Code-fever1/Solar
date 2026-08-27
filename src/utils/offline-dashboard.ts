@@ -285,7 +285,8 @@ export function applyOfflineManualReading(
   // Projected monthly: current cycle usage + remaining days in cycle × daily rate
   const now = new Date();
   const billingDay = 28;
-  const cycleStartMonth = now.getDate() >= billingDay ? now.getMonth() : now.getMonth() - 1;
+  const pastBillingNoon = now.getDate() > billingDay || (now.getDate() === billingDay && now.getHours() >= 12);
+  const cycleStartMonth = pastBillingNoon ? now.getMonth() : now.getMonth() - 1;
   const cycleStartYear = cycleStartMonth < 0 ? now.getFullYear() - 1 : now.getFullYear();
   const cycleStartIdx = ((cycleStartMonth % 12) + 12) % 12;
   const cycleStartDate = new Date(cycleStartYear, cycleStartIdx, billingDay);
