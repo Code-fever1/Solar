@@ -33,6 +33,7 @@ const CONFIG = {
   tomznCutoffFaults: new Set([2048, 8192]),
   // TOMZN voltage threshold: below this, grid is considered unavailable
   tomznMinVoltageV: 200,
+  brownoutFloorV: 198,
 };
 
 /**
@@ -136,6 +137,25 @@ function classifyGridState({
 
   // ── WAPDA is available ──
   gridState.cutoffStart = 0;
+
+  // ── Brownout (undervoltage): grid present but weak ──
+  // Voltage between the hard availability floor and a healthy threshold.
+  // Debounced like cutoff so a single sag doesn't fire.
+  if (tomznV > 0 && tomznV < CONFIG.brownoutFloorV) {
+    if (gridState.brownoutStart === 0) gridState.brownoutStart = now;
+    if (now - gridState.brownoutStart >= CONFIG.cutoffPersistenceMs) {
+      gridState.wasCutoff = false;
+      return {
+        state: "BROWN_OUT",
+        label: "WAPDA Undervoltage",
+        severity: "medium",
+        message: `Grid voltage is ${Math.round(tomznV)}V — below the healthy range. WAPDA is undervolting; sensitive equipment may trip.`,
+        voltage: Math.round(tomznV),
+      };
+    }
+  } else {
+    gridState.brownoutStart = 0;
+  }
 
   // Check if just restored after a cutoff
   if (gridState.wasCutoff && (gridState.restoredAt === 0 || now - gridState.restoredAt < CONFIG.restoredWindowMs)) {

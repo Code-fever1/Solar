@@ -127,6 +127,26 @@ Files to deploy (depending on what changed):
 - Frontend: `gridUnavailable` flag hides grid V/W/A text and lines when offline
 - Status card shows "Offline" in red (`#EF4C4C`)
 
+## Energy Intelligence Engine v2 (`backend/intelligence/`)
+
+Adaptive household advisor, runs on every `/live` payload build; pattern learning cached 5 min. Modules:
+
+| Module | Role |
+|--------|------|
+| `DailyPatternLearner.js` | 14-day profile: weekday vs weekend buckets, per-mode baselines (on_grid/hybrid/bypass/night), voltage norms (solarV/gridV/homeV/tomznV), export learning (freq, avg W, kWh/day, peak window), 24h hourly curves per day type, 7d usage trend |
+| `MeterAdvisor.js` | Remaining-quota + slab timing. **Reserve: meter1 = 2 units protected, meter2 = 0.** Time remaining ("5 units ≈ 8 hours" via live burn blended with learned hourly curve). Switch plan: use richer meter first, switch when gaps level, hold near cycle end (3 days), combined-shortfall math with exhaust date |
+| `ExportAnalyzer.js` | Learned export windows → load-shift advice; missed-export detection (solar high + importing); export-day tracking |
+| `VoltageAnalyzer.js` | Brownout (gridV vs learned norm), panel shading vs PV-input fault (solarV coherence), inverter AC output |
+| `SolarAnomalyDetector.js` | Day-type solar baseline, cloud fluctuation detection, evening-aware |
+| `ConsumptionAnalyzer.js` | Day-type + mode-blended load baseline (bypass hours judged vs bypass norm) |
+| `GridStateAnalyzer.js` | CUTOFF / BROWN_OUT / UNSTABLE / RESTORED / INVERTER_OFF, TOMZN fallback when inverter offline |
+| `ConfidenceEngine.js` | `computeMeterConfidence` now wired (was hardcoded 0.9); day-type coverage caps confidence |
+| `InsightGenerator.js` | Professional voice: number + context + action + consequence. No "WAPDA is low" / bare numbers |
+
+- Engine inputs: `household` gets `todayExportKwh` (= dashboard `home.exportSkipToday`), `cycleEndAt` (= `meta.billingEnd`), `remaining` from dashboard cache.
+- Meter hysteresis: switch advice can't flip-flop within 15 min.
+- Suggestion types stay in the frontend union (`grid|solar|consumption|meter|system`); export advice uses `solar`.
+
 ## App Versioning
 
 - `expo.version`: `1.0.0` — app version string

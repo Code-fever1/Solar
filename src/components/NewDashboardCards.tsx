@@ -369,20 +369,24 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   const elapsedDays = Math.max(0, Math.min(totalCycleDays, Math.floor((now.getTime() - cycleStartDate.getTime()) / 86_400_000)));
   const remainingDays = Math.max(1, totalCycleDays - elapsedDays);
 
-  const sortedDaily = [...dailyUsage].sort((a, b) => a.timestamp - b.timestamp);
+  const cycleStartMs = cycleStartDate.getTime();
 
   // ── Build actual cumulative mapped to day-offset from cycle start ──
-  // The backend's dailyUsage only covers the last 7 days, but the graph spans
-  // the entire billing cycle (up to 31 days from the 28th). We need to:
-  //  1. Map each dailyUsage entry to its correct day offset from cycle start
-  //     (based on its timestamp, NOT its array index).
+  // The backend's dailyUsage covers the last 7 days, but the graph spans the
+  // entire billing cycle. Only entries that fall WITHIN the current cycle are
+  // plotted — entries from before the cycle started (e.g. the cycle just
+  // rolled over today) would otherwise inflate the y-start to ~87 units.
+  const sortedDaily = [...dailyUsage]
+    .filter((d) => d.timestamp >= cycleStartMs)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  //  1. Map each dailyUsage entry to its correct day offset from cycle start.
   //  2. Anchor the total to meter1Used + meter2Used (total used in the cycle).
-  //     The usage before the 7-day window = totalUsed - sum(7-day dailyUsage).
+  //     Usage before the 7-day window = totalUsed - sum(in-cycle dailyUsage).
   //  3. For days before the 7-day window, ramp linearly from 0 to the first
   //     data point's cumulative (which includes the pre-window usage).
   //  4. For days with data, use the real cumulative.
   //  5. For days after the last data point (but ≤ today), extend flat.
-  const cycleStartMs = cycleStartDate.getTime();
   const recentTotal = sortedDaily.reduce((sum, d) => sum + d.usage, 0);
   const earlyTotal = Math.max(0, totalUsed - recentTotal); // usage before the 7-day window
   const dayOffsetToCumulative = new Map<number, number>();
@@ -430,6 +434,7 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   // 7-day data window ramp from 0 to the first data point; days after the last
   // data point extend flat to today.
   const firstDataCumulative = dayOffsetToCumulative.get(firstDataDayOffset) ?? lastActualCumulative;
+  const hasNoInCycleData = sortedDaily.length === 0;
   let prevCumulative = 0;
   for (let i = 0; i <= elapsedDays; i++) {
     const x = (i / totalPoints) * chW;
@@ -439,6 +444,10 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
     } else if (i < firstDataDayOffset && firstDataDayOffset > 0) {
       // Before the 7-day window: ramp linearly from 0 to the first data point
       val = (firstDataCumulative * i) / firstDataDayOffset;
+    } else if (hasNoInCycleData && i === elapsedDays && lastActualCumulative > 0) {
+      // No in-cycle daily data but there IS cycle usage (e.g. cycle just
+      // started today): ramp from 0 to the actual cumulative at today.
+      val = lastActualCumulative;
     } else {
       // After the last data point but before today: extend flat
       val = prevCumulative;

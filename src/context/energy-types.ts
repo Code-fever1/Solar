@@ -209,6 +209,13 @@ export type IntelligenceState = {
     advantageFavors: string;
     action: string;
     shouldSwitch: boolean;
+    remaining?: { meter1: number; meter2: number };
+    usable?: { meter1: number; meter2: number };
+    hoursLeftActive?: number | null;
+    daysLeftActive?: number | null;
+    urgency?: string;
+    text?: string | null;
+    switchPlan?: { mode?: string; rationale?: string; inDays?: number | null; atUnits?: number } | null;
   } | null;
   details?: {
     gridState: string;

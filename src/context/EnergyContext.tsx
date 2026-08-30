@@ -539,7 +539,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       i.pv1V, i.pv1A, i.pv1W, i.pv2V, i.pv2A, i.pv2W,
       i.batteryV, i.batteryPercent, i.temperatureC, i.acOutHz,
       i.gridV, i.gridHz, i.loadVa, i.loadPercent,
-      t.isOnline, t.switchOn, t.powerW, t.voltageV, t.currentA, t.faultCode,
+      t.isOnline, t.switchOn, t.powerW, t.energyKwh, t.voltageV, t.currentA, t.faultCode,
       g.mode, g.direction, g.homeW,
       u?.active ?? null, w.isDay, w.code,
       intel?.headline, intel?.overallStatus,

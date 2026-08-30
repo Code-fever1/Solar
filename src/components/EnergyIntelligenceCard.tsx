@@ -6,6 +6,7 @@ import {
     CheckCircle2,
     CloudOff,
     Lightbulb,
+    Repeat,
     Sun,
     TrendingDown,
     Zap,
@@ -36,7 +37,7 @@ const SUGGESTION_ICONS: Record<IntelligenceSuggestion["type"], typeof Brain> = {
   grid: Zap,
   solar: Sun,
   consumption: TrendingDown,
-  meter: Lightbulb,
+  meter: Repeat,
   system: Brain,
 };
 
@@ -95,7 +96,7 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
     if (!src) {
       // Truly first load — no data ever received yet
       return {
-        headline: "Loading Intelligence...",
+        headline: "Reading house…",
         overallStatus: "info" as const,
         suggestions: [] as IntelligenceSuggestion[],
         confidencePct: 0,
@@ -106,14 +107,14 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
     }
 
     const overallStatus = src.overallStatus || "healthy";
-    const headline = src.headline || "System Healthy";
+    const headline = src.headline || "On track";
     const suggestions = src.suggestions || [];
     const confidencePct = Math.round((src.confidence || 0) * 100);
     const meterRec = src.meterRecommendation;
     // Only show meter scores when recommending a SWITCH to the other meter.
     // If already on the better meter, hide scores entirely — the corner badge
     // already shows which meter is active.
-    const showMeterScores = !!meterRec && meterRec.recommendation !== meterRec.activeMeter;
+    const showMeterScores = !!meterRec && !!meterRec.shouldSwitch;
     // If we're showing cached data (intelligence prop is null but we have last valid)
     const isStale = !intelligence || !intelligence.headline;
 
@@ -152,14 +153,11 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
 
   // Determine meter action label
   let meterActionLabel = "";
-  if (meterRec) {
-    const recName = meterRec.recommendation === "meter1" ? "M1" : "M2";
-    if (meterRec.action?.startsWith("consider_switch")) {
-      meterActionLabel = `Consider ${recName}`;
-    } else if (meterRec.action?.startsWith("keep")) {
-      meterActionLabel = `Keep ${recName}`;
-    }
+  if (meterRec?.shouldSwitch) {
+    const recName = meterRec.recommendation === "meter1" ? "Meter 1" : "Meter 2";
+    meterActionLabel = meterRec.urgency === "alert" ? `Switch to ${recName}` : `Move to ${recName}`;
   }
+  const remaining = meterRec?.usable || meterRec?.remaining;
 
   return (
     <GlassCard style={[styles.card, { borderColor: `${config.color}22` }]}>
@@ -210,7 +208,7 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
           // When no suggestions and healthy, show a simple "All systems normal" line
           display.overallStatus === "healthy" ? (
             <Text style={[styles.suggestionText, { color: cardTheme.textSecondary }]}>
-              All systems operating normally.
+              No action needed right now.
             </Text>
           ) : null
         )}
@@ -240,7 +238,7 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
                     },
                   ]}
                 >
-                  {meterRec.meter1Score}
+                  {remaining ? Math.round(remaining.meter1) : meterRec.meter1Score}
                 </Text>
               </View>
               <View
@@ -264,14 +262,14 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
                     },
                   ]}
                 >
-                  {meterRec.meter2Score}
+                  {remaining ? Math.round(remaining.meter2) : meterRec.meter2Score}
                 </Text>
               </View>
-              {meterRec.advantage > 0 && (
+              {remaining ? (
                 <Text style={[styles.advantageText, { color: cardTheme.textMuted }]}>
-                  +{meterRec.advantage} pts
+                  units
                 </Text>
-              )}
+              ) : null}
             </View>
             {meterActionLabel ? (
               <Text style={[styles.actionText, { color: config.color }]} numberOfLines={1}>

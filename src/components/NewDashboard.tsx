@@ -365,12 +365,14 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
   // 2048 = wapda cut off while load was on → show "Offline"
   // 8192 = wapda gone and relay also off → show "Unavailable"
   const tomznFault = tomznLive.faultCode || 0;
-  const wapdaCutOff = tomznLive.isOnline && tomznFault === 2048;
-  const wapdaUnavailable = tomznLive.isOnline && tomznFault === 8192;
-  // Relay off without fault = standby state
-  const wapdaStandby = tomznLive.isOnline && !tomznLive.switchOn && tomznFault !== 2048 && tomznFault !== 8192;
-  // Grid is unavailable when TOMZN device is offline, wapda cut off, or unavailable.
-  const gridOffline = !tomznLive.isOnline || wapdaCutOff || wapdaUnavailable;
+  const wapdaCutOff = tomznFault === 2048;
+  const wapdaUnavailable = tomznFault === 8192;
+  // Relay off without a cutoff fault = standby (intentional grid cut).
+  // Do not require isOnline: Tuya often flags a switch-off device as offline.
+  const wapdaStandby = !tomznLive.switchOn && !wapdaCutOff && !wapdaUnavailable;
+  // Grid path is dead only when WAPDA is actually gone, or TOMZN is unreachable
+  // while the relay is still ON. Standby is not offline.
+  const gridOffline = wapdaCutOff || wapdaUnavailable || (!tomznLive.isOnline && !!tomznLive.switchOn);
 
   // Scene theme is provided app-wide by SceneThemeProvider.
   const { heroScene, sheetColors, sheetGradient, cardTheme: sceneCardTheme, isLight: sceneIsLight } = useSceneTheme();
@@ -436,11 +438,11 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
       />
       <EnergyUsedCard
         totalHomeUsage={home.todayUsage}
-        liveLoadW={gridOffline ? 0 : (inverterOff ? tomznLive.powerW : (gridFlow?.mode === "on-grid" && gridFlow?.homeW ? gridFlow.homeW : inverter.loadW))}
+        liveLoadW={Math.round(gridFlow?.homeW || (!inverterOff && inverter.loadW) || (!gridOffline && tomznLive.powerW) || 0)}
         peakLoadW={peakLoadW}
         vsYesterdayPercent={home.usageChangePercent ?? null}
-        voltage={gridOffline ? 0 : (tomznLive.voltageV || inverter.gridV)}
-        currentA={gridOffline ? 0 : tomznLive.currentA}
+        voltage={gridOffline || wapdaStandby ? (inverter.acOutV || inverter.gridV || 0) : (tomznLive.voltageV || inverter.gridV)}
+        currentA={gridOffline || wapdaStandby ? 0 : tomznLive.currentA}
         loadStatus={home.loadStatus || "Normal"}
         normalDrawKw={home.normalDrawKw || 0}
         isLight={sceneIsLight}

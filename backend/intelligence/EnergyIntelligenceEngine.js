@@ -1,26 +1,28 @@
 "use strict";
 
 /**
- * EnergyIntelligenceEngine — top-level orchestrator.
+ * EnergyIntelligenceEngine v2 — adaptive household advisor.
  *
- * Combines:
- *   DailyPatternLearner + MeterAdvisor + SolarAnomalyDetector +
- *   GridStateAnalyzer + ConsumptionAnalyzer + ConfidenceEngine +
- *   InsightGenerator
+ * Orchestrates the v2 modules:
+ *   DailyPatternLearner  → weekday/weekend, per-mode, voltage, export, hourly
+ *   MeterAdvisor         → reserve-protected, time-remaining, slab timing
+ *   ExportAnalyzer       → learned export windows + load-shift advice
+ *   VoltageAnalyzer      → brownout, panel vs inverter input, AC output
+ *   SolarAnomalyDetector → day-type solar baseline
+ *   ConsumptionAnalyzer  → mode/day-type load baseline
+ *   GridStateAnalyzer    → cutoff / unstable / brownout / restored
+ *   InsightGenerator     → professional, prioritised advice
  *
- * into a single intelligence state that is included in the SSE live payload.
- *
- * Caching strategy:
- *   - Historical pattern learning is expensive (DB queries) → cached for 5 min
- *   - Real-time scoring (meter, solar, grid, consumption) runs on every call (~3s)
- *   - Notification cooldown prevents repeating the same notification
+ * compute() runs on every live payload build; heavy learning is cached 5 min.
  */
 
-const { learnDailyPatterns, bucketForHour } = require("./DailyPatternLearner");
-const { computeMeterRecommendation } = require("./MeterAdvisor");
+const { learnDailyPatterns, bucketForHour, pakistanDayType, normalizeHouseholdMode } = require("./DailyPatternLearner");
+const { computeMeterRecommendation, DEFAULT_RESERVE } = require("./MeterAdvisor");
 const { detectSolarAnomaly } = require("./SolarAnomalyDetector");
 const { classifyGridState } = require("./GridStateAnalyzer");
 const { analyzeConsumption } = require("./ConsumptionAnalyzer");
+const { analyzeExport } = require("./ExportAnalyzer");
+const { analyzeVoltage } = require("./VoltageAnalyzer");
 const {
   computeOverallConfidence,
   computeMeterConfidence,
@@ -29,49 +31,26 @@ const {
 } = require("./ConfidenceEngine");
 const { generateInsight } = require("./InsightGenerator");
 
-const PATTERN_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
-const NOTIFICATION_COOLDOWN_MS = 30 * 60_000; // 30 minutes
+const PATTERN_CACHE_TTL_MS = 5 * 60_000;
+const NOTIFICATION_COOLDOWN_MS = 30 * 60_000;
 
-/**
- * Create a new EnergyIntelligenceEngine instance.
- *
- * @param {object} collections - MongoDB collections:
- *   { inverterSnapshots, tomznSnapshots, allocations }
- * @returns {object} engine with .compute() method
- */
 function createEnergyIntelligenceEngine(collections) {
-  // ── Persistent state (survives across compute() calls) ──
   const patternCache = { profile: null, generatedAt: 0 };
-
-  // Hysteresis state for meter advisor
-  const meterHysteresis = {
-    advantageStart: 0,
-    advantageMeter: null,
-    lastRecommendationAt: 0,
-  };
-
-  // Anomaly detection persistent state
-  const solarAnomalyState = { count: 0, recoveryCount: 0, lastAnomalyAt: 0 };
+  const meterHysteresis = { lastAdvice: null, lastChangedAt: 0 };
+  const solarAnomalyState = { count: 0, recoveryCount: 0, lastAnomalyAt: 0, voltageHistory: [], fluctuationCount: 0 };
   const consumptionState = { count: 0, recoveryCount: 0 };
-
-  // Grid state persistent state
+  const voltageState = { grid: { count: 0, recovery: 0 }, panel: { count: 0, recovery: 0 }, pvinput: { count: 0, recovery: 0 }, ac: { count: 0, recovery: 0 } };
   const gridStateTracker = {
     lastConnected: undefined,
     cutoffStart: 0,
     wasCutoff: false,
     restoredAt: 0,
+    brownoutStart: 0,
     transitions: [],
   };
-
-  // Notification cooldown tracker: { [status]: lastNotifiedAt }
   const notificationCooldowns = {};
-
-  // Last computed state (for delta detection)
   let lastStatus = null;
 
-  /**
-   * Get the cached pattern profile, or re-learn if stale.
-   */
   async function getPatternProfile(now) {
     if (patternCache.profile && (now - patternCache.generatedAt) < PATTERN_CACHE_TTL_MS) {
       return patternCache.profile;
@@ -82,64 +61,131 @@ function createEnergyIntelligenceEngine(collections) {
     return profile;
   }
 
-  /**
-   * Compute the current intelligence state.
-   *
-   * @param {object} liveData - current live telemetry
-   * @param {object} liveData.inverter - inverter snapshot
-   * @param {object} liveData.tomznLive - TOMZN live data
-   * @param {object} liveData.gridFlow - { mode, direction, homeW, ... }
-   * @param {object} liveData.weather - { isDay, cloudCover, ... }
-   * @param {object} liveData.state - solar_engine_state (meters, activeMeter, slabTarget)
-   * @returns {object} intelligence state for SSE payload
-   */
+  /** Current live burn in METER units/hour (calibrated), blended with the learned hourly curve. */
+  function burnUnitsPerHour(liveData, profile, dayType, activeMeter) {
+    const state = liveData.state || {};
+    const meter = state.meters?.[activeMeter] || {};
+    const calibration = Number(meter.tomznToMeterRatio) > 0 ? meter.tomznToMeterRatio
+      : Number(meter.calibrationFactor) > 0 ? meter.calibrationFactor
+      : 1;
+    const now = Date.now();
+    const pkHour = Math.floor((now / 3_600_000 + 5) % 24);
+
+    // Instantaneous draw (W → kWh/h → meter units/h)
+    const drawW = Number(liveData.gridFlow?.homeW) || Number(liveData.inverter?.loadW) || Number(liveData.tomznLive?.powerW) || 0;
+    const livePerHour = (drawW / 1000) * calibration;
+
+    // Learned hourly curve for this day type (units/hour)
+    const curveKwh = profile.hourly?.[dayType]?.usageKwh?.[pkHour] || 0;
+    const learnedPerHour = curveKwh * calibration;
+
+    // Blend: lean live, but floor by the learned curve when live is near 0
+    // (a brief 0W poll must not claim "infinite hours left").
+    if (livePerHour >= 0.03) return livePerHour;
+    if (learnedPerHour > 0) return learnedPerHour;
+    return 0.02;
+  }
+
   async function compute(liveData) {
     const now = Date.now();
-
-    // Get pattern profile (cached)
     let patternProfile;
     try {
       patternProfile = await getPatternProfile(now);
-    } catch (e) {
-      // If pattern learning fails, return a minimal state
+    } catch (_e) {
       return {
-        status: "INSUFFICIENT_DATA",
-        title: "Learning Your Home's Energy Pattern",
-        message: "Collecting data to provide insights.",
+        headline: "On track",
+        overallStatus: "info",
+        suggestions: [],
         confidence: 0.1,
+        confidenceLevel: "insufficient_data",
+        meterRecommendation: null,
+        status: "INSUFFICIENT_DATA",
+        title: "On track",
+        message: "Waiting on household data.",
         severity: "info",
         reasonCodes: ["PATTERN_LEARNING_FAILED"],
-        meterRecommendation: null,
-        anomalies: [],
+        notification: null,
         timestamp: now,
       };
     }
 
+    const dayType = pakistanDayType(now);
     const confidenceLevel = patternProfile.confidence.level;
     const pkHour = Math.floor((now / 3_600_000 + 5) % 24);
     const currentBucketId = bucketForHour(pkHour);
-    const currentMode = liveData.gridFlow?.mode || "night";
+    const currentMode = normalizeHouseholdMode(liveData.gridFlow?.mode || liveData.inverter?.inverterMode || "night");
+    const billingDay = liveData.state?.billingDay || 28;
+    const cycleEndAt = Number(liveData.household?.cycleEndAt) || nextCycleEnd(now, billingDay);
+    const remainingCycleDays = Math.max(0, (cycleEndAt - now) / 86_400_000);
+    const activeMeter = liveData.state?.activeMeter || "meter1";
 
-    // ── Compute confidence scores ──
     const overallConfidence = computeOverallConfidence(patternProfile, currentBucketId);
-    const meterConfidence = computeMeterConfidence(patternProfile, currentBucketId, currentMode);
-    const solarConfidence = computeSolarConfidence(patternProfile, currentBucketId);
-    const consumptionConfidence = computeConsumptionConfidence(patternProfile, currentBucketId);
+    const solarConfidence = computeSolarConfidence(patternProfile, currentBucketId, dayType);
+    const consumptionConfidence = computeConsumptionConfidence(patternProfile, currentBucketId, dayType);
 
-    // ── Run all analyzers ──
+    const household = {
+      averageDaily: Number(liveData.household?.averageDaily) || 0,
+      lastMonthTotal: Number(liveData.household?.lastMonthTotal) || 0,
+      projectedMonthly: Number(liveData.household?.projectedMonthly) || 0,
+      todayUsage: Number(liveData.household?.todayUsage) || 0,
+      todayExportKwh: Number(liveData.household?.todayExportKwh) || 0,
+      remainingCycleDays: Number(liveData.household?.remainingCycleDays) || remainingCycleDays,
+      cycleEndAt,
+      mode: currentMode,
+      direction: liveData.gridFlow?.direction || "idle",
+      homeW: Number(liveData.gridFlow?.homeW) || 0,
+      solarW: Number(liveData.gridFlow?.solarW) || Number(liveData.inverter?.solarW) || 0,
+    };
+
+    const remainingOverride = liveData.household?.remaining && Number.isFinite(liveData.household.remaining.meter1) && Number.isFinite(liveData.household.remaining.meter2)
+      ? liveData.household.remaining
+      : null;
+
+    const meterConfidence = computeMeterConfidence(patternProfile, currentBucketId, currentMode, dayType, remainingOverride ? "override" : "computed");
+    const burnPerHour = burnUnitsPerHour(liveData, patternProfile, dayType, activeMeter);
+
     const meterRec = computeMeterRecommendation({
       meters: liveData.state?.meters || { meter1: {}, meter2: {} },
-      activeMeter: liveData.state?.activeMeter || "meter1",
-      patternProfile,
-      currentMode,
+      activeMeter,
       slabTarget: liveData.state?.slabTargetUnits || 200,
-      hysteresisState: meterHysteresis,
+      averageDaily: household.averageDaily,
+      burnUnitsPerHour: burnPerHour,
+      cycleEndAt,
       now,
+      reserve: DEFAULT_RESERVE,
+      confidence: meterConfidence,
+      remainingOverride,
     });
 
+    // Hysteresis: never hide a real alert/warning. Only dampen info-level
+    // flip-flops (keep <-> planned switch) so the card doesn't chatter.
+    const adviceKey = `${meterRec.urgency}|${meterRec.recommendation}|${meterRec.reason}`;
+    const isHard = meterRec.urgency === "alert" || meterRec.urgency === "warning";
+    // Info-level subsidy/efficiency suggestions show once, then hide for 2 hours
+    // so they don't nag the user who's intentionally running a single meter.
+    const isOneShotInfo = !isHard && (meterRec.reason === "SUBSIDY_AVAILABLE" || meterRec.reason === "EFFICIENCY_SUGGESTION");
+    if (isOneShotInfo && meterHysteresis.lastAdvice === adviceKey && (now - meterHysteresis.lastChangedAt) > 30_000) {
+      // Already shown for 30s — suppress for 2 hours.
+      meterRec.urgency = "none";
+      meterRec.shouldSwitch = false;
+      meterRec.text = null;
+      meterRec.switchPlan = meterRec.switchPlan ? { ...meterRec.switchPlan, mode: "keep" } : null;
+    } else if (!isHard && meterHysteresis.lastAdvice && meterHysteresis.lastAdvice !== adviceKey && (now - meterHysteresis.lastChangedAt) < 15 * 60_000) {
+      meterRec.urgency = "none";
+      meterRec.shouldSwitch = false;
+      meterRec.text = null;
+      meterRec.switchPlan = meterRec.switchPlan ? { ...meterRec.switchPlan, mode: "keep" } : null;
+    } else if (meterHysteresis.lastAdvice !== adviceKey) {
+      meterHysteresis.lastAdvice = adviceKey;
+      meterHysteresis.lastChangedAt = now;
+    }
+
+    const liveLoadW = Number(liveData.gridFlow?.homeW) || Number(liveData.inverter?.loadW) || 0;
     const solarAnomaly = detectSolarAnomaly({
       actualSolarW: liveData.inverter?.solarW || 0,
+      currentLoadW: liveLoadW,
       patternProfile,
+      dayType,
       weather: liveData.weather || {},
       anomalyState: solarAnomalyState,
       confidence: solarConfidence,
@@ -159,24 +205,46 @@ function createEnergyIntelligenceEngine(collections) {
     });
 
     const consumptionResult = analyzeConsumption({
-      currentLoadW: liveData.gridFlow?.homeW || liveData.inverter?.loadW || 0,
+      currentLoadW: liveLoadW,
       patternProfile,
+      dayType,
+      mode: currentMode,
       consumptionState,
       confidence: consumptionConfidence,
       now,
     });
 
-    // ── Generate top-level insight ──
+    const voltageResult = analyzeVoltage({
+      inverter: liveData.inverter || {},
+      tomznLive: liveData.tomznLive || {},
+      bucket: patternProfile.buckets?.[currentBucketId]?.byDayType?.[dayType] || patternProfile.buckets?.[currentBucketId],
+      mode: currentMode,
+      currentLoadW: liveLoadW,
+      state: voltageState,
+    });
+
+    const exportResult = analyzeExport({
+      exportProfile: patternProfile.export,
+      dayType,
+      bucketId: currentBucketId,
+      gridFlow: liveData.gridFlow || {},
+      todayExportKwh: household.todayExportKwh,
+      weather: liveData.weather || {},
+    });
+
     const insight = generateInsight({
       gridState: gridResult,
       solarAnomaly,
       consumption: consumptionResult,
       meterRec,
+      voltage: voltageResult,
+      exportAnalysis: exportResult,
       confidenceLevel,
       confidence: overallConfidence,
+      household,
+      dayType,
     });
 
-    // ── Notification cooldown ──
     let shouldNotify = false;
     if (insight.notificationPriority !== "none" && insight.status !== lastStatus) {
       const lastNotified = notificationCooldowns[insight.status] || 0;
@@ -187,9 +255,6 @@ function createEnergyIntelligenceEngine(collections) {
     }
     lastStatus = insight.status;
 
-    // ── Build final state ──
-    // Use the composite insight from InsightGenerator directly.
-    // It already contains all the fields we need.
     return {
       headline: insight.headline,
       overallStatus: insight.overallStatus,
@@ -198,7 +263,6 @@ function createEnergyIntelligenceEngine(collections) {
       confidenceLevel,
       meterRecommendation: insight.meterRecommendation,
       details: insight.details,
-      // Backward compat
       status: insight.status,
       title: insight.title,
       message: insight.message,
@@ -215,6 +279,20 @@ function createEnergyIntelligenceEngine(collections) {
   }
 
   return { compute };
+}
+
+function nextCycleEnd(now, billingDay) {
+  const PK = "+05:00";
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi", year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(new Date(now));
+  const byType = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  let year = Number(byType.year);
+  let month = Number(byType.month);
+  const thisTick = Date.parse(`${year}-${String(month).padStart(2, "0")}-${String(billingDay).padStart(2, "0")}T12:00:00${PK}`);
+  if (now < thisTick) return thisTick;
+  month += 1;
+  if (month === 13) { month = 1; year += 1; }
+  return Date.parse(`${year}-${String(month).padStart(2, "0")}-${String(billingDay).padStart(2, "0")}T12:00:00${PK}`);
 }
 
 module.exports = { createEnergyIntelligenceEngine };

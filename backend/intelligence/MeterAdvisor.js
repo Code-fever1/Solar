@@ -1,258 +1,264 @@
 "use strict";
 
 /**
- * MeterAdvisor — recommends which meter to use based on current conditions
- * and historical PERFORMANCE only.
+ * MeterAdvisor v3 — user-intent-aware meter switch advice.
  *
- * PERFORMANCE = "which meter historically consumes fewer billable units
- * under conditions like RIGHT NOW?"
- *
- * Quota status (remaining units to 200 threshold) is NOT part of this score.
- * Quota warnings are handled separately by the meter cards on the frontend.
- * Do NOT mix quota into performance scoring.
- *
- * Score factors (each 0-100, weighted):
- *   1. Historical usage rate in current time bucket (lower = better)   40%
- *   2. Calibration ratio (meter reads lower = burns slower in billing) 25%
- *   3. Mode-specific performance (does this meter do well in this mode?) 20%
- *   4. Calibration confidence (more observations = more trustworthy)    15%
- *
- * Hysteresis:
- *   - Requires minimum score advantage (default 15 points)
- *   - Requires minimum persistence duration (default 5 minutes)
- *   - Requires minimum confidence (default 0.5)
- *   - Cooldown after recommendation (default 30 minutes)
+ * Design principles (per user request):
+ *   - Do NOT suggest switching to "keep both meters at the same rate."
+ *     The user may intentionally run a single meter. Equalize/richer-first
+ *     logic is removed entirely.
+ *   - Only speak when there's a REAL reason to switch:
+ *     1. Active meter is low (≤20 units) and the other has more → switch.
+ *     2. Active meter is critically low (≤10 units) → switch now (alert).
+ *     3. At current burn rate, the active meter will exhaust TONIGHT → warn.
+ *     4. One meter is clearly more efficient (calibration factor) → suggest
+ *        once, then hide.
+ *     5. Meter 1 has a government subsidy → suggest using it first, once,
+ *        then hide.
+ *   - When the active meter is healthy and has plenty of headroom, stay quiet.
+ *   - Combined shortfall (both meters won't last to cycle end) still warns.
  */
 
-const { bucketForHour } = require("./DailyPatternLearner");
+const LOW_UNITS = 10;        // critical — switch now
+const WARN_UNITS = 20;       // start warning
+const HEADROOM = 3;          // other meter must beat active by this
+const TONIGHT_HOURS = 12;    // "tonight" = next 12 hours
+const MIN_BURN_PER_HOUR = 0.02;
+const MIN_BURN_PER_DAY = 0.3;
+const EFFICIENCY_THRESHOLD = 0.03; // 3% calibration difference to suggest efficiency
+const SUBSIDY_METER = "meter1";   // meter1 has government subsidy
 
-// ── Configuration ──
-const CONFIG = {
-  minScoreAdvantage: 15,       // points
-  minPersistenceMs: 5 * 60_000, // 5 minutes
-  minConfidence: 0.5,
-  cooldownMs: 30 * 60_000,      // 30 minutes between recommendations
-  // Score weights (sum to 1.0) — PERFORMANCE ONLY, no quota
-  weights: {
-    bucketUsage: 0.40,      // historical usage in this time bucket
-    burnRate: 0.25,          // calibration ratio (reads lower = better)
-    modeMatch: 0.20,         // mode-specific performance
-    calibration: 0.15,       // calibration confidence (data volume)
-  },
-};
+const DEFAULT_RESERVE = { meter1: 2, meter2: 0 };
 
-/**
- * Score a single meter's PERFORMANCE under current conditions.
- *
- * @param {string} meterId - "meter1" or "meter2"
- * @param {object} meterState - from solar_engine_state
- * @param {object} patternProfile - from DailyPatternLearner
- * @param {string} currentBucketId
- * @param {string} currentMode - hybrid/on-grid/night/bypass
- * @returns {object} { score, factors, reasonCodes }
- */
-function scoreMeter(meterId, meterState, patternProfile, currentBucketId, currentMode) {
-  const bucket = patternProfile.buckets[currentBucketId];
-  const reasonCodes = [];
-  const factors = {};
+function meterName(id) {
+  return id === "meter1" ? "Meter 1" : "Meter 2";
+}
 
-  // ── Factor 1: Historical usage rate in this bucket (40%) ──
-  // Lower usage = higher score. Compare this meter's avg usage in this bucket.
-  const myUsageAvg = meterId === "meter1" ? bucket?.meter1UsageAvg : bucket?.meter2UsageAvg;
-  const otherUsageAvg = meterId === "meter1" ? bucket?.meter2UsageAvg : bucket?.meter1UsageAvg;
-  const myUsageDays = meterId === "meter1" ? bucket?.meter1UsageDays : bucket?.meter2UsageDays;
-  const otherUsageDays = meterId === "meter1" ? bucket?.meter2UsageDays : bucket?.meter1UsageDays;
+function round1(n) {
+  return Math.round(Number(n || 0) * 10) / 10;
+}
 
-  if (myUsageDays > 0 && otherUsageDays > 0 && otherUsageAvg > 0) {
-    // Both meters have data → compare directly
-    const ratio = myUsageAvg / otherUsageAvg;
-    factors.bucketUsage = Math.round(Math.max(0, Math.min(100, 100 - (ratio - 1) * 50)));
-    if (myUsageAvg < otherUsageAvg) {
-      reasonCodes.push(`${meterId.toUpperCase()}_LOWER_BUCKET_USAGE`);
-    }
-  } else if (myUsageDays > 0 && otherUsageDays === 0) {
-    // This meter has data, other has none → this meter is a known quantity.
-    factors.bucketUsage = 65;
-    reasonCodes.push(`${meterId.toUpperCase()}_HAS_HISTORICAL_DATA`);
-  } else if (myUsageDays === 0 && otherUsageDays > 0) {
-    // This meter has no data, other does → penalty (unknown performance)
-    factors.bucketUsage = 35;
-  } else {
-    // Neither meter has data in this bucket → neutral
-    factors.bucketUsage = 50;
-  }
+function remainingUnits(meter, slabTarget) {
+  const baseline = Number(meter?.cycleBaselineReading) || 0;
+  const reading = Number(meter?.anchorReading ?? baseline) || 0;
+  return Math.max(0, round1(slabTarget - (reading - baseline)));
+}
 
-  // ── Factor 2: Calibration ratio / burn rate (25%) ──
-  // A meter with ratio < 1.0 (reads lower) burns "slower" in billing terms.
-  const ratio = meterState.tomznToMeterRatio || 1.0;
-  // Score: ratio closer to 0.9 (reads 10% lower) = higher score
-  // ratio 0.9 = 100, ratio 1.0 = 70, ratio 1.1 = 40
-  factors.burnRate = Math.round(Math.max(0, Math.min(100, 100 - Math.abs(ratio - 0.9) * 300)));
-  if (ratio < 0.95) {
-    reasonCodes.push(`${meterId.toUpperCase()}_FAVORABLE_CALIBRATION`);
-  }
-
-  // ── Factor 3: Mode match (20%) ──
-  // Does this meter perform well in the current operating mode?
-  let modeFreq = 0;
-  if (currentMode === "hybrid") modeFreq = bucket?.hybridFreq || 0;
-  else if (currentMode === "on-grid") modeFreq = bucket?.onGridFreq || 0;
-  else if (currentMode === "night" || currentMode === "bypass") modeFreq = bucket?.nightFreq || 0;
-
-  if (modeFreq > 0.3 && myUsageDays > 0 && otherUsageDays > 0 && otherUsageAvg > 0) {
-    if (myUsageAvg < otherUsageAvg) {
-      factors.modeMatch = Math.round(70 + modeFreq * 30);
-      reasonCodes.push(`${meterId.toUpperCase()}_GOOD_MODE_MATCH`);
-    } else {
-      factors.modeMatch = Math.round(40 + modeFreq * 20);
-    }
-  } else if (modeFreq > 0.3 && myUsageDays > 0 && otherUsageDays === 0) {
-    factors.modeMatch = 60;
-  } else {
-    factors.modeMatch = 50; // neutral
-  }
-
-  // ── Factor 4: Calibration confidence (15%) ──
-  // More calibration observations = more trustworthy meter ratio
-  const obsCount = meterState.ratioObservationCount || 0;
-  factors.calibration = Math.round(Math.max(20, Math.min(100, 20 + obsCount * 10)));
-
-  // ── Weighted total ──
-  const w = CONFIG.weights;
-  const score = Math.round(
-    factors.bucketUsage * w.bucketUsage +
-    factors.burnRate * w.burnRate +
-    factors.modeMatch * w.modeMatch +
-    factors.calibration * w.calibration
-  );
-
-  return { score, factors, reasonCodes };
+/** Human duration: < 48h → hours, else days. */
+function humanTime(hours) {
+  if (!Number.isFinite(hours) || hours < 0) return null;
+  if (hours < 48) return { label: "hours", value: Math.max(1, Math.round(hours)) };
+  return { label: "days", value: Math.max(1, Math.round(hours / 24)) };
 }
 
 /**
- * Compute meter PERFORMANCE recommendation with hysteresis.
- *
  * @param {object} params
- * @param {object} params.meters - { meter1: {...}, meter2: {...} } from state
- * @param {string} params.activeMeter - "meter1" or "meter2"
- * @param {object} params.patternProfile - from DailyPatternLearner
- * @param {string} params.currentMode - hybrid/on-grid/night/bypass
- * @param {number} params.slabTarget - 200 (unused in scoring, kept for compat)
- * @param {object} params.hysteresisState - persistent state for hysteresis
- * @param {number} params.now
- * @returns {object} recommendation
+ * @param {object} params.meters
+ * @param {string} params.activeMeter
+ * @param {number} [params.slabTarget]
+ * @param {number} [params.averageDaily]   calibrated meter units/day (learned)
+ * @param {number} [params.burnUnitsPerHour] live calibrated meter units/hour
+ * @param {number} [params.cycleEndAt]     ms of next billing boundary
+ * @param {number} [params.now]
+ * @param {object} [params.reserve]        {meter1, meter2} protected units
+ * @param {number} [params.confidence]     0..1
+ * @param {object} [params.remainingOverride]
  */
 function computeMeterRecommendation({
-  meters,
-  activeMeter,
-  patternProfile,
-  currentMode,
-  slabTarget,
-  hysteresisState,
+  meters = {},
+  activeMeter = "meter1",
+  slabTarget = 200,
+  averageDaily = 0,
+  burnUnitsPerHour = 0,
+  cycleEndAt = 0,
   now = Date.now(),
-  currentBucketId: bucketOverride, // optional — for testing specific buckets
+  reserve = DEFAULT_RESERVE,
+  confidence = 0.5,
+  remainingOverride = null,
 }) {
-  const pkHour = Math.floor((Date.now() / 3_600_000 + 5) % 24);
-  const currentBucketId = bucketOverride || bucketForHour(pkHour);
+  const remaining = remainingOverride && Number.isFinite(remainingOverride.meter1) && Number.isFinite(remainingOverride.meter2)
+    ? { meter1: Math.max(0, round1(remainingOverride.meter1)), meter2: Math.max(0, round1(remainingOverride.meter2)) }
+    : {
+      meter1: remainingUnits(meters.meter1, slabTarget),
+      meter2: remainingUnits(meters.meter2, slabTarget),
+    };
 
-  const m1 = scoreMeter("meter1", meters.meter1, patternProfile, currentBucketId, currentMode);
-  const m2 = scoreMeter("meter2", meters.meter2, patternProfile, currentBucketId, currentMode);
+  const usable = {
+    meter1: Math.max(0, round1(remaining.meter1 - (reserve.meter1 || 0))),
+    meter2: Math.max(0, round1(remaining.meter2 - (reserve.meter2 || 0))),
+  };
 
   const otherMeter = activeMeter === "meter1" ? "meter2" : "meter1";
-  const activeScore = activeMeter === "meter1" ? m1.score : m2.score;
-  const otherScore = activeMeter === "meter1" ? m2.score : m1.score;
-  const advantage = otherScore - activeScore;
+  const usableActive = usable[activeMeter];
+  const usableOther = usable[otherMeter];
+  const burnPerDay = Math.max(MIN_BURN_PER_DAY, Number(averageDaily) || 0);
+  const burnPerHour = Math.max(MIN_BURN_PER_HOUR, Number(burnUnitsPerHour) || 0);
+  const daysToCycleEnd = cycleEndAt > 0 ? Math.max(0, (cycleEndAt - now) / 86_400_000) : null;
 
-  // Determine if we should recommend switching
-  const confidence = patternProfile.confidence?.level || "insufficient_data";
+  // Time remaining
+  const hoursLeftActive = burnPerHour > 0 ? usableActive / burnPerHour : null;
+  const daysLeftActive = burnPerDay > 0 ? usableActive / burnPerDay : null;
+  const hoursLeftOther = burnPerHour > 0 ? usableOther / burnPerHour : null;
 
-  // Check hysteresis: has the advantage persisted long enough?
-  if (advantage >= CONFIG.minScoreAdvantage) {
-    if (hysteresisState.advantageStart === 0) {
-      hysteresisState.advantageStart = now;
-      hysteresisState.advantageMeter = otherMeter;
+  // Combined budget
+  const combinedUsable = round1(usableActive + usableOther);
+  const combinedDays = burnPerDay > 0 ? combinedUsable / burnPerDay : null;
+  const exhaustDate = combinedDays != null && burnPerDay > 0 ? now + combinedDays * 86_400_000 : null;
+  const shortfallUnitsPerDay = daysToCycleEnd != null && combinedDays != null
+    ? Math.max(0, round1(burnPerDay - combinedUsable / Math.max(0.01, daysToCycleEnd)))
+    : 0;
+  const willSurvive = daysLeftActive != null && daysToCycleEnd != null && daysLeftActive >= daysToCycleEnd;
+
+  // Calibration efficiency: lower calibration factor = more efficient (less waste)
+  const calib1 = Number(meters.meter1?.calibrationFactor) || 1;
+  const calib2 = Number(meters.meter2?.calibrationFactor) || 1;
+  const efficiencyDiff = Math.abs(calib1 - calib2);
+  const moreEfficient = calib1 < calib2 ? "meter1" : "meter2";
+
+  // Subsidy: meter1 has government subsidy. Only suggest if user is NOT on meter1
+  // and meter1 has meaningful remaining units.
+  const subsidyAvailable = activeMeter !== SUBSIDY_METER && usable[SUBSIDY_METER] > WARN_UNITS;
+
+  let recommendation = activeMeter;
+  let shouldSwitch = false;
+  let action = "keep_" + activeMeter;
+  let urgency = "none";
+  let reason = "ACTIVE_HAS_HEADROOM";
+  let text = null;
+  let switchPlan = null;
+
+  // ── Decision tree (priority order) ──
+
+  if (daysToCycleEnd != null && daysToCycleEnd <= 0) {
+    reason = "CYCLE_ROLLOVER";
+    text = null;
+  } else if (usableActive <= 0.5) {
+    // Active meter is AT or below its protected floor — must switch.
+    if (usableOther > 1) {
+      recommendation = otherMeter;
+      shouldSwitch = true;
+      action = "switch_now_" + otherMeter;
+      urgency = "alert";
+      reason = "ACTIVE_METER_AT_FLOOR";
+      const t = humanTime(hoursLeftOther);
+      text = `${meterName(activeMeter)} is at its floor. Switch to ${meterName(otherMeter)} now (${usableOther} usable${t ? `, ~${t.value} ${t.label}` : ""}).`;
+      switchPlan = { mode: "switch_now", rationale: reason };
+    } else {
+      urgency = "alert";
+      reason = "BOTH_METERS_AT_FLOOR";
+      recommendation = usable.meter1 >= usable.meter2 ? "meter1" : "meter2";
+      text = `Both meters are at their floor (${usable.meter1} / ${usable.meter2} usable). ${meterName(recommendation)} has slightly more — switch to it.`;
+      switchPlan = { mode: "both_short", rationale: reason };
     }
-    if (hysteresisState.advantageMeter !== otherMeter) {
-      hysteresisState.advantageStart = now;
-      hysteresisState.advantageMeter = otherMeter;
-    }
+  } else if (usableActive <= LOW_UNITS && usableOther > usableActive + HEADROOM) {
+    // Critical: active meter ≤10 units, other has significantly more.
+    recommendation = otherMeter;
+    shouldSwitch = true;
+    action = "switch_now_" + otherMeter;
+    urgency = "alert";
+    reason = "ACTIVE_METER_CRITICAL";
+    const t = humanTime(hoursLeftActive);
+    text = `${meterName(activeMeter)} is down to ${usableActive} units${t ? ` (${t.value} ${t.label} at current draw)` : ""}. Switch to ${meterName(otherMeter)} (${usableOther} usable) now.`;
+    switchPlan = { mode: "switch_now", rationale: reason };
+  } else if (usableActive <= WARN_UNITS && usableOther > usableActive + HEADROOM) {
+    // Warning: active meter ≤20 units, other has more.
+    recommendation = otherMeter;
+    shouldSwitch = true;
+    action = "consider_switch_" + otherMeter;
+    urgency = "warning";
+    reason = "ACTIVE_METER_RUNNING_LOW";
+    const t = humanTime(hoursLeftActive);
+    text = `${meterName(activeMeter)} has ${usableActive} units left${t ? ` (~${t.value} ${t.label})` : ""}. Consider switching to ${meterName(otherMeter)} (${usableOther} usable).`;
+    switchPlan = { mode: "switch_now", rationale: reason };
+  } else if (hoursLeftActive != null && hoursLeftActive <= TONIGHT_HOURS && usableOther > usableActive + HEADROOM) {
+    // Tonight exhaustion: at current burn rate, the active meter will run out
+    // within 12 hours (tonight). Warn to switch before it dies overnight.
+    recommendation = otherMeter;
+    shouldSwitch = true;
+    action = "consider_switch_" + otherMeter;
+    urgency = "warning";
+    reason = "ACTIVE_METER_EXHAUSTS_TONIGHT";
+    const t = humanTime(hoursLeftActive);
+    text = `${meterName(activeMeter)} will exhaust in ~${t.value} ${t.label} at current draw. Switch to ${meterName(otherMeter)} (${usableOther} usable) to avoid running out tonight.`;
+    switchPlan = { mode: "switch_now", rationale: reason };
+  } else if (shortfallUnitsPerDay > 0 && !willSurvive) {
+    // Combined budget won't last to cycle end — both meters are short.
+    urgency = "warning";
+    reason = "COMBINED_SHORTFALL";
+    const e = exhaustDate ? new Date(exhaustDate).toLocaleDateString("en-PK", { day: "numeric", month: "short" }) : "?";
+    const daysCovered = combinedDays != null ? Math.max(1, Math.round(combinedDays)) : null;
+    text = `Combined ${combinedUsable} usable units at ~${round1(burnPerDay)}/day last ${daysCovered ? "~" + daysCovered + " days" : "less than the cycle"}; cycle has ${daysToCycleEnd != null ? Math.round(daysToCycleEnd) : "?"} days left. Reduce ~${shortfallUnitsPerDay} units/day or both meters hit the slab around ${e}.`;
+    switchPlan = { mode: "both_short", exhaustDate, shortfallUnitsPerDay, rationale: reason };
+  } else if (subsidyAvailable && usableActive > WARN_UNITS) {
+    // Subsidy suggestion: meter1 has government subsidy. Suggest once, then
+    // stay quiet (the frontend hysteresis will suppress repeats). Only when
+    // the active meter is healthy (not already in a low-units scenario).
+    urgency = "info";
+    reason = "SUBSIDY_AVAILABLE";
+    recommendation = SUBSIDY_METER;
+    action = "consider_switch_" + SUBSIDY_METER;
+    text = `${meterName(SUBSIDY_METER)} carries a government subsidy. Using it first saves cost — consider switching when convenient.`;
+    switchPlan = { mode: "switch_when_convenient", rationale: reason };
+  } else if (efficiencyDiff >= EFFICIENCY_THRESHOLD && moreEfficient !== activeMeter && usable[moreEfficient] > WARN_UNITS && usableActive > WARN_UNITS) {
+    // Efficiency suggestion: one meter is measurably more efficient (lower
+    // calibration factor = less wasted units). Suggest once, then hide.
+    urgency = "info";
+    reason = "EFFICIENCY_SUGGESTION";
+    recommendation = moreEfficient;
+    action = "consider_switch_" + moreEfficient;
+    const pct = Math.round(efficiencyDiff * 100);
+    text = `${meterName(moreEfficient)} is ~${pct}% more efficient (lower meter ratio). Using it reduces wasted units over time.`;
+    switchPlan = { mode: "switch_when_convenient", rationale: reason };
+  } else if (willSurvive) {
+    // Active meter covers the cycle — stay quiet. User is intentionally
+    // running this meter; no need to suggest switching.
+    reason = "ACTIVE_COVERS_CYCLE";
+    text = null;
+    switchPlan = { mode: "keep", rationale: reason };
   } else {
-    hysteresisState.advantageStart = 0;
-    hysteresisState.advantageMeter = null;
+    // Default: active meter has headroom, stay quiet.
+    reason = "ACTIVE_HAS_HEADROOM";
+    text = null;
+    switchPlan = { mode: "keep", rationale: reason };
   }
 
-  const persistenceMs = hysteresisState.advantageStart > 0 ? now - hysteresisState.advantageStart : 0;
-  const cooldownActive = hysteresisState.lastRecommendationAt > 0 &&
-    (now - hysteresisState.lastRecommendationAt) < CONFIG.cooldownMs;
-
-  // ── recommendation = the higher-scoring meter ──
-  const betterMeter = m1.score >= m2.score ? "meter1" : "meter2";
-  const betterScore = m1.score >= m2.score ? m1.score : m2.score;
-  const worseScore = m1.score >= m2.score ? m2.score : m1.score;
-  const scoreGap = betterScore - worseScore;
-
-  const recommendation = betterMeter;
-  const isOnBetterMeter = recommendation === activeMeter;
-  const action = isOnBetterMeter
-    ? "keep_" + activeMeter.replace("meter", "meter_")
-    : "consider_switch_to_" + betterMeter.replace("meter", "meter_");
-
-  // shouldSwitch: only true if hysteresis conditions are met
-  const otherIsBetter = recommendation !== activeMeter;
-  const shouldSwitch = otherIsBetter &&
-    scoreGap >= CONFIG.minScoreAdvantage &&
-    persistenceMs >= CONFIG.minPersistenceMs &&
-    confidence !== "insufficient_data" &&
-    !cooldownActive;
-
-  if (shouldSwitch) {
-    hysteresisState.lastRecommendationAt = now;
-  }
-
-  // Combine reason codes from the recommended (better) meter
-  const recommendedResult = recommendation === "meter1" ? m1 : m2;
-  const reasonCodes = [...recommendedResult.reasonCodes];
-
-  if (currentMode === "hybrid" && scoreGap > 10) {
-    reasonCodes.push("HYBRID_MODE_ACTIVE");
-  }
-  if (currentMode === "on-grid" && scoreGap > 10) {
-    reasonCodes.push("ON_GRID_MODE");
-  }
-  if (currentBucketId === "evening" || currentBucketId === "late_evening") {
-    reasonCodes.push("EVENING_TRANSITION");
-  }
-
-  if (otherIsBetter && !shouldSwitch) {
-    if (scoreGap < CONFIG.minScoreAdvantage) {
-      reasonCodes.push("ADVANTAGE_BELOW_THRESHOLD");
-    } else if (persistenceMs < CONFIG.minPersistenceMs) {
-      reasonCodes.push("ADVANTAGE_NOT_PERSISTED");
-    } else if (cooldownActive) {
-      reasonCodes.push("RECOMMENDATION_COOLDOWN");
-    }
-  }
+  const advantage = round1(Math.abs(remaining.meter1 - remaining.meter2));
 
   return {
     recommendation,
     activeMeter,
-    meter1Score: m1.score,
-    meter2Score: m2.score,
-    advantage: scoreGap,
-    advantageFavors: betterMeter,
-    action,
+    otherMeter,
+    remaining,
+    usable,
+    remainingActive: remaining[activeMeter],
+    remainingOther: remaining[otherMeter],
+    usableActive,
+    usableOther,
+    hoursLeftActive: hoursLeftActive != null ? Math.round(hoursLeftActive * 10) / 10 : null,
+    daysLeftActive: daysLeftActive != null ? Math.round(daysLeftActive * 10) / 10 : null,
+    hoursLeftOther: hoursLeftOther != null ? Math.round(hoursLeftOther * 10) / 10 : null,
+    daysLeftOther: null,
     shouldSwitch,
     shouldRecommend: shouldSwitch,
-    confidence: confidence === "insufficient_data" ? 0.1 : Math.min(0.95, 0.5 + scoreGap / 100),
-    reasonCodes,
-    persistenceMs,
-    cooldownActive,
-    bucketId: currentBucketId,
-    factors: {
-      meter1: m1.factors,
-      meter2: m2.factors,
-    },
+    action,
+    urgency,
+    reason,
+    text,
+    switchPlan,
+    willSurviveCycle: !!willSurvive,
+    daysToCycleEnd: daysToCycleEnd != null ? Math.round(daysToCycleEnd * 10) / 10 : null,
+    combinedUsable,
+    exhaustDate,
+    shortfallUnitsPerDay,
+    slabTarget,
+    meter1Score: Math.round(Math.min(100, (remaining.meter1 / Math.max(1, slabTarget)) * 100)),
+    meter2Score: Math.round(Math.min(100, (remaining.meter2 / Math.max(1, slabTarget)) * 100)),
+    advantage,
+    advantageFavors: remaining.meter1 >= remaining.meter2 ? "meter1" : "meter2",
+    bucketId: null,
+    confidence: Math.max(0.05, Math.min(0.95, confidence)),
+    reasonCodes: [reason],
   };
 }
 
-module.exports = { computeMeterRecommendation, CONFIG };
+module.exports = { computeMeterRecommendation, remainingUnits, LOW_UNITS, WARN_UNITS, DEFAULT_RESERVE };

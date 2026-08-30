@@ -151,11 +151,11 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   // 8192 = wapda gone and relay also off (grid disconnected, relay already open)
   // Both are "Wapda Cut Off" states — the grid is no longer available.
   const fault = tomznLive.faultCode || 0;
-  const wapdaCutOff = !offline && tomznLive.isOnline && (fault === 2048 || fault === 8192);
-  // Relay off with no fault = standby (user/manual disconnect, not a fault)
-  const wapdaStandby = !offline && tomznLive.isOnline && !tomznLive.switchOn && fault !== 2048 && fault !== 8192;
-  // Grid is unavailable when: system offline, TOMZN device offline, wapda cut off, or wapda standby.
-  const gridUnavailable = offline || !tomznLive.isOnline || wapdaCutOff || wapdaStandby;
+  const wapdaCutOff = !offline && (fault === 2048 || fault === 8192);
+  // Relay off with no cutoff fault = standby. Tuya may still say isOnline=false.
+  const wapdaStandby = !offline && !tomznLive.switchOn && fault !== 2048 && fault !== 8192;
+  // Grid path is gone on cutoff, standby, or a truly unreachable meter (relay still on).
+  const gridUnavailable = offline || wapdaCutOff || wapdaStandby || (!tomznLive.isOnline && !!tomznLive.switchOn);
   // Grid arc always uses Tomzn (Wapda) meter data — independent of inverter state.
   const gridImporting = !offline && tomznLive.isOnline && tomznLive.powerW > 0 && !wapdaCutOff && !wapdaStandby;
   const gridPowerW = gridImporting ? Math.max(0, tomznLive.powerW) : 0;

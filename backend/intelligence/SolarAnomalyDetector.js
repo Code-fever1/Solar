@@ -1,67 +1,61 @@
 "use strict";
 
 /**
- * SolarAnomalyDetector — detects abnormal solar production drops.
+ * SolarAnomalyDetector v2 — day-type-aware solar production anomaly.
  *
- * Contextual awareness:
- *   1. Time-of-day: Evening solar decline is NORMAL. Don't alert just because
- *      solar dropped 50% if it's 6 PM and the historical pattern shows solar
- *      declining at this time.
- *   2. Trend: Repeated voltage fluctuations (V going up and down) indicate
- *      cloud cover, not an inverter fault. Steady low production = fault.
- *   3. Weather: If cloud cover is high, allow larger deviation before alerting.
+ * v1 compared solar against one blended baseline. v2 uses the weekday or
+ * weekend baseline for the current bucket (a Saturday morning is judged
+ * against Saturday mornings, not weekdays).
  *
- * Uses the learned historical profile for the same time bucket to determine
- * if current solar production is abnormally low FOR THIS TIME OF DAY.
+ * Panel-vs-inverter discrimination moved to VoltageAnalyzer (voltage
+ * coherence). This module stays focused: is solar W abnormally low for this
+ * moment, sustained, and not explained by clouds or evening?
  */
 
 const { bucketForHour } = require("./DailyPatternLearner");
 
 const CONFIG = {
-  // Deviation threshold: |actual - expected| / expected > this → anomaly
-  deviationThresholdPct: 40,
-  // Minimum expected solar to trigger (don't trigger at night or low production)
-  minExpectedW: 500,
-  // Persistence: anomaly must be sustained for N consecutive checks
-  minPersistenceCount: 3,
-  // Recovery: anomaly clears after this many consecutive normal checks
+  deviationThresholdPct: 50,
+  minExpectedW: 700,
+  minPersistenceCount: 4,
   recoveryCount: 2,
-  // Cloud cover adjustment
   cloudCoverThreshold: 80,
   cloudCoverAdjustedThreshold: 60,
-  // Evening buckets where solar decline is expected
   eveningBuckets: ["evening", "late_evening"],
-  // In evening, allow much larger deviation before alerting (solar naturally drops)
   eveningDeviationThresholdPct: 70,
-  // Voltage fluctuation tracking for cloud detection
-  voltageFluctuationWindow: 10,        // track last 10 readings
-  voltageFluctuationThreshold: 15,     // V swings > 15V repeatedly = clouds
-  voltageFluctuationCountThreshold: 4, // 4+ swings in window = clouds
+  voltageFluctuationWindow: 10,
+  voltageFluctuationCountThreshold: 4,
+  // Quiet-house days (AC off) are not a solar fault. Only speak when the
+  // house is actually drawing and solar is failing to cover that draw.
+  minLoadForAlertW: 700,
+  quietLoadRatio: 0.7,      // load below 70% of typical → quiet day, stay silent
+  coverMarginW: 200,        // solar within 200W of load = covering the house
 };
 
 /**
- * Detect solar anomaly with contextual awareness.
- *
  * @param {object} params
- * @param {number} params.actualSolarW - current solar production
- * @param {object} params.patternProfile - from DailyPatternLearner
- * @param {object} params.weather - { cloudCover, isDay, code }
- * @param {object} params.anomalyState - persistent state
- * @param {number} params.confidence - pre-computed confidence for solar
+ * @param {number} params.actualSolarW
+ * @param {object} params.patternProfile
+ * @param {string} params.dayType
+ * @param {object} params.weather
+ * @param {object} params.anomalyState
+ * @param {number} params.confidence
  * @param {number} params.now
- * @returns {object} anomaly result
  */
 function detectSolarAnomaly({
   actualSolarW,
+  currentLoadW = 0,
   patternProfile,
+  dayType = "weekday",
   weather,
   anomalyState,
   confidence,
   now = Date.now(),
 }) {
-  const pkHour = Math.floor((Date.now() / 3_600_000 + 5) % 24);
+  const pkHour = Math.floor((now / 3_600_000 + 5) % 24);
   const bucketId = bucketForHour(pkHour);
   const bucket = patternProfile.buckets?.[bucketId];
+  const dayStats = bucket?.byDayType?.[dayType] || bucket;
 
   if (!bucket || !weather?.isDay) {
     anomalyState.count = 0;
@@ -70,25 +64,29 @@ function detectSolarAnomaly({
     return { type: null, severity: "none", message: null };
   }
 
-  const expectedW = bucket.solarWavg;
+  const expectedW = dayStats.solarWavg || bucket.solarWavg;
+  const expectedLoadW = dayStats.loadWavg || bucket.loadWavg || 0;
+  const loadW = Math.max(0, Number(currentLoadW) || 0);
   if (expectedW < CONFIG.minExpectedW) {
-    // Expected production is too low to meaningfully detect anomalies
     anomalyState.count = 0;
     anomalyState.recoveryCount = 0;
     return { type: null, severity: "none", message: null };
   }
 
+  // Quiet house: AC off, few loads. Solar on this inverter follows load unless
+  // it is exporting, so a production drop with a load drop is normal.
+  const quietHouse = loadW < CONFIG.minLoadForAlertW
+    || (expectedLoadW > 0 && loadW < expectedLoadW * CONFIG.quietLoadRatio);
+  const solarCoversLoad = actualSolarW + CONFIG.coverMarginW >= loadW;
+  if (quietHouse || solarCoversLoad) {
+    anomalyState.count = 0;
+    anomalyState.recoveryCount = 0;
+    return { type: null, severity: "none", message: null, expectedW, actualW: actualSolarW, loadW, note: quietHouse ? "quiet_house" : "solar_covers_load" };
+  }
+
   const deviationPct = Math.round(((actualSolarW - expectedW) / expectedW) * 100);
-
-  // ── Evening awareness: solar naturally declines in evening buckets ──
-  // Don't alert just because solar dropped if we're in evening and the
-  // decline is within the expected evening pattern.
   const isEvening = CONFIG.eveningBuckets.includes(bucketId);
-  const effectiveThreshold = isEvening
-    ? CONFIG.eveningDeviationThresholdPct
-    : CONFIG.deviationThresholdPct;
-
-  // Adjust threshold based on cloud cover
+  const effectiveThreshold = isEvening ? CONFIG.eveningDeviationThresholdPct : CONFIG.deviationThresholdPct;
   const cloudCover = weather.cloudCover || 0;
   const cloudAdjustedThreshold = cloudCover > CONFIG.cloudCoverThreshold
     ? Math.max(effectiveThreshold, CONFIG.cloudCoverAdjustedThreshold)
@@ -96,45 +94,22 @@ function detectSolarAnomaly({
 
   const isAnomalous = deviationPct < -cloudAdjustedThreshold;
 
-  // ── Voltage fluctuation tracking for cloud detection ──
-  // If voltage has been swinging up and down, it's likely clouds, not a fault.
+  // Cloud detection via production fluctuation (solarV swings preferred).
   anomalyState.voltageHistory = anomalyState.voltageHistory || [];
-  const voltageHistory = anomalyState.voltageHistory;
-
-  // Track voltage swings (we'll use solarW as a proxy if voltage isn't available)
-  // The caller can pass voltage via anomalyState if available
-  const lastReading = voltageHistory.length > 0 ? voltageHistory[voltageHistory.length - 1] : null;
-  if (lastReading != null) {
+  const history = anomalyState.voltageHistory;
+  const lastReading = history.length > 0 ? history[history.length - 1] : null;
+  if (lastReading != null && actualSolarW > 50) {
     const swing = Math.abs(actualSolarW - lastReading);
-    if (swing > actualSolarW * 0.3) {
-      // Significant swing in solar output
-      anomalyState.fluctuationCount = (anomalyState.fluctuationCount || 0) + 1;
-    }
+    if (swing > actualSolarW * 0.3) anomalyState.fluctuationCount = (anomalyState.fluctuationCount || 0) + 1;
   }
-  voltageHistory.push(actualSolarW);
-  if (voltageHistory.length > CONFIG.voltageFluctuationWindow) {
-    voltageHistory.shift();
-  }
-
-  // If we've seen many fluctuations, it's clouds — not an anomaly
+  history.push(actualSolarW);
+  if (history.length > CONFIG.voltageFluctuationWindow) history.shift();
   const isCloudy = (anomalyState.fluctuationCount || 0) >= CONFIG.voltageFluctuationCountThreshold;
 
   if (isAnomalous && isCloudy) {
-    // Solar is low but fluctuating → clouds, not a fault
-    // Don't count this as an anomaly
     anomalyState.recoveryCount = (anomalyState.recoveryCount || 0) + 1;
-    if (anomalyState.recoveryCount >= CONFIG.recoveryCount) {
-      anomalyState.count = 0;
-    }
-    return {
-      type: null,
-      severity: "none",
-      message: null,
-      expectedW,
-      actualW: actualSolarW,
-      deviationPct,
-      note: "cloud_cover_detected",
-    };
+    if (anomalyState.recoveryCount >= CONFIG.recoveryCount) anomalyState.count = 0;
+    return { type: null, severity: "none", message: null, expectedW, actualW: actualSolarW, deviationPct, note: "cloud_cover_detected" };
   }
 
   if (isAnomalous) {
@@ -148,33 +123,17 @@ function detectSolarAnomaly({
     }
   }
 
-  // Only report if persistent
   const persistent = (anomalyState.count || 0) >= CONFIG.minPersistenceCount;
-
   if (!persistent) {
-    return {
-      type: null,
-      severity: "none",
-      message: null,
-      expectedW,
-      actualW: actualSolarW,
-      deviationPct,
-    };
+    return { type: null, severity: "none", message: null, expectedW, actualW: actualSolarW, deviationPct };
   }
 
-  // Determine probable cause
   let probableCause = "unknown";
-  if (isCloudy || cloudCover > CONFIG.cloudCoverThreshold) {
-    probableCause = "cloud_weather";
-  } else if (actualSolarW < expectedW * 0.3) {
-    probableCause = "pv_abnormality";
-  } else if (actualSolarW < expectedW * 0.5) {
-    probableCause = "inverter_condition";
-  } else {
-    probableCause = "unexplained_production_drop";
-  }
+  if (isCloudy || cloudCover > CONFIG.cloudCoverThreshold) probableCause = "cloud_weather";
+  else if (actualSolarW < expectedW * 0.3) probableCause = "pv_abnormality";
+  else if (actualSolarW < expectedW * 0.5) probableCause = "inverter_condition";
+  else probableCause = "unexplained_production_drop";
 
-  // Severity
   let severity = "low";
   const absDeviation = Math.abs(deviationPct);
   if (absDeviation > 70) severity = "high";
@@ -192,6 +151,7 @@ function detectSolarAnomaly({
     bucketId,
     cloudCover,
     isEvening,
+    dayType,
   };
 }
 

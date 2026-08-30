@@ -2309,6 +2309,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       combinedTarget,
       lastMonthTotal,
       vsLastMonthPercent,
+      exportSkipToday: round(exportSkipToday, 3),
     },
     meters: readings,
     manualLogs: logs.map(({ _id, ...log }) => log),
@@ -2497,6 +2498,10 @@ function registerUnifiedSolarRoutes(app, db) {
         snapshot = await requestTomzn(force);
         // Poll succeeded — reset fail counter
         tomznStaleTracker.failCount = 0;
+        // Standby: the user opened the TOMZN relay. Tuya often reports
+        // isOnline=false for a switch-off device even though the poll
+        // succeeded. Keep it online so the app shows Standby, not Offline.
+        if (snapshot.switchOn === false) snapshot.isOnline = true;
       } catch (pollErr) {
         // ── Poll failure detection ──
         // Cloud poll failed (Tuya API down, session expired, network issue).
@@ -2959,12 +2964,33 @@ function registerUnifiedSolarRoutes(app, db) {
     // non-fatal: intelligence is absent but live telemetry still broadcasts.
     let intelligence = null;
     try {
+      const dash = dashboardCache.payload;
+      const remaining = dash?.meters ? {
+        meter1: dash.meters.meter1?.remainingUnits,
+        meter2: dash.meters.meter2?.remainingUnits,
+      } : null;
       intelligence = await intelligenceEngine.compute({
         inverter,
         tomznLive: publicTomzn(tomznSource),
         gridFlow,
         weather,
-        state,
+        state: {
+          ...state,
+          // Include dashboard meter readings (with calibrationFactor) so
+          // MeterAdvisor can detect efficiency differences between meters.
+          meters: dash?.meters || state.meters,
+          slabTargetUnits: dash?.meters?.meter1?.targetUnits || state.slabTargetUnits || 200,
+        },
+        household: {
+          averageDaily: dash?.home?.averageDaily,
+          lastMonthTotal: dash?.home?.lastMonthTotal,
+          projectedMonthly: dash?.home?.projectedMonthly,
+          todayUsage: dash?.home?.todayUsage,
+          todayExportKwh: dash?.home?.exportSkipToday,
+          remainingCycleDays: dash?.meta?.billingEnd ? Math.max(0, (dash.meta.billingEnd - Date.now()) / 86_400_000) : undefined,
+          cycleEndAt: dash?.meta?.billingEnd,
+          remaining,
+        },
       });
     } catch (e) {
       // Intelligence failure must never break the live stream
@@ -3009,6 +3035,7 @@ function registerUnifiedSolarRoutes(app, db) {
     payload.inverter?.gridV, payload.inverter?.gridHz,
     payload.inverter?.loadVa, payload.inverter?.loadPercent,
     payload.tomznLive?.isOnline, payload.tomznLive?.switchOn, payload.tomznLive?.powerW,
+    payload.tomznLive?.energyKwh,
     payload.tomznLive?.voltageV, payload.tomznLive?.currentA, payload.tomznLive?.faultCode,
     payload.gridFlow?.mode, payload.gridFlow?.direction, payload.gridFlow?.homeW,
     payload.ups?.active ?? null, payload.weather?.isDay, payload.weather?.code,

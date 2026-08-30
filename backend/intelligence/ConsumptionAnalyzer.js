@@ -1,59 +1,76 @@
 "use strict";
 
 /**
- * ConsumptionAnalyzer — detects unusual home consumption.
+ * ConsumptionAnalyzer v2 — mode- and day-type-aware load anomaly detection.
  *
- * Learns normal home load by time of day from historical data and flags
- * when current consumption is significantly above or below normal.
+ * v1 compared current load to one blended bucket baseline. v2 picks the
+ * RIGHT baseline for this moment:
+ *   1. day-type bucket baseline (weekday vs weekend)
+ *   2. if the current household mode has its own learned load (bypass/hybrid),
+ *      the mode baseline is blended in — a grid-only bypass hour is not
+ *      "high consumption" just because solar hours were lighter.
  *
- * Uses persistence/debounce to avoid alerting on transient load changes.
+ * v1's evening low-consumption branch was dead code (ratio <= 0.25 could
+ * never be > 0.3) — removed.
  */
 
-const { bucketForHour } = require("./DailyPatternLearner");
+const { bucketForHour, normalizeHouseholdMode } = require("./DailyPatternLearner");
 
 const CONFIG = {
-  // Deviation thresholds (ratio of actual/expected)
-  highThreshold: 1.6,      // 60% above normal → high
-  veryHighThreshold: 2.2,  // 120% above normal → very high
-  lowThreshold: 0.4,       // 60% below normal → low
-  // Persistence: must be sustained for N checks
-  minPersistenceCount: 4,  // ~4 checks × ~10s = ~40s
-  // Minimum expected load to trigger (don't trigger at night with 0W)
-  minExpectedW: 200,
-  // Recovery count before clearing
+  highThreshold: 2.0,      // 100% above normal → high
+  veryHighThreshold: 2.6,  // 160% above normal → very high
+  lowThreshold: 0.3,       // below 30% of normal → unusually low
+  minPersistenceCount: 8,  // ~8 checks (~25s at live cadence)
+  minExpectedW: 400,       // don't trigger against a near-zero baseline
   recoveryCount: 2,
+  modeBlend: 0.35,         // weight of the mode baseline in the expectation
 };
 
 /**
- * Detect unusual consumption.
- *
  * @param {object} params
- * @param {number} params.currentLoadW - current home load
- * @param {object} params.patternProfile - from DailyPatternLearner
- * @param {object} params.consumptionState - persistent state
- * @param {number} params.confidence - pre-computed confidence
+ * @param {number} params.currentLoadW
+ * @param {object} params.patternProfile - v2 profile
+ * @param {string} params.dayType        - "weekday" | "weekend"
+ * @param {string} params.mode           - "on_grid"|"hybrid"|"bypass"|"night"
+ * @param {object} params.consumptionState
+ * @param {number} params.confidence
  * @param {number} params.now
- * @returns {object} consumption analysis
  */
 function analyzeConsumption({
   currentLoadW,
   patternProfile,
+  dayType = "weekday",
+  mode = "on_grid",
   consumptionState,
   confidence,
   now = Date.now(),
 }) {
-  const pkHour = Math.floor((Date.now() / 3_600_000 + 5) % 24);
+  const pkHour = Math.floor((now / 3_600_000 + 5) % 24);
   const bucketId = bucketForHour(pkHour);
   const bucket = patternProfile.buckets?.[bucketId];
-
-  if (!bucket || bucket.loadWavg < CONFIG.minExpectedW) {
-    // Expected load too low to meaningfully detect anomalies
+  mode = normalizeHouseholdMode(mode);
+  if (!bucket) {
     consumptionState.count = 0;
     consumptionState.recoveryCount = 0;
     return { type: null, severity: "none", message: null };
   }
 
-  const expectedW = bucket.loadWavg;
+  // Baseline: day-type first, aggregate fallback, mode blend on top.
+  const dayStats = bucket.byDayType?.[dayType] || bucket;
+  let expectedW = dayStats.loadWavg || bucket.loadWavg;
+  const modeStats = patternProfile.modes?.[mode];
+  if (modeStats?.loadWavg > 0 && modeStats.loadSampleCount >= 10) {
+    // In bypass, the house draws everything from grid — the blended mode
+    // baseline prevents "high consumption" false alarms on solar-free hours.
+    expectedW = Math.round(expectedW * (1 - CONFIG.modeBlend) + modeStats.loadWavg * CONFIG.modeBlend);
+  }
+
+  if (expectedW < CONFIG.minExpectedW) {
+    consumptionState.count = 0;
+    consumptionState.recoveryCount = 0;
+    return { type: null, severity: "none", message: null, expectedW, actualW: currentLoadW, deviationPct: 0, baselineSource: "too_low" };
+  }
+
   const ratio = currentLoadW / expectedW;
   const deviationPct = Math.round((ratio - 1) * 100);
 
@@ -61,30 +78,13 @@ function analyzeConsumption({
   let anomalyType = null;
   let severity = "none";
 
-  // ── Evening awareness: load naturally decreases in evening as solar drops ──
-  // Don't alert on low consumption during evening/late_evening if it's within
-  // the historical pattern. Only alert if it's truly abnormal.
-  const isEvening = bucketId === "evening" || bucketId === "late_evening";
-
   if (ratio >= CONFIG.veryHighThreshold) {
-    isAnomalous = true;
-    anomalyType = "very_high";
-    severity = "high";
+    isAnomalous = true; anomalyType = "very_high"; severity = "high";
   } else if (ratio >= CONFIG.highThreshold) {
-    isAnomalous = true;
-    anomalyType = "high";
-    severity = "medium";
-  } else if (ratio <= CONFIG.lowThreshold && expectedW > 300) {
-    // For evening low consumption: only alert if it's VERY low (below 0.3)
-    // Normal evening load decrease is not an anomaly.
-    if (isEvening && ratio > 0.3) {
-      // Evening load decrease within normal range — don't alert
-      isAnomalous = false;
-    } else {
-      isAnomalous = true;
-      anomalyType = "low";
-      severity = "low";
-    }
+    isAnomalous = true; anomalyType = "high"; severity = "medium";
+  } else if (ratio <= CONFIG.lowThreshold && expectedW > 800 && mode !== "night" && mode !== "bypass") {
+    // A quiet house at night is not an anomaly. Only flag daytime collapse.
+    isAnomalous = true; anomalyType = "low"; severity = "low";
   }
 
   if (isAnomalous) {
@@ -92,31 +92,20 @@ function analyzeConsumption({
     consumptionState.recoveryCount = 0;
   } else {
     consumptionState.recoveryCount = (consumptionState.recoveryCount || 0) + 1;
-    if (consumptionState.recoveryCount >= CONFIG.recoveryCount) {
-      consumptionState.count = 0;
-    }
+    if (consumptionState.recoveryCount >= CONFIG.recoveryCount) consumptionState.count = 0;
   }
 
   const persistent = (consumptionState.count || 0) >= CONFIG.minPersistenceCount;
-
   if (!persistent) {
-    return {
-      type: null,
-      severity: "none",
-      message: null,
-      expectedW,
-      actualW: currentLoadW,
-      deviationPct,
-    };
+    return { type: null, severity: "none", message: null, expectedW, actualW: currentLoadW, deviationPct, baselineSource: expectedW === bucket.loadWavg ? "bucket" : "daytype_mode" };
   }
 
   let message = null;
-  if (anomalyType === "very_high") {
-    message = `Home consumption is ${deviationPct}% above normal for this time of day.`;
-  } else if (anomalyType === "high") {
-    message = `Home consumption is unusually high (${deviationPct}% above normal).`;
+  const dayLabel = dayType === "weekend" ? "weekends" : "weekdays";
+  if (anomalyType === "very_high" || anomalyType === "high") {
+    message = `Home draw is ${deviationPct}% above the norm for this time on ${dayLabel} (expected ~${expectedW}W, now ${Math.round(currentLoadW)}W). An appliance may have been left on.`;
   } else if (anomalyType === "low") {
-    message = `Home consumption is unusually low (${Math.abs(deviationPct)}% below normal).`;
+    message = `Home draw is unusually low (${Math.abs(deviationPct)}% below norm) — expected ~${expectedW}W at this time on ${dayLabel}.`;
   }
 
   return {
@@ -129,6 +118,9 @@ function analyzeConsumption({
     persistent: true,
     message,
     bucketId,
+    dayType,
+    mode,
+    baselineSource: "daytype_mode",
   };
 }
 
