@@ -126,6 +126,8 @@ const IDLE_LIVE_INTERVAL_MS = 5_000;  // lightweight live poll when idle (replac
 const IDLE_SYNC_INTERVAL_MS = 120_000;  // slower dashboard sync when idle
 const IDLE_FLOW_INTERVAL_MS = 300_000; // slower flow history when idle
 const DASHBOARD_CACHE_KEY = "voltx.solar.dashboard.v1";
+const LIVE_CACHE_KEY = "voltx.solar.live.v1";
+const LIVE_CACHE_TTL_MS = 30 * 60_000;
 const PENDING_OPERATIONS_KEY = "voltx.solar.pending-operations.v1";
 const LAST_MONTH_TOTAL_KEY = "voltx.solar.last-month-total.v1";
 const ACTIVE_METER_OVERRIDE_KEY = "voltx.solar.active-meter-override.v1";
@@ -548,6 +550,22 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     ].join("|");
   };
 
+  const persistLiveCache = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any }) => {
+    void AsyncStorage.setItem(
+      LIVE_CACHE_KEY,
+      JSON.stringify({
+        savedAt: Date.now(),
+        data: {
+          tomznLive: data.tomznLive,
+          inverter: data.inverter,
+          gridFlow: data.gridFlow,
+          weather: data.weather,
+          ups: data.ups,
+        },
+      }),
+    ).catch(() => undefined);
+  };
+
   const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any; intelligence?: any } | null | undefined) => {
     if (!data || (!data.tomznLive && !data.inverter)) return;
     perfRef.current.applyLiveCalls += 1;
@@ -561,6 +579,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       setError(null);
       setLoading(false);
       markLiveReady();
+      persistLiveCache(data);
       return;
     }
     lastLiveSigRef.current = sig;
@@ -635,6 +654,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     setError(null);
     setLoading(false);
     markLiveReady();
+    persistLiveCache(data);
   };
 
   // Lightweight live fetch. On open / resume we only hit /live (server memory,
@@ -732,8 +752,23 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let disposed = false;
     const bootstrap = async () => {
-      // Kick /live immediately — do not wait on AsyncStorage. The hero, Fronus,
-      // and Tomzn cards should paint the server snapshot first (~100ms).
+      // Paint the last session's live slice first so cold opens don't flash
+      // "Connecting" while /live is in flight (UPS ping can slow night opens).
+      try {
+        const rawLive = await AsyncStorage.getItem(LIVE_CACHE_KEY);
+        if (rawLive) {
+          const parsed = JSON.parse(rawLive) as { savedAt?: number; data?: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any } };
+          if (
+            parsed?.data
+            && Number.isFinite(parsed.savedAt)
+            && Date.now() - (parsed.savedAt as number) < LIVE_CACHE_TTL_MS
+          ) {
+            applyLive(parsed.data);
+          }
+        }
+      } catch {
+        // Bad live cache must never block a fresh server hydrate.
+      }
       const livePromise = hydrateFromServer();
       try {
         const rawLastMonth = await AsyncStorage.getItem(LAST_MONTH_TOTAL_KEY);

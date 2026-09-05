@@ -16,7 +16,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { EnergyProvider } from "@/context/EnergyContext";
 import { IdleProvider, useIdle } from "@/context/IdleContext";
 import { SceneThemeProvider } from "@/context/SceneThemeContext";
-import { ensureOverlayPermission, startOverlay, stopOverlay } from "@/native/FloatingOverlay";
+import { hasOverlayPermission, startOverlay, stopOverlay } from "@/native/FloatingOverlay";
 
 const OVERLAY_API_URL = "http://104.43.56.204:3001/api/solar/live";
 const OVERLAY_ENABLED_KEY = "overlayEnabled";
@@ -54,23 +54,18 @@ export default function RootLayout() {
   useEffect(() => {
     if (Platform.OS !== "android") return;
 
-    let permissionGranted = false;
-
-    const checkPermission = async () => {
-      permissionGranted = await ensureOverlayPermission();
-    };
-    void checkPermission();
-
     const subscription = AppState.addEventListener("change", (nextAppState) => {
       if (nextAppState === "background" || nextAppState === "inactive") {
-        // App minimized — start the floating overlay only if the user has enabled it
-        if (permissionGranted && !overlayStartedRef.current) {
-          void AsyncStorage.getItem(OVERLAY_ENABLED_KEY).then((v) => {
-            if (v === "true" && !overlayStartedRef.current) {
-              void startOverlay(OVERLAY_API_URL).then(() => {
-                overlayStartedRef.current = true;
-              }).catch(() => {});
-            }
+        // App minimized — start overlay only when user enabled it and permission is already granted.
+        // Permission is requested from Settings toggle, not on every app open.
+        if (!overlayStartedRef.current) {
+          void AsyncStorage.getItem(OVERLAY_ENABLED_KEY).then(async (v) => {
+            if (v !== "true" || overlayStartedRef.current) return;
+            const granted = await hasOverlayPermission();
+            if (!granted) return;
+            void startOverlay(OVERLAY_API_URL).then(() => {
+              overlayStartedRef.current = true;
+            }).catch(() => {});
           }).catch(() => {});
         }
       } else if (nextAppState === "active") {
