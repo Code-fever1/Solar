@@ -351,16 +351,21 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
   const [inverterOff, setInverterOff] = useState(rawInverterOff);
   const offTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
+    const confirmedOffline = inverter.inverterMode === "offline" || inverter.inverterMode === "S";
     if (!rawInverterOff) {
       // Inverter is online — clear any pending offline transition and show online now.
       if (offTimerRef.current) { clearTimeout(offTimerRef.current); offTimerRef.current = null; }
       setInverterOff(false);
+    } else if (confirmedOffline) {
+      // Backend confirmed off/standby — show immediately, no debounce.
+      if (offTimerRef.current) { clearTimeout(offTimerRef.current); offTimerRef.current = null; }
+      setInverterOff(true);
     } else if (!offTimerRef.current) {
-      // Inverter looks offline — wait 20s before committing, in case the next poll recovers.
+      // Ambiguous timeout snapshot — wait 20s before committing, in case the next poll recovers.
       offTimerRef.current = setTimeout(() => { offTimerRef.current = null; setInverterOff(true); }, 20000);
     }
     return () => { if (offTimerRef.current) { clearTimeout(offTimerRef.current); offTimerRef.current = null; } };
-  }, [rawInverterOff]);
+  }, [rawInverterOff, inverter.inverterMode]);
   // TOMZN fault codes:
   // 2048 = wapda cut off while load was on → show "Offline"
   // 8192 = wapda gone and relay also off → show "Unavailable"
@@ -391,7 +396,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
           <Sun size={16} color={sceneCardTheme.textSecondary} />
           <View style={styles.statusItemText}>
             <Text style={[styles.statusLabel, { color: sceneCardTheme.textSecondary }]}>Solar</Text>
-            <Text style={[styles.statusValue, { color: !liveReady ? "#F8C653" : inverterOff ? "#EF4C4C" : solarLive ? "#32E56B" : solarAllZero ? "#F8C653" : "#32E56B" }]}>{!liveReady ? "…" : inverterOff ? "Off" : solarLive ? "Online" : solarAllZero ? "Standby" : "Online"}</Text>
+            <Text style={[styles.statusValue, { color: !liveReady ? "#F8C653" : rawInverterOff ? "#EF4C4C" : solarLive ? "#32E56B" : solarAllZero ? "#F8C653" : "#32E56B" }]}>{!liveReady ? "…" : rawInverterOff ? "Off" : solarLive ? "Online" : solarAllZero ? "Standby" : "Online"}</Text>
           </View>
         </View>
         <View style={[styles.statusDivider, { backgroundColor: sceneCardTheme.overlayBorder }]} />
@@ -399,7 +404,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
           <Cpu size={16} color={sceneCardTheme.textSecondary} />
           <View style={styles.statusItemText}>
             <Text style={[styles.statusLabel, { color: sceneCardTheme.textSecondary }]}>Inverter</Text>
-            <Text style={[styles.statusValue, { color: !liveReady ? "#F8C653" : inverterOff ? "#EF4C4C" : inverter.isOnline === false ? "#F8C653" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{!liveReady ? "…" : inverterOff ? "Offline" : inverter.isOnline === false ? "Connecting..." : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text>
+            <Text style={[styles.statusValue, { color: !liveReady ? "#F8C653" : rawInverterOff ? "#EF4C4C" : inverter.inverterFault === "NO" ? "#32E56B" : "#F8C653" }]}>{!liveReady ? "…" : rawInverterOff ? "Offline" : inverter.inverterFault === "NO" ? "Healthy" : inverter.inverterFault}</Text>
           </View>
         </View>
         <View style={[styles.statusDivider, { backgroundColor: sceneCardTheme.overlayBorder }]} />

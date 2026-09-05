@@ -3,7 +3,7 @@ import { SceneBackground } from "@/components/SceneBackground";
 import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
-import { stopOverlay } from "@/native/FloatingOverlay";
+import { ensureOverlayPermission, stopOverlay } from "@/native/FloatingOverlay";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Application from "expo-application";
 import { BlurView } from "expo-blur";
@@ -67,8 +67,16 @@ export default function SettingsScreen() {
       setOverlayEnabled(v === "true");
     }).catch(() => undefined);
   }, []);
-  const toggleOverlay = () => {
+  const toggleOverlay = async () => {
     const next = !overlayEnabled;
+    if (next) {
+      // Turning ON: check permission first
+      const hasPermission = await ensureOverlayPermission();
+      if (!hasPermission) {
+        // User denied permission - don't enable
+        return;
+      }
+    }
     setOverlayEnabled(next);
     void AsyncStorage.setItem(OVERLAY_ENABLED_KEY, String(next)).catch(() => undefined);
     if (!next) {
