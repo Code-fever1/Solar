@@ -37,17 +37,17 @@ export function pointsToPathD(
     .join(" ");
 }
 
-type Segment = { x1: number; y1: number; x2: number; y2: number; length: number };
+export type PathSeg = { x1: number; y1: number; x2: number; y2: number; length: number };
 
 function buildSegments(
   points: OverlayPoint[],
   viewBox: OverlayViewBox,
   width: number,
   height: number,
-): Segment[] {
+): PathSeg[] {
   "worklet";
   const scaled = scalePoints(points, viewBox, width, height);
-  const segments: Segment[] = [];
+  const segments: PathSeg[] = [];
   for (let i = 0; i < scaled.length - 1; i += 1) {
     const a = scaled[i];
     const b = scaled[i + 1];
@@ -57,6 +57,49 @@ function buildSegments(
     if (length > 0) segments.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, length });
   }
   return segments;
+}
+
+export function buildPathSegments(
+  points: OverlayPoint[],
+  viewBox: OverlayViewBox,
+  width: number,
+  height: number,
+): PathSeg[] {
+  return buildSegments(points, viewBox, width, height);
+}
+
+/** Interpolate position along precomputed segments. `t` is 0–1. */
+export function pointOnSegments(segments: PathSeg[], t: number): { x: number; y: number } {
+  "worklet";
+  if (!segments || segments.length === 0) return { x: 0, y: 0 };
+  let total = 0;
+  for (let i = 0; i < segments.length; i++) {
+    total += segments[i].length;
+  }
+  if (total <= 0) return { x: segments[0].x1, y: segments[0].y1 };
+  const clamped = Math.max(0, Math.min(1, t));
+  let remaining = clamped * total;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (remaining <= seg.length) {
+      const ratio = seg.length === 0 ? 0 : remaining / seg.length;
+      return {
+        x: seg.x1 + (seg.x2 - seg.x1) * ratio,
+        y: seg.y1 + (seg.y2 - seg.y1) * ratio,
+      };
+    }
+    remaining -= seg.length;
+  }
+  const last = segments[segments.length - 1];
+  return { x: last.x2, y: last.y2 };
+}
+
+/** Keep dash/path phases in a small range so Skia on Android does not freeze. */
+export function wrapPhase(value: number, period: number): number {
+  "worklet";
+  if (period <= 0) return 0;
+  const m = value % period;
+  return m < 0 ? m + period : m;
 }
 
 export function getPathLength(
@@ -77,28 +120,7 @@ export function getPointOnPath(
   height: number,
 ): { x: number; y: number } {
   "worklet";
-  const segments = buildSegments(points, viewBox, width, height);
-  if (segments.length === 0) return { x: 0, y: 0 };
-
-  const total = segments.reduce((sum, s) => sum + s.length, 0);
-  if (total <= 0) return { x: segments[0].x1, y: segments[0].y1 };
-
-  const clamped = Math.max(0, Math.min(1, t));
-  let remaining = clamped * total;
-
-  for (const seg of segments) {
-    if (remaining <= seg.length) {
-      const ratio = seg.length === 0 ? 0 : remaining / seg.length;
-      return {
-        x: seg.x1 + (seg.x2 - seg.x1) * ratio,
-        y: seg.y1 + (seg.y2 - seg.y1) * ratio,
-      };
-    }
-    remaining -= seg.length;
-  }
-
-  const last = segments[segments.length - 1];
-  return { x: last.x2, y: last.y2 };
+  return pointOnSegments(buildSegments(points, viewBox, width, height), t);
 }
 
 /** Map screen coords back into viewBox space. */

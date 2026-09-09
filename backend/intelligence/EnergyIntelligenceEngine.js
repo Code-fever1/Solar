@@ -200,6 +200,7 @@ function createEnergyIntelligenceEngine(collections) {
       tomznOnline: liveData.tomznLive?.isOnline !== false,
       tomznVoltageV: liveData.tomznLive?.voltageV || 0,
       tomznFaultCode: liveData.tomznLive?.faultCode || 0,
+      gridDirection: liveData.gridFlow?.direction,
       gridState: gridStateTracker,
       now,
     });

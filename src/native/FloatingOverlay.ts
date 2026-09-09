@@ -34,9 +34,8 @@ export async function stopOverlay(): Promise<boolean> {
   return FloatingOverlay.stopOverlay();
 }
 
-export async function isOverlayActive(): Promise<boolean> {
-  if (Platform.OS !== "android" || !FloatingOverlay) return false;
-  return FloatingOverlay.isOverlayActive();
+export async function nativeOverlayAvailable(): Promise<boolean> {
+  return Platform.OS === "android" && !!FloatingOverlay;
 }
 
 export async function ensureOverlayPermission(): Promise<boolean> {

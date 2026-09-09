@@ -67,12 +67,13 @@ function TabBar({ state, navigation }: any) {
   //    we layer a scene-tinted wash on top to simulate the frosted look.
   //  - The seam color ties the bar to the scene's dominant tone.
   //  - The accent color is the active tab highlight (scene's light source).
+  const floorColor = `rgb(${sky[0]},${sky[1]},${sky[2]})`;
   const accent = rgba(accentRgb, 1);
   const inactiveColor = isLight ? "rgba(15,23,42,0.5)" : textSecondary;
 
   // Scene-tinted wash layered over the blur — this is what makes the glass
   // feel like it belongs to the current wallpaper, not a generic overlay.
-  const tintWash = rgba(seam, 0.28);
+  const tintWash = rgba(seam, isLight ? 0.55 : 0.72);
   // Top inner glow — light catching the upper edge of the glass bar.
   const topGlowColor = rgba(accentRgb, 0.30);
   // Active pill: frosted glass with sky-tinted accent
@@ -108,7 +109,15 @@ function TabBar({ state, navigation }: any) {
   }));
 
   return (
-    <View style={[styles.outer, { paddingBottom: Math.max(insets.bottom, 10) + 6 }]}>
+    <View
+      style={[
+        styles.outer,
+        {
+          paddingBottom: Math.max(insets.bottom, 6) + 2,
+          backgroundColor: floorColor,
+        },
+      ]}
+    >
       <View style={[styles.barContainer, { width: containerWidth }]}>
         {/* Real backdrop blur (iOS) / semi-transparent fallback (Android) */}
         <BlurView
@@ -216,6 +225,12 @@ export default function TabsLayout() {
       screenOptions={{
         headerShown: false,
         freezeOnBlur: false,
+        tabBarStyle: {
+          position: "relative",
+          backgroundColor: "transparent",
+          borderTopWidth: 0,
+          elevation: 0,
+        },
       }}
     >
       <Tabs.Screen name="index" options={{ title: "Home" }} />
@@ -229,11 +244,8 @@ export default function TabsLayout() {
 
 const styles = StyleSheet.create({
   outer: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
     alignItems: "center",
+    paddingTop: 0,
   },
   // Glass bar container — holds the blur + tint layers + tabs
   barContainer: {

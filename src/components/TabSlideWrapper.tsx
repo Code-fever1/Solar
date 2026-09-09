@@ -1,6 +1,6 @@
 import { useSceneTheme } from "@/context/SceneThemeContext";
 import { useEffect, useRef } from "react";
-import { StyleSheet, useWindowDimensions } from "react-native";
+import { useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   Easing,
@@ -94,7 +94,7 @@ export function TabSlideWrapper({ children, index, tabCount = 5 }: Props) {
 
   return (
     <GestureDetector gesture={swipeGesture}>
-      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: screenBg }, animatedStyle]}>
+      <Animated.View style={[{ flex: 1, overflow: "hidden", backgroundColor: screenBg }, animatedStyle]}>
         {children}
       </Animated.View>
     </GestureDetector>

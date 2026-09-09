@@ -21,6 +21,7 @@ import {
     type CachedDashboardSnapshot,
     type CachedTomznLive,
 } from "@/utils/offline-dashboard";
+import type { BoardSwitchState } from "@/utils/ops-guide";
 import type {
     AlertItem,
     EnergyFlowPoint,
@@ -65,13 +66,25 @@ type DashboardSnapshot = CachedDashboardSnapshot;
 
 type PendingOperation = {
   id: string;
-  path: "/changeover" | "/manual-readings" | "/baselines" | "/last-month-total" | "/forget-swap";
+  path: "/changeover" | "/manual-readings" | "/baselines" | "/last-month-total" | "/forget-swap" | "/board-state";
   method: "POST";
   body: Record<string, unknown>;
   createdAt: number;
 };
 
 type StoredDashboard = { snapshot: DashboardSnapshot; savedAt: number };
+
+function uniqueManualLogs(logs: ManualLog[]): ManualLog[] {
+  const seen = new Set<string>();
+  const out: ManualLog[] = [];
+  for (const log of logs) {
+    const id = log.id || `${log.meterId}-${log.timestamp}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(log.id ? log : { ...log, id });
+  }
+  return out;
+}
 
 type EnergyContextValue = {
   live: LiveTelemetry;
@@ -117,6 +130,9 @@ type EnergyContextValue = {
   refreshAll: () => Promise<void>;
   refreshTomznForce: () => Promise<void>;
   refreshInverterForce: () => Promise<void>;
+  boardSwitches: BoardSwitchState | null;
+  boardGuess: BoardSwitchState | null;
+  saveBoardSwitches: (state: BoardSwitchState, predicted?: BoardSwitchState | null) => Promise<void>;
 };
 
 const API_URL = "http://104.43.56.204:3001/api/solar";
@@ -168,6 +184,16 @@ const EMPTY_INVERTER: InverterTelemetry = { solarW: 0, solarV: 0, solarA: 0, pv1
 const EMPTY_WEATHER: WeatherState = { code: 0, isDay: new Date().getHours() >= 5 && new Date().getHours() < 19, cloudCover: 0, precipitation: 0, temperatureC: 0, sunrise: null, sunset: null, fetchedAt: "", isLive: false };
 const EMPTY_ENERGY_TODAY: EnergyToday = { solarKwh: 0, homeKwh: 0, gridKwh: 0 };
 
+function parseBoardState(raw: any): BoardSwitchState | null {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    pv: raw.pv === true,
+    grey: raw.grey === "up" || raw.grey === "center" || raw.grey === "down" ? raw.grey : "down",
+    wapdaIn: raw.wapdaIn === true,
+    tomzn: raw.tomzn === true,
+  };
+}
+
 const EnergyContext = createContext<EnergyContextValue | null>(null);
 
 /**
@@ -192,6 +218,8 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const [tomznHistory, setTomznHistory] = useState<any[]>([]);
   const [flowHistory24h, setFlowHistory24h] = useState<EnergyFlowPoint[]>([]);
   const [manualBaselines, setManualBaselines] = useState<Record<MeterId, ManualBaseline | null>>({ meter1: null, meter2: null });
+  const [boardSwitches, setBoardSwitches] = useState<BoardSwitchState | null>(null);
+  const [boardGuess, setBoardGuess] = useState<BoardSwitchState | null>(null);
   const [period, setPeriod] = useState<"day" | "week" | "month" | "year">("day");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -250,7 +278,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const normaliseSnapshot = (data: DashboardSnapshot): DashboardSnapshot => ({
       ...data,
       changeover: { ...data.changeover, lastSwitchedAt: Number(data.changeover.lastSwitchedAt) },
-      manualLogs: [...(data.manualLogs || [])].sort((a, b) => a.timestamp - b.timestamp),
+      manualLogs: uniqueManualLogs(data.manualLogs || []).sort((a, b) => a.timestamp - b.timestamp),
     });
 
   const saveSnapshot = (data: DashboardSnapshot, savedAt = Date.now()) => {
@@ -392,6 +420,14 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       }
     }
     setSnapshot(next);
+    if (next.boardSwitches) {
+      const parsed = parseBoardState(next.boardSwitches);
+      if (parsed) setBoardSwitches(parsed);
+    }
+    if ((next as any).boardGuess) {
+      const guessed = parseBoardState((next as any).boardGuess);
+      if (guessed) setBoardGuess(guessed);
+    }
     // Phase 5: When live=true (default — HTTP fetch, cache load, foreground
     // refresh), update the live slice too since this is an authoritative full
     // snapshot. When live=false (SSE dashboard event), do NOT overwrite the
@@ -528,7 +564,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   // Apply live data (tomznLive + inverter + gridFlow) to the snapshot. Shared
   // by both fetchLive() and the SSE subscription handler so the merge logic
   // stays DRY.
-  const liveSig = (d: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any; intelligence?: any } | null | undefined) => {
+  const liveSig = (d: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any; intelligence?: any; boardSwitches?: BoardSwitchState; boardGuess?: BoardSwitchState } | null | undefined) => {
     if (!d) return "";
     const t = d.tomznLive || {};
     const i = d.inverter || {};
@@ -536,6 +572,8 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     const w = d.weather || {};
     const u = d.ups;
     const intel = d.intelligence;
+    const b = d.boardSwitches;
+    const guess = d.boardGuess;
     return [
       i.isOnline, i.inverterMode, i.solarW, i.loadW, i.gridW, i.acOutV,
       i.pv1V, i.pv1A, i.pv1W, i.pv2V, i.pv2A, i.pv2W,
@@ -547,6 +585,8 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       intel?.headline, intel?.overallStatus,
       intel?.meterRecommendation?.recommendation,
       intel?.meterRecommendation?.shouldSwitch,
+      b?.pv, b?.grey, b?.wapdaIn, b?.tomzn,
+      guess?.pv, guess?.grey, guess?.wapdaIn, guess?.tomzn,
     ].join("|");
   };
 
@@ -566,7 +606,7 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     ).catch(() => undefined);
   };
 
-  const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any; intelligence?: any } | null | undefined) => {
+  const applyLive = (data: { tomznLive?: any; inverter?: any; gridFlow?: any; weather?: any; ups?: any; intelligence?: any; boardSwitches?: BoardSwitchState; boardGuess?: BoardSwitchState } | null | undefined) => {
     if (!data || (!data.tomznLive && !data.inverter)) return;
     perfRef.current.applyLiveCalls += 1;
     const sig = liveSig(data);
@@ -599,6 +639,14 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
       ups: data.ups,
       intelligence: nextIntelligence,
     });
+    if (data.boardSwitches) {
+      const parsed = parseBoardState(data.boardSwitches);
+      if (parsed) setBoardSwitches(parsed);
+    }
+    if (data.boardGuess) {
+      const guessed = parseBoardState(data.boardGuess);
+      if (guessed) setBoardGuess(guessed);
+    }
     perfRef.current.liveSliceUpdates += 1;
     // Import step — billing/accounting preserved EXACTLY. Only update the
     // dashboard slice when energy was actually consumed (importStep > 0).
@@ -1217,6 +1265,21 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const saveBoardSwitches = async (state: BoardSwitchState, predicted?: BoardSwitchState | null) => {
+    const timestamp = Date.now();
+    setBoardSwitches(state);
+    await submitOrQueue(
+      {
+        id: `board-state-${timestamp}`,
+        path: "/board-state",
+        method: "POST",
+        body: { ...state, predicted: predicted || undefined, timestamp },
+        createdAt: timestamp,
+      },
+      (current) => ({ ...current, boardSwitches: { ...state, updatedAt: timestamp } }),
+    );
+  };
+
   const value = useMemo<EnergyContextValue>(() => ({
     live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
     history, manualLogs, learningProfiles: {}, manualBaselines, tomznHistory, meta: snapshot?.meta, ups, intelligence, summary,
@@ -1229,12 +1292,15 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
     refreshAll,
     refreshTomznForce,
     refreshInverterForce,
+    boardSwitches,
+    boardGuess,
+    saveBoardSwitches,
   }), [
     live, tomznLive, inverter, weather, energyToday, flowHistory, gridFlow, home, meters, activeMeter, changeover, recommendations, alerts,
     history, manualLogs, manualBaselines, tomznHistory, snapshot?.meta, ups, intelligence, summary,
     period, loading, isOffline, liveReady, pendingSyncCount, lastSyncedAt, setPeriod, swapChangeover,
     setManualBaseline, setLastMonthTotal, addManualLog, forgetSwap, editManualLog, deleteManualLog,
-    refreshTomzn, refreshAll, refreshTomznForce, refreshInverterForce, loadDashboard,
+    refreshTomzn, refreshAll, refreshTomznForce, refreshInverterForce, loadDashboard, boardSwitches, boardGuess, saveBoardSwitches,
   ]);
 
   return <EnergyContext.Provider value={value}>{children}</EnergyContext.Provider>;

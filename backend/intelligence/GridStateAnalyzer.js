@@ -6,6 +6,7 @@
  * States:
  *   NORMAL     — grid connected, normal import
  *   STANDBY    — grid connected, ~0 import (solar covering load)
+ *   EXPORTING  — grid connected, leftover solar going out through TOMZN
  *   IMPORTING  — grid connected, significant import
  *   CUTOFF     — grid unavailable (inverter on battery or bypass)
  *   RESTORED   — grid just returned after cutoff
@@ -59,6 +60,7 @@ function classifyGridState({
   tomznOnline,
   tomznVoltageV,
   tomznFaultCode,
+  gridDirection,
   gridState,
   now = Date.now(),
 }) {
@@ -206,7 +208,17 @@ function classifyGridState({
     };
   }
 
-  // Inverter is online + WAPDA is available — classify by power level
+  // Inverter is online + WAPDA is available — classify by direction then power
+  if (gridDirection === "export") {
+    return {
+      state: "EXPORTING",
+      label: "Exporting to WAPDA",
+      severity: "info",
+      message: `Exporting ${Math.round(power)}W to WAPDA.`,
+      power,
+    };
+  }
+
   if (power < CONFIG.standbyThresholdW) {
     return {
       state: "STANDBY",

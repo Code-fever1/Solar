@@ -66,7 +66,7 @@ export function NewMetersScreen() {
     <View style={s.screen}>
       <SceneBackground />
       <ScrollView
-        contentContainerStyle={[s.content, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 105 }]}
+        contentContainerStyle={[s.content, { paddingTop: insets.top + 10, paddingBottom: 28 }]}
         showsVerticalScrollIndicator={false}
       >
         {/* ── Header ── */}

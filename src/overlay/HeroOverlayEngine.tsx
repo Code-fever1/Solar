@@ -16,10 +16,13 @@ import {
 } from "react-native-reanimated";
 
 import {
+    buildPathSegments,
     flowDurationFromPower,
-    getPointOnPath,
+    pointOnSegments,
     pointsToPathD,
     wireOpacity,
+    wrapPhase,
+    type PathSeg,
 } from "./pathUtils";
 import type {
     HeroOverlayConfig,
@@ -85,6 +88,10 @@ function WireStream({
     () => pointsToPathD(points, viewBox, width, height),
     [points, viewBox, width, height],
   );
+  const pathSegments = useMemo(
+    () => buildPathSegments(points, viewBox, width, height),
+    [points, viewBox, width, height],
+  );
 
   const strokeWidth = wireStyle.strokeWidth ?? 2.5;
   const glowWidth = wireStyle.glowWidth ?? strokeWidth + 2;
@@ -106,12 +113,24 @@ function WireStream({
     () => parseDashArray(wireStyle.dashArray, "6 18"),
     [wireStyle.dashArray],
   );
+  const glowPeriod = (glowDash[0] ?? 10) + (glowDash[1] ?? 14);
+  const corePeriod = (coreDash[0] ?? 6) + (coreDash[1] ?? 18);
 
   // ── Stateful animation values ──
   const dashOffset = useSharedValue(0);
+  const coreDashOffset = useSharedValue(0);
   const pulse = useSharedValue(0.5);
   const smoothPower = useSharedValue(flow.power);
+  const powerSV = useSharedValue(flow.power);
+  const directionSV = useSharedValue(flow.reverse ? 1 : -1);
   const prevClock = useSharedValue(-1);
+
+  useEffect(() => {
+    powerSV.value = flow.power;
+  }, [flow.power, powerSV]);
+  useEffect(() => {
+    directionSV.value = flow.reverse ? 1 : -1;
+  }, [flow.reverse, directionSV]);
 
   // ── Target opacity (data-driven, animated via withTiming) ──
   const targetOpacity = useSharedValue(
@@ -147,8 +166,6 @@ function WireStream({
     targetOpacity,
   ]);
 
-  const direction = flow.reverse ? 1 : -1;
-
   // ── Consume the animation clock ──
   // This callback runs at the device refresh rate but only does work when the
   // clock has advanced (i.e., at the target FPS). When clockDelta is 0, all
@@ -164,7 +181,7 @@ function WireStream({
     // Frame-rate independent exponential smoothing for power.
     // tau = 200ms time constant → same convergence rate at any FPS.
     const alpha = 1 - Math.exp(-clockDelta / 200);
-    smoothPower.value += (flow.power - smoothPower.value) * alpha;
+    smoothPower.value += (powerSV.value - smoothPower.value) * alpha;
 
     // Duration from smoothed power
     const dur = flowDurationFromPower(
@@ -179,9 +196,17 @@ function WireStream({
     const travelScale = 0.4 + Math.sqrt(powerRatio) * 1.2;
     const dashTravel = baseDashTravel * travelScale;
 
-    // Advance dash offset — time-based, so speed is constant in real-world time
+    // Advance dash offset — wrap so Skia DashPathEffect phase stays precise on Android
     const dashSpeed = dashTravel / dur;
-    dashOffset.value += dashSpeed * clockDelta * direction;
+    const dir = directionSV.value;
+    dashOffset.value = wrapPhase(
+      dashOffset.value + dashSpeed * clockDelta * dir,
+      glowPeriod,
+    );
+    coreDashOffset.value = wrapPhase(
+      coreDashOffset.value + dashSpeed * 0.85 * clockDelta * dir,
+      corePeriod,
+    );
 
     // Advance pulse oscillation
     const pulseDur = dur * 0.6;
@@ -190,8 +215,6 @@ function WireStream({
   }, isVisible);
 
   // ── Derived visual values (computed on UI thread from shared values) ──
-  const glowPhase = useDerivedValue(() => dashOffset.value);
-  const corePhase = useDerivedValue(() => dashOffset.value * 0.85);
   const glowDashOpacity = useDerivedValue(
     () => targetOpacity.value * (0.45 + (0.5 + 0.5 * Math.sin(pulse.value)) * 0.25),
   );
@@ -247,7 +270,7 @@ function WireStream({
         color={flow.glowColor}
         opacity={glowDashOpacity}
       >
-        <DashPathEffect intervals={glowDash} phase={glowPhase} />
+        <DashPathEffect intervals={glowDash} phase={dashOffset} />
         <BlurMask blur={3} />
       </SkiaPath>
       {/* Core dash (animated) */}
@@ -260,18 +283,14 @@ function WireStream({
         color={flow.color}
         opacity={coreDashOpacity}
       >
-        <DashPathEffect intervals={coreDash} phase={corePhase} />
+        <DashPathEffect intervals={coreDash} phase={coreDashOffset} />
       </SkiaPath>
       {Array.from({ length: particleCount }).map((_, i) => (
         <WireParticle
           key={`${wireId}-p-${i}`}
-          points={points}
-          viewBox={viewBox}
-          width={width}
-          height={height}
+          segments={pathSegments}
           color={flow.color}
           offset={i / particleCount}
-          duration={flowDurationFromPower(flow.power, minDurationMs, maxDurationMs, powerCeilingW)}
           active={flow.active}
           power={flow.power}
           opacity={targetOpacity}
@@ -286,13 +305,9 @@ function WireStream({
 }
 
 function WireParticle({
-  points,
-  viewBox,
-  width,
-  height,
+  segments,
   color,
   offset,
-  duration: _duration,
   active,
   power,
   opacity,
@@ -301,13 +316,9 @@ function WireParticle({
   reverse,
   animationClock,
 }: {
-  points: HeroOverlayConfig["solarPath"];
-  viewBox: HeroOverlayConfig["viewBox"];
-  width: number;
-  height: number;
+  segments: PathSeg[];
   color: string;
   offset: number;
-  duration: number;
   active: boolean;
   power: number;
   opacity: SharedValue<number>;
@@ -316,15 +327,46 @@ function WireParticle({
   reverse?: boolean;
   animationClock: SharedValue<number>;
 }) {
+  const segsSV = useSharedValue(segments);
+  const reverseSV = useSharedValue(!!reverse);
+  const activeSV = useSharedValue(active);
+  const powerSV = useSharedValue(power);
+  const minDurSV = useSharedValue(wireStyle.minDurationMs ?? 1800);
+  const maxDurSV = useSharedValue(wireStyle.maxDurationMs ?? 10000);
+  const ceilingSV = useSharedValue(wireStyle.powerCeilingW ?? 6000);
+
+  useEffect(() => {
+    segsSV.value = segments;
+  }, [segments, segsSV]);
+  useEffect(() => {
+    reverseSV.value = !!reverse;
+  }, [reverse, reverseSV]);
+  useEffect(() => {
+    activeSV.value = active;
+  }, [active, activeSV]);
+  useEffect(() => {
+    powerSV.value = power;
+  }, [power, powerSV]);
+  useEffect(() => {
+    minDurSV.value = wireStyle.minDurationMs ?? 1800;
+    maxDurSV.value = wireStyle.maxDurationMs ?? 10000;
+    ceilingSV.value = wireStyle.powerCeilingW ?? 6000;
+  }, [wireStyle, minDurSV, maxDurSV, ceilingSV]);
+
+  const initialT = reverse ? 1 - wrapPhase(offset, 1) : wrapPhase(offset, 1);
+  const start = pointOnSegments(segments, initialT);
+  const cx = useSharedValue(start.x);
+  const cy = useSharedValue(start.y);
+  const glowOpacity = useSharedValue(0);
+  const coreOpacity = useSharedValue(0);
+
   const progress = useSharedValue(0);
   const smoothPower = useSharedValue(power);
   const prevClock = useSharedValue(-1);
 
-  // ── Consume the animation clock ──
-  // Progress advances by clockDelta/duration each clock tick. At 120 FPS,
-  // clockDelta ≈ 8.33ms (tiny steps). At 10 FPS, clockDelta ≈ 100ms (large
-  // steps). But progress += clockDelta/dur means the total travel time is
-  // the same — only the visual smoothness changes.
+  // Write cx/cy on the UI thread from precomputed segments. Do not sample the
+  // JS path array inside useDerivedValue — that freezes on Android Skia after
+  // a few seconds (dots start moving, then stick in place).
   useFrameCallback(() => {
     "worklet";
     if (!isVisible) return;
@@ -332,16 +374,35 @@ function WireParticle({
     if (clockDelta <= 0) return;
     prevClock.value = animationClock.value;
 
-    // Frame-rate independent power smoothing
     const alpha = 1 - Math.exp(-clockDelta / 200);
-    smoothPower.value += (power - smoothPower.value) * alpha;
+    smoothPower.value += (powerSV.value - smoothPower.value) * alpha;
     const dur = flowDurationFromPower(
       smoothPower.value,
-      wireStyle.minDurationMs ?? 1800,
-      wireStyle.maxDurationMs ?? 10000,
-      wireStyle.powerCeilingW ?? 6000,
+      minDurSV.value,
+      maxDurSV.value,
+      ceilingSV.value,
     );
-    progress.value = (progress.value + clockDelta / dur) % 1;
+    progress.value = wrapPhase(progress.value + clockDelta / dur, 1);
+
+    const raw = wrapPhase(progress.value + offset, 1);
+    const t = reverseSV.value ? 1 - raw : raw;
+    const pt = pointOnSegments(segsSV.value, t);
+    cx.value = pt.x;
+    cy.value = pt.y;
+
+    let glow = opacity.value * (activeSV.value ? 0.85 : 0.35);
+    let core = opacity.value * (activeSV.value ? 1 : 0.45);
+    if (t < 0.08) {
+      const fade = t / 0.08;
+      glow *= fade;
+      core *= fade;
+    } else if (t > 0.9) {
+      const fade = (1 - t) / 0.1;
+      glow *= fade;
+      core *= fade;
+    }
+    glowOpacity.value = glow;
+    coreOpacity.value = core;
   }, isVisible);
 
   const powerRatio = Math.max(
@@ -353,33 +414,6 @@ function WireParticle({
   const size =
     (active ? minRadius : minRadius * 0.8) +
     (maxRadius - minRadius) * powerRatio;
-
-  const cx = useDerivedValue(() => {
-    const raw = (progress.value + offset) % 1;
-    const t = reverse ? 1 - raw : raw;
-    return getPointOnPath(points, t, viewBox, width, height).x;
-  });
-  const cy = useDerivedValue(() => {
-    const raw = (progress.value + offset) % 1;
-    const t = reverse ? 1 - raw : raw;
-    return getPointOnPath(points, t, viewBox, width, height).y;
-  });
-  const glowOpacity = useDerivedValue(() => {
-    const raw = (progress.value + offset) % 1;
-    const t = reverse ? 1 - raw : raw;
-    let alpha = opacity.value * (active ? 0.85 : 0.35);
-    if (t < 0.08) alpha *= t / 0.08;
-    else if (t > 0.9) alpha *= (1 - t) / 0.1;
-    return alpha;
-  });
-  const coreOpacity = useDerivedValue(() => {
-    const raw = (progress.value + offset) % 1;
-    const t = reverse ? 1 - raw : raw;
-    let alpha = opacity.value * (active ? 1 : 0.45);
-    if (t < 0.08) alpha *= t / 0.08;
-    else if (t > 0.9) alpha *= (1 - t) / 0.1;
-    return alpha;
-  });
 
   return (
     <>

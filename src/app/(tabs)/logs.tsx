@@ -4,6 +4,7 @@ import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
 import { Activity, Clock, Trash2 } from "lucide-react-native";
+import { useMemo } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -20,7 +21,9 @@ function formatDateTime(timestamp: number): string {
 }
 
 function formatReading(reading: number): string {
-  return reading.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const n = Number(reading);
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 export default function LogsScreen() {
@@ -28,7 +31,18 @@ export default function LogsScreen() {
   const theme = useSceneTheme();
   const { manualLogs, deleteManualLog, meters } = useEnergy();
 
-  const recentLogs = [...manualLogs].sort((a, b) => b.timestamp - a.timestamp).slice(0, 10);
+  const recentLogs = useMemo(() => {
+    const seen = new Set<string>();
+    return [...manualLogs]
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .filter((log) => {
+        const id = log.id || `${log.meterId}-${log.timestamp}`;
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      })
+      .slice(0, 10);
+  }, [manualLogs]);
 
   // Delta between current live reading and the last logged manual reading per meter.
   const lastLogged1 = manualLogs.filter(l => l.meterId === 'meter1').sort((a, b) => b.timestamp - a.timestamp)[0];
@@ -64,7 +78,7 @@ export default function LogsScreen() {
       <ScrollView
         contentContainerStyle={[
           styles.container,
-          { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 120 },
+          { paddingTop: insets.top + 16, paddingBottom: 28 },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -129,7 +143,7 @@ export default function LogsScreen() {
                 : '#EF4C4C';
               const diffSign = diff > 0 ? '+' : '';
               return (
-                <View key={log.id} style={[styles.logRow, { borderBottomColor: theme.border }, idx === recentLogs.length - 1 && { borderBottomWidth: 0 }]}>
+                <View key={`${log.id || log.timestamp}-${idx}`} style={[styles.logRow, { borderBottomColor: theme.border }, idx === recentLogs.length - 1 && { borderBottomWidth: 0 }]}>
                   {/* Left: timestamp + meter badge */}
                   <View style={styles.logLeft}>
                     <View style={[styles.meterBadge, { backgroundColor: isMeter1 ? 'rgba(50,229,107,0.12)' : 'rgba(84,142,255,0.12)', borderColor: `${meterColor}40` }]}>

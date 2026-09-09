@@ -48,8 +48,9 @@ function labelPositionStyle(
 
 function formatPowerShort(watts: number) {
   const abs = Math.abs(watts);
-  if (abs >= 1000) return { value: (watts / 1000).toFixed(2), unit: "kW" };
-  return { value: String(Math.round(watts)), unit: "W" };
+  const sign = watts < 0 && abs >= 0.5 ? "-" : "";
+  if (abs >= 1000) return { value: `${sign}${(abs / 1000).toFixed(2)}`, unit: "kW" };
+  return { value: `${sign}${Math.round(abs)}`, unit: "W" };
 }
 
 // Dead code removed: SkiaParticle, SkiaBubbleParticle, SkiaStreamLayer,
@@ -156,35 +157,26 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   const wapdaStandby = !offline && !tomznLive.switchOn && fault !== 2048 && fault !== 8192;
   // Grid path is gone on cutoff, standby, or a truly unreachable meter (relay still on).
   const gridUnavailable = offline || wapdaCutOff || wapdaStandby || (!tomznLive.isOnline && !!tomznLive.switchOn);
-  // Grid arc always uses Tomzn (Wapda) meter data — independent of inverter state.
-  const gridImporting = !offline && tomznLive.isOnline && tomznLive.powerW > 0 && !wapdaCutOff && !wapdaStandby;
-  const gridPowerW = gridImporting ? Math.max(0, tomznLive.powerW) : 0;
+  // Grid watts on the hero are always the TOMZN meter (the real wire).
+  // Fronus is only used to decide hybrid import vs export — never as the
+  // displayed grid number. On-grid uses backend direction from TOMZN-vs-solar.
+  const tomznW = Math.max(0, tomznLive.powerW || 0);
+  const gridImporting = !offline && tomznLive.isOnline && tomznW > 0 && !wapdaCutOff && !wapdaStandby;
+  const gridPowerW = gridImporting ? tomznW : 0;
   const gridColor = gridImporting ? "#6E9BFF" : wapdaCutOff ? "#EF4C4C" : wapdaStandby ? "#F8C653" : "#8A8A8A";
-  // Export detection + on-grid mode: the backend's gridFlow object carries the
-  // mode-aware determination (hybrid energy balance for loadW ≥ 10W, on-grid
-  // zero-crossing state machine for loadW < 10W). This avoids Fronus's unreliable
-  // gridWRaw sign in on-grid mode. Falls back to a local heuristic if gridFlow
-  // hasn't arrived yet (first render before /live responds).
-  //   onGridMode: changeover on WAPDA, loadW ≈ 0, solar injecting to grid bus.
-  //   In on-grid mode, home = solarW ± tomznPowerW (computed by backend), NOT
-  //   loadW (which is ~0 because the inverter's load output isn't feeding home).
   const onGridMode = gridFlow?.mode === "on-grid";
   const hybridMode = gridFlow?.mode === "hybrid";
   const solarNow = inverter?.solarW ?? 0;
   const canExport = !gridUnavailable && inverter?.inverterMode !== "B";
-  // Hybrid: home = inverter load. Fronus gridWRaw < 0 is leftover solar going
-  // straight into TOMZN — that IS household export.
-  // On-grid: gridWRaw is only "solar on the bus"; direction stays TOMZN-vs-solar.
-  const hybridExportW = Math.max(0, -(inverter?.gridWRaw ?? 0));
-  const hybridExporting = hybridMode && canExport && hybridExportW > 50;
+  const hybridFronusExport = Math.max(0, -(inverter?.gridWRaw ?? 0)) > 50;
+  const hybridExporting = hybridMode && canExport && (
+    gridFlow?.direction === "export" || (!gridFlow && hybridFronusExport)
+  );
   const onGridExporting = onGridMode && canExport && gridFlow?.direction === "export"
-    && (tomznLive.powerW ?? 0) < solarNow
+    && tomznW < solarNow
     && (gridFlow?.homeW ?? 0) < solarNow;
   const isExporting = hybridExporting || onGridExporting || (!onGridMode && !hybridMode && gridFlow?.direction === "export" && canExport);
-  const exportW = hybridExporting
-    ? hybridExportW
-    : Math.min(Math.max(0, tomznLive.powerW || 0), Math.max(0, solarNow));
-  const gridDisplayW = isExporting ? -exportW : gridPowerW;
+  const exportW = gridPowerW;
 
   // Pace algorithm — uses TOMZN powerW (total home draw) for BOTH label and color.
   // TOMZN sees all power flowing to the home whether from solar or grid, so the
@@ -286,7 +278,7 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
   })();
   // Home power/V/A: in hybrid mode from the inverter's load readings (loadW).
   // In on-grid mode, loadW ≈ 0 (inverter's load output isn't feeding home), so
-  // use the backend's computed homeW (solarW ± tomznPowerW) from gridFlow.
+  // use the backend's computed homeW (inverter dump added, inverter self-draw removed from TOMZN).
   // Voltage comes from the TOMZN meter (WAPDA grid voltage feeding home) and
   // current is derived: A = W / V. All three (W, V, A) are predicted values.
   const homeW = offline ? 0 : (onGridMode && gridFlow ? gridFlow.homeW : invW);
@@ -313,7 +305,9 @@ export const LiveEnergyScene = memo(function LiveEnergyScene({
 
   const solarP = connecting ? { value: "—", unit: "" } : formatPowerShort(offline ? 0 : inverter.solarW);
   const homeP = connecting ? { value: "—", unit: "" } : formatPowerShort(homeW);
-  const gridP = connecting ? { value: "—", unit: "" } : formatPowerShort(gridUnavailable ? 0 : gridDisplayW);
+  const gridP = connecting
+    ? { value: "—", unit: "" }
+    : formatPowerShort(gridUnavailable ? 0 : (isExporting ? -tomznW : gridPowerW));
   // Bypass mode: inverter is off, so grid feeds the home directly via the
   // bypass path (grid → DB). This applies whether wapda is actively importing
   // or idle — the physical routing doesn't change just because power stops flowing.

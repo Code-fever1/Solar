@@ -12,7 +12,7 @@ import {
     Zap,
 } from "lucide-react-native";
 import { memo, useEffect, useMemo, useRef } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import Animated, {
     Easing,
     useAnimatedStyle,
@@ -21,6 +21,7 @@ import Animated, {
 } from "react-native-reanimated";
 
 import type { CardTheme } from "./NewDashboardCards";
+import { OpsHelpBadge } from "./OpsGuideCard";
 
 // ── Status config ──
 const STATUS_CONFIG: Record<
@@ -45,6 +46,9 @@ type Props = {
   intelligence: IntelligenceState | null;
   isLight?: boolean;
   cardTheme: CardTheme;
+  helpActive?: boolean;
+  helpColor?: string;
+  onHelpPress?: () => void;
 };
 
 /**
@@ -71,6 +75,9 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
   intelligence,
   isLight = false,
   cardTheme,
+  helpActive = false,
+  helpColor = "#32E56B",
+  onHelpPress,
 }: Props) {
   // Start fully visible. Opacity only dips for the fade when the headline
   // CHANGES — never start at 0, otherwise a missed/timing-interrupted
@@ -174,10 +181,17 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
               {display.headline}
             </Text>
           </View>
-          <View style={[styles.confidencePill, { backgroundColor: `${config.color}15` }]}>
-            <Text style={[styles.confidenceText, { color: config.color }]}>
-              {display.isStale ? "updating..." : `${display.confidencePct}%`}
-            </Text>
+          <View style={styles.headerRight}>
+            <View style={[styles.confidencePill, { backgroundColor: `${config.color}15` }]}>
+              <Text style={[styles.confidenceText, { color: config.color }]}>
+                {display.isStale ? "updating..." : `${display.confidencePct}%`}
+              </Text>
+            </View>
+            {helpActive ? (
+              <Pressable onPress={onHelpPress} hitSlop={10} style={styles.helpTap}>
+                <OpsHelpBadge active color={helpColor} />
+              </Pressable>
+            ) : null}
           </View>
         </View>
 
@@ -299,6 +313,17 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     marginBottom: 2,
+  },
+  headerRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginLeft: 8,
+  },
+  helpTap: {
+    position: "relative",
+    width: 18,
+    height: 18,
   },
   titleRow: {
     flexDirection: "row",

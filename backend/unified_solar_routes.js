@@ -12,6 +12,7 @@ const https = require("https");
 const { execFile } = require("child_process");
 const path = require("path");
 const { createEnergyIntelligenceEngine } = require("./intelligence/EnergyIntelligenceEngine");
+const { guessBoard, recordBoardCorrection } = require("./intelligence/BoardSwitchLearner");
 
 const PRIMARY_STATE_ID = "primary";
 const METER_IDS = new Set(["meter1", "meter2"]);
@@ -205,16 +206,29 @@ function finiteNumber(value, fallback = null) {
 //     check needed.
 //
 //   ON-GRID (changeover → WAPDA): home loads fed by WAPDA directly. The
-//     inverter's WAPDA grid input is a SEPARATE switch (still on), so solar
-//     injects into the WAPDA bus: first offsets home, excess flows back through
-//     the Tomzn meter. loadW ≤ 25W (jitter) because the inverter's load output
-//     isn't connected to home. home = solarW ± tomznPowerW (Tomzn is unsigned).
+//     inverter's WAPDA grid input is a SEPARATE switch (still on), so leftover
+//     solar dumps onto the WAPDA bus (inj = max(0, -gridWRaw)). That dump is
+//     what actually reaches the house — not PV watts (inverter idle draw and
+//     unused DC never hit the AC bus). Tomzn is unsigned leftover after home.
+//       IMPORT (dumping):  home = inj + tomzn      (PV 100W, dump 5W, tomzn 700W → 705W)
+//       IMPORT (inverter drawing): home = tomzn − draw  (inverter 10W, tomzn 500W → 490W)
+//       EXPORT: home = inj − tomzn
+//     Never substitute solarW for inj. loadW ≤ 25W because the inverter's load
+//     output isn't connected to home.
 //
-//     Direction detection (TOMZN-only, never gridWRaw):
-//       1. HARD RULE: tomzn > solar → import.
-//       2. CORRELATION: solar↑ + tomzn↑ → export (excess left the house).
-//                       solar↑ + tomzn↓ → import (solar covering more of home).
-//       3. Hold last direction when the trend is unclear.
+//     Direction (TOMZN is unsigned; sign comes from how it moves with solar):
+//       1. HARD RULE: tomzn > solar → import (cannot export more than PV).
+//       2. CO-MOVEMENT (primary): solar and tomzn are |home − solar|.
+//            solar↑ tomzn↑  → extra PV left the house → EXPORT
+//            solar↑ tomzn↓  → PV covering more of home → IMPORT
+//            solar↓ tomzn↓  → less leftover → still EXPORT
+//            solar↓ tomzn↑  → house needs more grid → IMPORT
+//          Slow ramps count: compare the start of a 1–6 min window to the end,
+//          not 2.5s pairwise jumps (those miss a 3–8 W/min morning rise).
+//       3. ZERO-CROSSING: tomzn near 0 then rising flips import↔export
+//          when the window trend is not yet clear.
+//       4. BUS INJECTION: gridWRaw is solar dumped on the WAPDA bus — used
+//          for homeW and a cold-start prior only. Never as export wattage.
 //
 //   BYPASS (inverter off): home = tomznPowerW, import.
 //   NIGHT (no solar): home = tomznPowerW or loadW, import.
@@ -222,56 +236,147 @@ function finiteNumber(value, fallback = null) {
 const ON_GRID_LOAD_THRESHOLD_W = 25;   // loadW above this → hybrid mode (hard rule)
 const SOLAR_PRODUCING_THRESHOLD_W = 5; // solarW below this → no solar
 const ENERGY_BALANCE_THRESHOLD_W = 50; // |loadW - solarW| margin for hybrid direction
-const NEAR_ZERO_W = 15;                // tomznPowerW at/below this → at the crossing point
+const NEAR_ZERO_W = 15;                // margin on the tomzn > solar hard rule
+const IDLE_GRID_W = 8;                 // tomzn at/below this → no real exchange
+const CROSS_ENTER_W = 14;              // drop to this → sitting on the knife-edge
+const CROSS_LEAVE_W = 22;              // rise past this after a dip → flipped
+const INJ_LIVE_W = 40;                 // inverter is dumping meaningful solar
 const RECENT_WINDOW_MS = 6 * 60_000;   // rolling window for on-grid trend analysis
 
 // Create a fresh grid-flow state tracker (used for real-time billing/live and
 // reconstructed fresh for each historical flow-graph pass).
 function createGridFlowState() {
-  return { lastDirection: "import", atCrossing: false, crossingFromDirection: null, recentPowers: [] };
+  return {
+    lastDirection: "import",
+    atCrossing: false,
+    crossingFromDirection: null,
+    confirmed: false,
+    recentPowers: [],
+  };
 }
 
-// Update on-grid direction from TOMZN vs solar only. Never use gridWRaw —
-// that is solar dumped on the inverter bus, not household net after home load.
+function onGridInjectionW(inverter) {
+  return Math.max(0, -finiteNumber(inverter?.gridWRaw, 0));
+}
+
+/** Watts the inverter is taking FROM the WAPDA bus (idle / self-consumption). */
+function onGridInverterDrawW(inverter) {
+  return Math.max(0, finiteNumber(inverter?.gridWRaw, 0));
+}
+
+/** AC watts the inverter is actually dumping onto the WAPDA bus. Capped by PV. */
+function onGridBusDumpW(inverter, solarW) {
+  const inj = onGridInjectionW(inverter);
+  const pv = Math.max(0, finiteNumber(solarW, 0));
+  if (pv <= 0) return 0;
+  return Math.min(inj, pv);
+}
+
+/** On-grid house load. TOMZN is unsigned; inverter dump/draw is signed via gridWRaw. */
+function onGridHomeW(dumpW, drawW, tomznW, direction) {
+  const dump = Math.max(0, dumpW);
+  const draw = Math.max(0, drawW);
+  const meter = Math.max(0, tomznW);
+  if (direction === "export") return Math.max(0, dump - meter);
+  // Dump reaches the house. Inverter self-draw is already inside TOMZN, not house.
+  return Math.max(0, dump + meter - draw);
+}
+
+function commitOnGridDirection(state, direction, confirmed) {
+  state.lastDirection = direction;
+  if (confirmed) state.confirmed = true;
+  return direction;
+}
+
+function meanField(rows, getY) {
+  if (!rows.length) return 0;
+  return rows.reduce((sum, row) => sum + getY(row), 0) / rows.length;
+}
+
+// Net change from the start of a window to the end. Uses first/last thirds so
+// a 3–8 W/min morning ramp is visible even when each 2.5s step is 1–2 W noise.
+function windowDelta(samples, getY) {
+  const n = samples.length;
+  if (n < 2) return { delta: 0, spanMs: 0, ok: false };
+  const spanMs = samples[n - 1].timestamp - samples[0].timestamp;
+  if (spanMs < 25_000) return { delta: 0, spanMs, ok: false };
+  if (n === 2) {
+    return { delta: getY(samples[1]) - getY(samples[0]), spanMs, ok: true };
+  }
+  const take = Math.max(2, Math.floor(n / 3));
+  const delta = meanField(samples.slice(-take), getY) - meanField(samples.slice(0, take), getY);
+  return { delta, spanMs, ok: true };
+}
+
+// On-grid physics: tomzn = |home − solar|. Same-way motion with solar is
+// leftover PV leaving the house (export). Opposite motion is solar covering
+// more/less of home (import). Returns null when the window is too small or
+// only one series moved (home load step, ignore).
+function onGridCoMovement(samples, now) {
+  const windowsMs = [90_000, 180_000, RECENT_WINDOW_MS];
+  for (const windowMs of windowsMs) {
+    const slice = samples.filter((p) => now - p.timestamp <= windowMs);
+    const solar = windowDelta(slice, (p) => p.solarW);
+    const inj = windowDelta(slice, (p) => p.inj || 0);
+    const tomzn = windowDelta(slice, (p) => p.powerW);
+    if (!solar.ok || !tomzn.ok) continue;
+
+    const solarDelta = Math.abs(inj.delta) > Math.abs(solar.delta) + 8 ? inj.delta : solar.delta;
+    const spanMin = Math.max(0.4, tomzn.spanMs / 60_000);
+    // Slow morning: ~3 W/min × 6 min = 18 W. Fast cloud: 90s × lots of watts.
+    const minSolar = Math.max(8, Math.min(28, 3.5 * spanMin));
+    const minTomzn = Math.max(6, Math.min(18, 2.5 * spanMin));
+    if (Math.abs(solarDelta) < minSolar) continue;
+    if (Math.abs(tomzn.delta) < minTomzn) continue;
+
+    const sameWay = (solarDelta > 0) === (tomzn.delta > 0);
+    return sameWay ? "export" : "import";
+  }
+  return null;
+}
+
+// On-grid direction. Co-movement with solar is the source of truth.
 function updateOnGridDirection(inverter, solarW, tomznW, state, now) {
+  const inj = onGridInjectionW(inverter);
   state.recentPowers = (state.recentPowers || [])
     .filter((p) => now - p.timestamp < RECENT_WINDOW_MS)
-    .concat([{ solarW, powerW: tomznW, timestamp: now }]);
+    .concat([{ solarW, powerW: tomznW, inj, timestamp: now }]);
 
   // HARD RULE: export can never exceed solar, so tomzn > solar is import.
   if (tomznW > solarW + NEAR_ZERO_W) {
-    state.lastDirection = "import";
     state.atCrossing = false;
-    return "import";
-  }
-  if (tomznW <= 0) {
-    state.lastDirection = "import";
-    state.atCrossing = false;
-    return "import";
+    state.crossingFromDirection = null;
+    return commitOnGridDirection(state, "import", true);
   }
 
-  // CORRELATION over the last ~90s. Need real moves, not 2–3W jitter.
-  //   EXPORT: tomzn = solar - home  →  solar and tomzn move together
-  //   IMPORT: tomzn = home - solar  →  solar and tomzn move opposite
-  const recent = state.recentPowers || [];
-  if (recent.length >= 3) {
-    const cutoff = now - 90_000;
-    const samples = recent.filter((p) => p.timestamp >= cutoff);
-    if (samples.length >= 3) {
-      let posCorr = 0, negCorr = 0;
-      for (let i = 1; i < samples.length; i += 1) {
-        const dSolar = samples[i].solarW - samples[i - 1].solarW;
-        const dTomzn = samples[i].powerW - samples[i - 1].powerW;
-        if (Math.abs(dSolar) < 25 || Math.abs(dTomzn) < 15) continue;
-        if ((dSolar > 0 && dTomzn > 0) || (dSolar < 0 && dTomzn < 0)) posCorr += 1;
-        else negCorr += 1;
-      }
-      if (posCorr + negCorr >= 2 && posCorr !== negCorr) {
-        const direction = posCorr > negCorr ? "export" : "import";
-        state.lastDirection = direction;
-        state.atCrossing = false;
-        return direction;
-      }
+  const trend = onGridCoMovement(state.recentPowers, now);
+  if (trend) {
+    state.atCrossing = tomznW <= CROSS_ENTER_W;
+    state.crossingFromDirection = trend;
+    return commitOnGridDirection(state, trend, true);
+  }
+
+  // ZERO-CROSSING: net flow went through ~0 then rose on the other side.
+  if (tomznW <= CROSS_ENTER_W) {
+    state.atCrossing = true;
+    if (!state.crossingFromDirection) {
+      state.crossingFromDirection = state.lastDirection || "import";
+    }
+    return state.lastDirection || "import";
+  }
+  if (state.atCrossing && tomznW >= CROSS_LEAVE_W) {
+    const from = state.crossingFromDirection || state.lastDirection || "import";
+    const flipped = from === "export" ? "import" : "export";
+    state.atCrossing = false;
+    state.crossingFromDirection = null;
+    return commitOnGridDirection(state, flipped, true);
+  }
+
+  // COLD-START only: no window yet. Inverter dumping more than TOMZN shows
+  // is leftover solar leaving the house — until a real trend disagrees.
+  if (!state.confirmed || state.lastDirection === "export") {
+    if (inj >= INJ_LIVE_W && tomznW < solarW && inj > tomznW) {
+      return commitOnGridDirection(state, "export", false);
     }
   }
 
@@ -287,7 +392,7 @@ function updateOnGridDirection(inverter, solarW, tomznW, state, now) {
 //   isExporting: boolean (true only when direction === "export")
 //
 // `flowState` is a persistent state object from createGridFlowState(); pass
-// null to skip on-grid trend tracking (falls back to conservative import).
+// null for a one-shot call (cold-start prior still runs, trend is not kept).
 function determineGridFlow(inverter, tomznPowerW, flowState, now) {
   now = now || Date.now();
   const inverterOnline = inverter && inverter.isOnline !== false;
@@ -305,9 +410,18 @@ function determineGridFlow(inverter, tomznPowerW, flowState, now) {
   // is passing grid through to home (hybrid night mode). Otherwise on-grid night.
   if (solarW < SOLAR_PRODUCING_THRESHOLD_W) {
     if (loadW >= ON_GRID_LOAD_THRESHOLD_W) {
-      return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: Math.max(0, loadW - solarW), isExporting: false };
+      return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: tomznW, isExporting: false };
     }
-    if (tomznW > 0) return { mode: "night", direction: "import", homeW: tomznW, gridExchangeW: tomznW, isExporting: false };
+    if (tomznW > 0) {
+      const drawW = onGridInverterDrawW(inverter);
+      return {
+        mode: "night",
+        direction: "import",
+        homeW: Math.max(0, tomznW - drawW),
+        gridExchangeW: tomznW,
+        isExporting: false,
+      };
+    }
     return { mode: "night", direction: "idle", homeW: 0, gridExchangeW: 0, isExporting: false };
   }
 
@@ -318,38 +432,51 @@ function determineGridFlow(inverter, tomznPowerW, flowState, now) {
   // load output, that IS home consumption. Direction from energy balance:
   // loadW vs solarW.
   if (loadW >= ON_GRID_LOAD_THRESHOLD_W) {
-    // Hybrid: home IS the inverter AC output. Excess solar leaves through the
-    // inverter's grid port straight into TOMZN, so gridWRaw < 0 means the
-    // house is exporting. Do not infer direction from unsigned TOMZN.
+    // Hybrid: home IS the inverter AC output. Fronus gridWRaw < 0 means leftover
+    // solar is leaving toward the meter — direction only. Grid watts are TOMZN.
     const gridWRaw = finiteNumber(inverter?.gridWRaw, 0);
     const inverterExportW = Math.max(0, -gridWRaw);
     const balance = loadW - solarW;
     if (inverterExportW > 50) {
       if (flowState) { flowState.lastDirection = "export"; flowState.atCrossing = false; }
-      return { mode: "hybrid", direction: "export", homeW: loadW, gridExchangeW: -inverterExportW, isExporting: true };
+      // Magnitude is TOMZN (real meter). Fronus gridWRaw only sets direction.
+      return { mode: "hybrid", direction: "export", homeW: loadW, gridExchangeW: -tomznW, isExporting: true };
     }
     if (balance > ENERGY_BALANCE_THRESHOLD_W) {
       if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
-      return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: Math.max(tomznW, balance), isExporting: false };
+      return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: tomznW || Math.max(0, balance), isExporting: false };
     }
     if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
     if (tomznW < 20) return { mode: "hybrid", direction: "idle", homeW: loadW, gridExchangeW: 0, isExporting: false };
     return { mode: "hybrid", direction: "import", homeW: loadW, gridExchangeW: tomznW, isExporting: false };
   }
 
-  // ON-GRID: TOMZN is unsigned net after home load. Direction from correlation:
-  //   solar↑ tomzn↑ → EXPORT  home = solar - tomzn   (excess left the house)
-  //   solar↑ tomzn↓ → IMPORT  home = solar + tomzn   (solar covering more of home)
-  // Never add solar + tomzn while exporting — that treats leftover solar as
-  // extra home load (the bug: solar 800 + tomzn 200 shown as 1000 W home).
-  const direction = flowState
-    ? updateOnGridDirection(inverter, solarW, tomznW, flowState, now)
-    : "import";
-  if (direction === "export" && tomznW < solarW) {
-    return { mode: "on-grid", direction: "export", homeW: Math.max(0, solarW - tomznW), gridExchangeW: -tomznW, isExporting: true };
+  // ON-GRID: house is on the WAPDA bus.
+  //   dump = max(0, -gridWRaw)  → inverter feeding the bus → add to home
+  //   draw = max(0,  gridWRaw)  → inverter taking from the bus → already in TOMZN, subtract
+  const dumpW = onGridBusDumpW(inverter, solarW);
+  const drawW = onGridInverterDrawW(inverter);
+  const state = flowState || createGridFlowState();
+  const direction = updateOnGridDirection(inverter, solarW, tomznW, state, now);
+  if (tomznW <= IDLE_GRID_W) {
+    return { mode: "on-grid", direction: "idle", homeW: dumpW, gridExchangeW: 0, isExporting: false };
   }
-  if (flowState) { flowState.lastDirection = "import"; flowState.atCrossing = false; }
-  return { mode: "on-grid", direction: "import", homeW: solarW + tomznW, gridExchangeW: tomznW, isExporting: false };
+  if (direction === "export" && tomznW < solarW + NEAR_ZERO_W) {
+    return {
+      mode: "on-grid",
+      direction: "export",
+      homeW: onGridHomeW(dumpW, drawW, tomznW, "export"),
+      gridExchangeW: -tomznW,
+      isExporting: true,
+    };
+  }
+  return {
+    mode: "on-grid",
+    direction: "import",
+    homeW: onGridHomeW(dumpW, drawW, tomznW, "import"),
+    gridExchangeW: tomznW,
+    isExporting: false,
+  };
 }
 
 // Build a set of export 5-minute buckets from a day's inverter + TOMZN history,
@@ -740,6 +867,20 @@ function round(value, decimals = 3) {
   return Math.round((Number(value) || 0) * factor) / factor;
 }
 
+/** Drop duplicate manual-log ids (double-submits) so React keys stay unique. */
+function uniqueManualLogs(logs) {
+  const seen = new Set();
+  const out = [];
+  for (const row of logs) {
+    const { _id, ...log } = row;
+    const id = log.id || `${log.meterId}-${log.timestamp}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(log.id ? log : { ...log, id });
+  }
+  return out;
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -895,7 +1036,20 @@ function makeDefaultState(now = Date.now()) {
     },
     lastChangeoverAt: now,
     lastTomzn: null,
+    boardSwitches: { pv: false, grey: "down", wapdaIn: false, tomzn: false, updatedAt: now },
+    boardLearn: { buckets: {}, samples: 0, lastAt: 0 },
     updatedAt: now,
+  };
+}
+
+function normalizeBoardSwitches(raw, now = Date.now()) {
+  const grey = raw?.grey === "up" || raw?.grey === "center" || raw?.grey === "down" ? raw.grey : "down";
+  return {
+    pv: raw?.pv === true,
+    grey,
+    wapdaIn: raw?.wapdaIn === true,
+    tomzn: raw?.tomzn === true,
+    updatedAt: Number.isFinite(raw?.updatedAt) ? raw.updatedAt : now,
   };
 }
 
@@ -1137,9 +1291,9 @@ async function recordTomzn({ stateCollection, snapshots, allocations, inverterSn
   // in both directions. When exporting, pause all meter allocations and energy
   // accumulation so meter readings and energy used don't increase.
   // determineGridFlow uses: loadW > 25W → hybrid (energy balance loadW vs
-  // solarW); loadW ≤ 25W → on-grid (4-signal direction detection: hard rule,
-  // inverter gridWRaw, correlation, zero-crossing). Conservative: leans import
-  // to avoid losing billing data on a wrong export call.
+  // solarW); loadW ≤ 25W → on-grid (4-signal: hard rule, bus injection,
+  // zero-crossing, correlation). Small leftover TOMZN while the inverter is
+  // dumping solar is export, not import.
   const latestInverter = await inverterSnapshots.find({}).sort({ timestamp: -1 }).limit(1).next();
   const flow = determineGridFlow(latestInverter, snapshot.powerW, billingFlowState, now);
   const isExporting = flow.isExporting;
@@ -2247,6 +2401,8 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
     generatedAt: new Date(now).toISOString(),
     activeMeter: state.activeMeter,
     changeover: { activeMeter: state.activeMeter, lastSwitchedAt: state.lastChangeoverAt },
+    boardSwitches: normalizeBoardSwitches(state.boardSwitches, now),
+    boardGuess: guessBoard(latestInverter, tomznSource, liveGridFlow, state.boardLearn, pakistanHour(now)),
     tomznLive: publicTomzn(tomznSource),
     inverter,
     weather,
@@ -2257,9 +2413,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       // Grid always from TOMZN (the meter sees all grid exchange regardless of inverter state).
       gridKw: round((tomznSource?.powerW || 0) / 1000, 3),
       solarKw: (inverterLive && inverterOnline) ? round(inverter.solarW / 1000, 3) : 0,
-      // Home: in hybrid mode from inverter loadW; in on-grid/bypass from the
-      // grid-flow computation (solarW ± tomznPowerW or tomznPowerW). The
-      // gridFlow object below carries the computed homeW for on-grid mode.
+      // Home: hybrid = inverter loadW; on-grid = bus dump ± TOMZN (not PV).
       homeKw: (inverterLive && inverterOnline && liveGridFlow.mode === "hybrid")
         ? round(inverter.loadW / 1000, 3)
         : round(liveGridFlow.homeW / 1000, 3),
@@ -2312,7 +2466,7 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
       exportSkipToday: round(exportSkipToday, 3),
     },
     meters: readings,
-    manualLogs: logs.map(({ _id, ...log }) => log),
+    manualLogs: uniqueManualLogs(logs),
     meta: { cycleStart, billingEnd: nextBillingCycleStart(now, state.billingDay), todayStart, cycleUsage, todayUsage, averageWindowDays: round(observedDays, 2), historicalAverageDaily },
   };
   const _perfDur = Date.now() - now;
@@ -2811,6 +2965,7 @@ function registerUnifiedSolarRoutes(app, db) {
   allocations.createIndex({ meterId: 1, timestamp: -1 }).catch(() => {});
   allocations.createIndex({ timestamp: -1 }).catch(() => {});
   manualLogs.createIndex({ timestamp: -1 }).catch(() => {});
+  manualLogs.createIndex({ id: 1 }, { unique: true }).catch(() => {});
   inverterSnapshots.createIndex({ timestamp: -1 }).catch(() => {});
   weatherSnapshots.createIndex({ timestamp: -1 }).catch(() => {});
 
@@ -2996,7 +3151,16 @@ function registerUnifiedSolarRoutes(app, db) {
       // Intelligence failure must never break the live stream
       console.error("[Intelligence] compute failed:", e.message);
     }
-    return { tomznLive: publicTomzn(tomznSource), inverter, gridFlow, ups, weather, intelligence };
+    return {
+      tomznLive: publicTomzn(tomznSource),
+      inverter,
+      gridFlow,
+      ups,
+      weather,
+      intelligence,
+      boardSwitches: normalizeBoardSwitches(state.boardSwitches),
+      boardGuess: guessBoard(latestInverter, tomznSource, gridFlow, state.boardLearn, pakistanHour(Date.now())),
+    };
   };
 
   // SSE subscribers for /live/stream — pushed instantly after each device poll
@@ -3040,6 +3204,7 @@ function registerUnifiedSolarRoutes(app, db) {
     payload.gridFlow?.mode, payload.gridFlow?.direction, payload.gridFlow?.homeW,
     payload.ups?.active ?? null, payload.weather?.isDay, payload.weather?.code,
     payload.intelligence?.status, payload.intelligence?.meterRecommendation?.recommendation,
+    payload.boardGuess?.pv, payload.boardGuess?.grey, payload.boardGuess?.wapdaIn, payload.boardGuess?.tomzn,
   ].join("|");
   const broadcastLive = async ({ force = false } = {}) => {
     if (liveClients.size === 0) return;
@@ -3254,6 +3419,11 @@ function registerUnifiedSolarRoutes(app, db) {
       const recorded = await pollTomzn({ forcePersist: true });
       const state = recorded.state;
       const timestamp = clientActionTimestamp(req.body?.timestamp);
+      const logId = `${meterId}-${timestamp}`;
+      if (await manualLogs.findOne({ id: logId })) {
+        invalidateStateCache();
+        return res.status(201).json(await getCachedDashboard());
+      }
       const meter = state.meters[meterId];
       const oldAnchor = meter.anchorReading;
       const previousAnchorAt = meter.anchorAt || state.lastChangeoverAt;
@@ -3269,25 +3439,29 @@ function registerUnifiedSolarRoutes(app, db) {
       meter.anchorEnergyKwh = state.lastTomzn?.energyKwh ?? null;
       meter.lastManualCorrection = round(reading - predictedReading, 2);
       state.updatedAt = timestamp;
-      await manualLogs.insertOne({
-        id: `${meterId}-${timestamp}`,
-        meterId,
-        reading,
-        timestamp,
-        notes: typeof req.body?.notes === "string" ? req.body.notes.slice(0, 500) : undefined,
-        source: "MANUAL",
-        tomznEnergyKwh: state.lastTomzn?.energyKwh ?? null,
-        predictedReading,
-        correction: round(reading - predictedReading, 2),
-        rawTomznUsageSinceAnchor: rawUsageSinceAnchor,
-        actualMeterUsageSinceAnchor: actualUsageSinceAnchor,
-        meterRatioBefore: ratioBefore,
-        learnedRatio: calibration?.ratio ?? null,
-        calibrationSampleRatio: calibration?.sampleRatio ?? null,
-        anchorAt: timestamp,
-        previousAnchorAt,
-        previousAnchorReading: oldAnchor,
-      });
+      try {
+        await manualLogs.insertOne({
+          id: logId,
+          meterId,
+          reading,
+          timestamp,
+          notes: typeof req.body?.notes === "string" ? req.body.notes.slice(0, 500) : undefined,
+          source: "MANUAL",
+          tomznEnergyKwh: state.lastTomzn?.energyKwh ?? null,
+          predictedReading,
+          correction: round(reading - predictedReading, 2),
+          rawTomznUsageSinceAnchor: rawUsageSinceAnchor,
+          actualMeterUsageSinceAnchor: actualUsageSinceAnchor,
+          meterRatioBefore: ratioBefore,
+          learnedRatio: calibration?.ratio ?? null,
+          calibrationSampleRatio: calibration?.sampleRatio ?? null,
+          anchorAt: timestamp,
+          previousAnchorAt,
+          previousAnchorReading: oldAnchor,
+        });
+      } catch (err) {
+        if (!err || err.code !== 11000) throw err;
+      }
       await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
       invalidateStateCache();
       bumpDataVersion();
@@ -3515,6 +3689,61 @@ function registerUnifiedSolarRoutes(app, db) {
 
   // ── Phase 1: Performance monitoring endpoint ──
   // Returns the current 60s window stats. Does not modify any runtime behavior.
+  app.get("/api/solar/board-state", async (_req, res) => {
+    try {
+      const state = await getCachedState();
+      res.json({
+        boardSwitches: normalizeBoardSwitches(state.boardSwitches),
+        boardGuess: guessBoard(
+          liveInverterRef.value,
+          liveTomznRef.value,
+          determineGridFlow(liveInverterRef.value, liveTomznRef.value?.powerW, createGridFlowState(), Date.now()),
+          state.boardLearn,
+          pakistanHour(Date.now()),
+        ),
+        dataVersion,
+      });
+    } catch (error) { res.status(502).json({ error: error.message }); }
+  });
+
+  app.post("/api/solar/board-state", async (req, res) => {
+    try {
+      const timestamp = clientActionTimestamp(req.body?.timestamp);
+      const boardSwitches = normalizeBoardSwitches({
+        pv: req.body?.pv,
+        grey: req.body?.grey,
+        wapdaIn: req.body?.wapdaIn,
+        tomzn: req.body?.tomzn,
+        updatedAt: timestamp,
+      }, timestamp);
+      const state = await ensureState(stateCollection);
+      state.boardSwitches = boardSwitches;
+      state.updatedAt = timestamp;
+      if (req.body?.predicted) {
+        const predicted = normalizeBoardSwitches(req.body.predicted, timestamp);
+        const latestInverter = liveInverterRef.value;
+        const tomzn = liveTomznRef.value;
+        const tomznOnline = tomzn?.isOnline !== false;
+        const tomznFault = tomzn?.faultCode || 0;
+        const tomznPowerForFlow = (!tomznOnline || tomznFault === 2048 || tomznFault === 8192) ? 0 : tomzn?.powerW;
+        const flow = determineGridFlow(latestInverter, tomznPowerForFlow, liveFlowState, timestamp);
+        state.boardLearn = recordBoardCorrection(
+          state.boardLearn,
+          latestInverter,
+          tomzn,
+          flow,
+          pakistanHour(timestamp),
+          predicted,
+          boardSwitches,
+        );
+      }
+      await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, state);
+      invalidateStateCache();
+      bumpDataVersion();
+      res.json(await getCachedDashboard());
+    } catch (error) { res.status(502).json({ error: error.message }); }
+  });
+
   app.get("/api/solar/perf", (_req, res) => {
     const elapsed = Date.now() - perfStats.windowStart;
     res.json({

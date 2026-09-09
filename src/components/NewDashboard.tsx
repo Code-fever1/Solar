@@ -2,16 +2,17 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Cpu, RadioTower, Sun, Waves } from "lucide-react-native";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Image, NativeScrollEvent, NativeSyntheticEvent, ScrollView, StyleSheet, Text, View, useWindowDimensions, type ScrollView as ScrollViewType } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, G, Line, Path, Text as SvgText } from "react-native-svg";
 
 import { GlassCard } from "@/components/GlassCard";
 import { useEnergy } from "@/context/EnergyContext";
 import { useIdle } from "@/context/IdleContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
+import { assessOpsGuide } from "@/utils/ops-guide";
 import { EnergyIntelligenceCard } from "./EnergyIntelligenceCard";
 import { LiveEnergyScene } from "./LiveEnergyScene";
 import { EnergyReceivedCard, EnergyUsedCard } from "./NewDashboardCards";
+import { OpsGuideSheet, SEVERITY_COLOR } from "./OpsGuideCard";
 
 
 type FlowPoint = { timestamp: number; solarKw: number | null; gridKw: number | null; loadKw: number | null };
@@ -261,7 +262,6 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
     }, 10_000);
     return () => clearInterval(iv);
   }, []);
-  const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const { isIdle, resetIdleTimer } = useIdle();
   const [isLiveSceneVisible, setIsLiveSceneVisible] = useState(true);
@@ -381,6 +381,44 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
 
   // Scene theme is provided app-wide by SceneThemeProvider.
   const { heroScene, sheetColors, sheetGradient, cardTheme: sceneCardTheme, isLight: sceneIsLight } = useSceneTheme();
+  const [helpOpen, setHelpOpen] = useState(false);
+  const remaining = useMemo(
+    () => ({ meter1: meterOne.remainingUnits, meter2: meterTwo.remainingUnits }),
+    [meterOne.remainingUnits, meterTwo.remainingUnits],
+  );
+  const opsGuide = useMemo(
+    () => assessOpsGuide({
+      liveReady,
+      activeMeter,
+      inverter,
+      tomznLive,
+      gridFlow,
+      weather,
+      remaining,
+    }),
+    [
+      liveReady,
+      activeMeter,
+      remaining.meter1,
+      remaining.meter2,
+      inverter.isOnline,
+      inverter.inverterMode,
+      inverter.solarW,
+      inverter.loadW,
+      inverter.gridV,
+      inverter.gridConnected,
+      tomznLive.isOnline,
+      tomznLive.switchOn,
+      tomznLive.faultCode,
+      tomznLive.voltageV,
+      tomznLive.powerW,
+      gridFlow?.mode,
+      gridFlow?.direction,
+      weather.isDay,
+    ],
+  );
+  const helpColor = SEVERITY_COLOR[opsGuide.severity];
+  const openHelp = () => setHelpOpen(true);
 
   return <View style={styles.screen}><Image source={heroScene.source} style={{ position: "absolute", top: 0, left: 0, width, height }} resizeMode="stretch" /><LinearGradient colors={["rgba(0,0,0,0.25)", "rgba(0,0,0,0.1)", "rgba(0,0,0,0.4)"]} locations={[0, 0.35, 1]} style={{ position: "absolute", top: 0, left: 0, width, height }} />
     <View style={{ position: "absolute", top: 0, left: 0, width: "100%", height: height * 0.50 }} pointerEvents="none">
@@ -389,7 +427,7 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
     <ScrollView ref={scrollRef} style={{ backgroundColor: "transparent" }} contentContainerStyle={[styles.content, { paddingTop: height * 0.49 }]} showsVerticalScrollIndicator={false} removeClippedSubviews={true} nestedScrollEnabled={true} scrollEventThrottle={isIdle ? 48 : 16} bounces={true} alwaysBounceVertical={true} onScroll={handleScroll}>
     <View style={{ width: "100%", borderTopLeftRadius: 28, borderTopRightRadius: 28, minHeight: height * 0.65 }}>
       <LinearGradient colors={sheetGradient.colors as [string, string, ...string[]]} locations={sheetGradient.locations as [number, number, ...number[]]} style={[StyleSheet.absoluteFill, { borderTopLeftRadius: 28, borderTopRightRadius: 28 }]} />
-      <View style={{ paddingHorizontal: 13, paddingTop: 14, paddingBottom: insets.bottom + 105, gap: 8, alignItems: "center", width: "100%" }}>
+      <View style={{ paddingHorizontal: 13, paddingTop: 14, paddingBottom: 24, gap: 8, alignItems: "center", width: "100%" }}>
     <GlassCard style={styles.statusCard}>
       <View style={styles.statusRow}>
         <View style={styles.statusItem}>
@@ -430,6 +468,16 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
       intelligence={intelligence}
       isLight={sceneIsLight}
       cardTheme={sceneCardTheme}
+      helpActive
+      helpColor={helpColor}
+      onHelpPress={openHelp}
+    />
+    <OpsGuideSheet
+      visible={helpOpen}
+      onClose={() => setHelpOpen(false)}
+      guide={opsGuide}
+      cardTheme={sceneCardTheme}
+      anchor="grid"
     />
     {/* LiveEnergyScene moved to hero background */}
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8, width: '100%' }}>
@@ -485,5 +533,5 @@ export const NewDashboard = memo(function NewDashboard({ isTabFocused = true }: 
     </View>;
 });
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "transparent" }, content: { backgroundColor: "transparent" }, header: { width: "100%", flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 1 }, greetingTime: { fontFamily: "Outfit", fontSize: 11, fontWeight: "700", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4, opacity: 0.8 }, greetingGreeting: { fontFamily: "Outfit", fontSize: 28, fontWeight: "600", letterSpacing: -0.5 }, greetingName: { fontFamily: "Outfit", fontSize: 28, fontWeight: "800", letterSpacing: -0.5, marginTop: -4 }, bell: { width: 44, height: 44, borderRadius: 22, justifyContent: "center", alignItems: "center" }, notification: { width: 10, height: 10, backgroundColor: "#32DD69", borderRadius: 5, position: "absolute", right: 11, top: 11, borderWidth: 2 }, statusCard: { width: "100%", borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10 }, statusRow: { flexDirection: "row", alignItems: "center", width: "100%" }, statusItem: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 }, statusItemText: { alignItems: "flex-start" }, statusDivider: { height: 23, width: StyleSheet.hairlineWidth, marginHorizontal: 6 }, statusLabel: { fontFamily: "Outfit", fontSize: 8 }, statusValue: { fontFamily: "Outfit", fontSize: 9, fontWeight: "700", textAlign: "center" },  metricRow: { width: "100%", flexDirection: "row", gap: 7 }, metric: { flex: 1, minHeight: 103, borderRadius: 14, padding: 9, backgroundColor: "#101A29", borderWidth: 1, borderColor: "rgba(176,199,224,0.1)" }, metricIcon: { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" }, metricLabel: { color: "#A3B2C3", fontFamily: "Outfit", fontSize: 9, marginTop: 6 }, metricNumberRow: { flexDirection: "row", alignItems: "baseline", gap: 2, marginTop: 1 }, metricNumber: { color: "#F3F7FC", fontFamily: "Outfit", fontSize: 18, fontWeight: "700" }, metricUnit: { color: "#B7C5D4", fontFamily: "Outfit", fontSize: 8 }, metricDetail: { fontFamily: "Outfit", fontSize: 8, marginTop: 5 }, budgetRow: { width: "100%", flexDirection: "row", gap: 8 }, forecast: { flex: 1.18, minHeight: 190, borderRadius: 15, backgroundColor: "#101A29", borderWidth: 1, borderColor: "rgba(176,199,224,0.1)", padding: 12 }, budget: { flex: 0.98, minHeight: 190, borderRadius: 15, backgroundColor: "#101A29", borderWidth: 1, borderColor: "rgba(176,199,224,0.1)", padding: 12, alignItems: "center" }, rowHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }, cardTitle: { color: "#F1F6FC", fontFamily: "Outfit", fontSize: 12, fontWeight: "600" }, confidence: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 9, backgroundColor: "rgba(148,93,255,0.18)" }, confidenceText: { color: "#B69AFF", fontFamily: "Outfit", fontSize: 8 }, expected: { color: "#A2B1C1", fontFamily: "Outfit", fontSize: 9, marginTop: 10 }, bigNumberRow: { flexDirection: "row", alignItems: "baseline", gap: 3 }, bigNumber: { color: "#F4F8FC", fontFamily: "Outfit", fontSize: 34, fontWeight: "700" }, bigUnit: { color: "#D7E1EB", fontFamily: "Outfit", fontSize: 11 }, meterText: { color: "#C5D2DF", fontFamily: "Outfit", fontSize: 8, marginTop: 8 }, meterRight: { color: "#E6EDF5", fontWeight: "700", textAlign: "right" }, track: { height: 4, borderRadius: 3, backgroundColor: "#27364A", overflow: "hidden", marginTop: 3 }, fill: { height: "100%", borderRadius: 3 }, allowance: { color: "#45E079", fontFamily: "Outfit", fontSize: 8, marginTop: 10 }, meterTabs: { flexDirection: "row", borderRadius: 11, backgroundColor: "#1A2737", padding: 2 }, meterTab: { minWidth: 31, alignItems: "center", borderRadius: 9, paddingVertical: 4, paddingHorizontal: 7 }, meterTabActive: { backgroundColor: "#35D86C" }, meterTabText: { color: "#9CADBF", fontFamily: "Outfit", fontSize: 9, fontWeight: "700" }, meterTabTextActive: { color: "#082112" }, gaugeWrap: { width: 150, height: 112, marginTop: 6, alignItems: "center", justifyContent: "center" }, gaugeContent: { position: "absolute", top: 31, alignItems: "center" }, gaugeStart: { position: "absolute", left: 13, bottom: 6, color: "#C4D1DD", fontFamily: "Outfit", fontSize: 8 }, gaugeEnd: { position: "absolute", right: 12, bottom: 6, color: "#C4D1DD", fontFamily: "Outfit", fontSize: 8 }, meterPill: { backgroundColor: "#32D96B", borderRadius: 10, paddingHorizontal: 9, paddingVertical: 4 }, meterPillText: { color: "#06200E", fontFamily: "Outfit", fontSize: 9, fontWeight: "700" }, gauge: { width: 112, height: 112, borderRadius: 56, borderWidth: 8, borderColor: "#3B4758", borderTopColor: "#47DD73", borderLeftColor: "#47DD73", borderBottomColor: "#47DD73", marginTop: 10, alignItems: "center", justifyContent: "center", transform: [{ rotate: "-36deg" }] }, gaugeInner: { alignItems: "center", transform: [{ rotate: "36deg" }] }, gaugeNumber: { color: "#7BF49C", fontFamily: "Outfit", fontSize: 27, fontWeight: "700" }, gaugeLabel: { color: "#E7EFF7", fontFamily: "Outfit", fontSize: 9 }, gaugeDays: { color: "#D3DEE9", fontFamily: "Outfit", fontSize: 9, marginTop: 8 }, reset: { color: "#9EAFBF", fontFamily: "Outfit", fontSize: 8, marginTop: 6 }, chartCard: { width: "100%", borderRadius: 15, padding: 12 }, legend: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 5 }, legendItem: { fontFamily: "Outfit", fontSize: 8 }, dayPill: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 5 }, dayText: { fontFamily: "Outfit", fontSize: 9 }, axis: { flexDirection: "row", justifyContent: "space-between", marginTop: -9 }, axisText: { fontFamily: "Outfit", fontSize: 7 }, inverterCard: { width: "100%", minHeight: 82, flexDirection: "row", alignItems: "center", borderRadius: 15, backgroundColor: "#101A29", borderWidth: 1, borderColor: "rgba(176,199,224,0.1)", padding: 11, gap: 10 }, inverterImage: { width: 54, height: 58, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#E3E8EC" }, inverterInfo: { flex: 1 }, inverterTitleRow: { flexDirection: "row", alignItems: "center", gap: 8 }, inverterName: { color: "#F1F6FC", fontFamily: "Outfit", fontSize: 13, fontWeight: "600" }, online: { color: "#39DB70", fontFamily: "Outfit", fontSize: 8 }, inverterStats: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 }, inverterStat: { color: "#D4E0EB", fontFamily: "Outfit", fontSize: 8, lineHeight: 12 }, chevron: { color: "#C1D0DF", fontSize: 30 },
+  screen: { flex: 1, backgroundColor: "transparent" }, content: { backgroundColor: "transparent" }, header: { width: "100%", flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 1 }, greetingTime: { fontFamily: "Outfit", fontSize: 11, fontWeight: "700", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4, opacity: 0.8 }, greetingGreeting: { fontFamily: "Outfit", fontSize: 28, fontWeight: "600", letterSpacing: -0.5 }, greetingName: { fontFamily: "Outfit", fontSize: 28, fontWeight: "800", letterSpacing: -0.5, marginTop: -4 }, bell: { width: 44, height: 44, borderRadius: 22, justifyContent: "center", alignItems: "center" }, notification: { width: 10, height: 10, backgroundColor: "#32DD69", borderRadius: 5, position: "absolute", right: 11, top: 11, borderWidth: 2 }, statusCard: { width: "100%", borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10 }, statusRow: { flexDirection: "row", alignItems: "center", width: "100%" }, statusItem: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, position: "relative", paddingTop: 4 }, statusItemText: { alignItems: "flex-start" }, statusDivider: { height: 23, width: StyleSheet.hairlineWidth, marginHorizontal: 6 }, statusLabel: { fontFamily: "Outfit", fontSize: 8 }, statusValue: { fontFamily: "Outfit", fontSize: 9, fontWeight: "700", textAlign: "center" },  metricRow: { width: "100%", flexDirection: "row", gap: 7 }, metric: { flex: 1, minHeight: 103, borderRadius: 14, padding: 9, backgroundColor: "#101A29", borderWidth: 1, borderColor: "rgba(176,199,224,0.1)" }, metricIcon: { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" }, metricLabel: { color: "#A3B2C3", fontFamily: "Outfit", fontSize: 9, marginTop: 6 }, metricNumberRow: { flexDirection: "row", alignItems: "baseline", gap: 2, marginTop: 1 }, metricNumber: { color: "#F3F7FC", fontFamily: "Outfit", fontSize: 18, fontWeight: "700" }, metricUnit: { color: "#B7C5D4", fontFamily: "Outfit", fontSize: 8 }, metricDetail: { fontFamily: "Outfit", fontSize: 8, marginTop: 5 }, budgetRow: { width: "100%", flexDirection: "row", gap: 8 }, forecast: { flex: 1.18, minHeight: 190, borderRadius: 15, backgroundColor: "#101A29", borderWidth: 1, borderColor: "rgba(176,199,224,0.1)", padding: 12 }, budget: { flex: 0.98, minHeight: 190, borderRadius: 15, backgroundColor: "#101A29", borderWidth: 1, borderColor: "rgba(176,199,224,0.1)", padding: 12, alignItems: "center" }, rowHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }, cardTitle: { color: "#F1F6FC", fontFamily: "Outfit", fontSize: 12, fontWeight: "600" }, confidence: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 9, backgroundColor: "rgba(148,93,255,0.18)" }, confidenceText: { color: "#B69AFF", fontFamily: "Outfit", fontSize: 8 }, expected: { color: "#A2B1C1", fontFamily: "Outfit", fontSize: 9, marginTop: 10 }, bigNumberRow: { flexDirection: "row", alignItems: "baseline", gap: 3 }, bigNumber: { color: "#F4F8FC", fontFamily: "Outfit", fontSize: 34, fontWeight: "700" }, bigUnit: { color: "#D7E1EB", fontFamily: "Outfit", fontSize: 11 }, meterText: { color: "#C5D2DF", fontFamily: "Outfit", fontSize: 8, marginTop: 8 }, meterRight: { color: "#E6EDF5", fontWeight: "700", textAlign: "right" }, track: { height: 4, borderRadius: 3, backgroundColor: "#27364A", overflow: "hidden", marginTop: 3 }, fill: { height: "100%", borderRadius: 3 }, allowance: { color: "#45E079", fontFamily: "Outfit", fontSize: 8, marginTop: 10 }, meterTabs: { flexDirection: "row", borderRadius: 11, backgroundColor: "#1A2737", padding: 2 }, meterTab: { minWidth: 31, alignItems: "center", borderRadius: 9, paddingVertical: 4, paddingHorizontal: 7 }, meterTabActive: { backgroundColor: "#35D86C" }, meterTabText: { color: "#9CADBF", fontFamily: "Outfit", fontSize: 9, fontWeight: "700" }, meterTabTextActive: { color: "#082112" }, gaugeWrap: { width: 150, height: 112, marginTop: 6, alignItems: "center", justifyContent: "center" }, gaugeContent: { position: "absolute", top: 31, alignItems: "center" }, gaugeStart: { position: "absolute", left: 13, bottom: 6, color: "#C4D1DD", fontFamily: "Outfit", fontSize: 8 }, gaugeEnd: { position: "absolute", right: 12, bottom: 6, color: "#C4D1DD", fontFamily: "Outfit", fontSize: 8 }, meterPill: { backgroundColor: "#32D96B", borderRadius: 10, paddingHorizontal: 9, paddingVertical: 4 }, meterPillText: { color: "#06200E", fontFamily: "Outfit", fontSize: 9, fontWeight: "700" }, gauge: { width: 112, height: 112, borderRadius: 56, borderWidth: 8, borderColor: "#3B4758", borderTopColor: "#47DD73", borderLeftColor: "#47DD73", borderBottomColor: "#47DD73", marginTop: 10, alignItems: "center", justifyContent: "center", transform: [{ rotate: "-36deg" }] }, gaugeInner: { alignItems: "center", transform: [{ rotate: "36deg" }] }, gaugeNumber: { color: "#7BF49C", fontFamily: "Outfit", fontSize: 27, fontWeight: "700" }, gaugeLabel: { color: "#E7EFF7", fontFamily: "Outfit", fontSize: 9 }, gaugeDays: { color: "#D3DEE9", fontFamily: "Outfit", fontSize: 9, marginTop: 8 }, reset: { color: "#9EAFBF", fontFamily: "Outfit", fontSize: 8, marginTop: 6 }, chartCard: { width: "100%", borderRadius: 15, padding: 12 }, legend: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 5 }, legendItem: { fontFamily: "Outfit", fontSize: 8 }, dayPill: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 5 }, dayText: { fontFamily: "Outfit", fontSize: 9 }, axis: { flexDirection: "row", justifyContent: "space-between", marginTop: -9 }, axisText: { fontFamily: "Outfit", fontSize: 7 }, inverterCard: { width: "100%", minHeight: 82, flexDirection: "row", alignItems: "center", borderRadius: 15, backgroundColor: "#101A29", borderWidth: 1, borderColor: "rgba(176,199,224,0.1)", padding: 11, gap: 10 }, inverterImage: { width: 54, height: 58, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: "#E3E8EC" }, inverterInfo: { flex: 1 }, inverterTitleRow: { flexDirection: "row", alignItems: "center", gap: 8 }, inverterName: { color: "#F1F6FC", fontFamily: "Outfit", fontSize: 13, fontWeight: "600" }, online: { color: "#39DB70", fontFamily: "Outfit", fontSize: 8 }, inverterStats: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 }, inverterStat: { color: "#D4E0EB", fontFamily: "Outfit", fontSize: 8, lineHeight: 12 }, chevron: { color: "#C1D0DF", fontSize: 30 },
 });

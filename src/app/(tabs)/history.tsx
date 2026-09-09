@@ -132,7 +132,7 @@ export default function HistoryScreen() {
       <ScrollView
         contentContainerStyle={[
           styles.container,
-          { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 120 },
+          { paddingTop: insets.top + 16, paddingBottom: 28 },
         ]}
         showsVerticalScrollIndicator={false}
       >

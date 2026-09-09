@@ -32,6 +32,19 @@ export type CachedDashboardSnapshot = {
   manualLogs: ManualLog[];
   meta?: { billingEnd?: number; [key: string]: unknown };
   ups?: { active: boolean; label: string } | null;
+  boardSwitches?: {
+    pv: boolean;
+    grey: "up" | "center" | "down";
+    wapdaIn: boolean;
+    tomzn: boolean;
+    updatedAt?: number;
+  };
+  boardGuess?: {
+    pv: boolean;
+    grey: "up" | "center" | "down";
+    wapdaIn: boolean;
+    tomzn: boolean;
+  };
 };
 
 const DAY_MS = 86_400_000;

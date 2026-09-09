@@ -16,6 +16,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { EnergyProvider } from "@/context/EnergyContext";
 import { IdleProvider, useIdle } from "@/context/IdleContext";
 import { SceneThemeProvider } from "@/context/SceneThemeContext";
+import { DevOverlayPreview } from "@/components/DevOverlayPreview";
 import { hasOverlayPermission, startOverlay, stopOverlay } from "@/native/FloatingOverlay";
 
 const OVERLAY_API_URL = "http://104.43.56.204:3001/api/solar/live";
@@ -53,6 +54,7 @@ export default function RootLayout() {
   // appear unless the user explicitly turns it on.
   useEffect(() => {
     if (Platform.OS !== "android") return;
+    if (__DEV__) return;
 
     const subscription = AppState.addEventListener("change", (nextAppState) => {
       if (nextAppState === "background" || nextAppState === "inactive") {
@@ -101,11 +103,14 @@ export default function RootLayout() {
           <EnergyProvider>
           <SceneThemeProvider>
             <IdleTouchGate>
+            <View style={{ flex: 1 }}>
             <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0B0F1A" } }}>
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="overlay-editor" options={{ animation: "slide_from_right" }} />
               <Stack.Screen name="+not-found" />
             </Stack>
+            {__DEV__ ? <DevOverlayPreview /> : null}
+            </View>
             </IdleTouchGate>
           </SceneThemeProvider>
           </EnergyProvider>

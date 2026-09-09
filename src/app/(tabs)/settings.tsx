@@ -4,13 +4,14 @@ import { TabSlideWrapper } from "@/components/TabSlideWrapper";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
 import { ensureOverlayPermission, stopOverlay } from "@/native/FloatingOverlay";
+import { OVERLAY_PREF_EVENT } from "@/components/DevOverlayPreview";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Application from "expo-application";
 import { BlurView } from "expo-blur";
 import { router } from "expo-router";
 import { Activity, BarChart2, CalendarDays, Edit3, Eye, EyeOff, RefreshCw, Save, Sparkles } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, DeviceEventEmitter, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
 
@@ -69,18 +70,14 @@ export default function SettingsScreen() {
   }, []);
   const toggleOverlay = async () => {
     const next = !overlayEnabled;
-    if (next) {
-      // Turning ON: check permission first
+    if (next && !__DEV__) {
       const hasPermission = await ensureOverlayPermission();
-      if (!hasPermission) {
-        // User denied permission - don't enable
-        return;
-      }
+      if (!hasPermission) return;
     }
     setOverlayEnabled(next);
+    DeviceEventEmitter.emit(OVERLAY_PREF_EVENT, next);
     void AsyncStorage.setItem(OVERLAY_ENABLED_KEY, String(next)).catch(() => undefined);
     if (!next) {
-      // Immediately stop the overlay if it's currently running
       void stopOverlay().catch(() => undefined);
     }
   };
@@ -232,7 +229,7 @@ export default function SettingsScreen() {
     <TabSlideWrapper index={4}>
     <View style={s.screen}>
       <SceneBackground />
-      <ScrollView contentContainerStyle={[s.container, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 100 }]} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={[s.container, { paddingTop: insets.top + 10, paddingBottom: 28 }]} showsVerticalScrollIndicator={false}>
         
         {/* Header */}
         <View style={s.header}>
@@ -564,7 +561,7 @@ export default function SettingsScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={[s.cardLabelText, { color: theme.text, fontSize: 13, fontWeight: "600" }]}>Live Data Overlay</Text>
                   <Text style={[s.aboutDesc, { color: theme.textSecondary }]}>
-                    Show a floating widget with solar, home &amp; grid readings when the app is in the background.
+                    Shows a single-line expandable HUD on your screen. Compact mode shows mini WAPDA; tap to expand full solar and home telemetry.
                   </Text>
                 </View>
               </View>
