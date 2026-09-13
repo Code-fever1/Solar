@@ -54,11 +54,13 @@ function seriesPath(values: FlowPoint[], key: SeriesKey, xOf: (ts: number) => nu
 
 function formatKw(v: number | null): string {
   if (v == null) return "—";
-  return v >= 1 ? `${v.toFixed(2)}` : `${(v * 1000).toFixed(0)}`;
+  const abs = Math.abs(v);
+  const sign = v < 0 ? "-" : "";
+  return abs >= 1 ? `${sign}${abs.toFixed(2)}` : `${sign}${(abs * 1000).toFixed(0)}`;
 }
 function formatKwUnit(v: number | null): string {
   if (v == null) return "";
-  return v >= 1 ? "kW" : "W";
+  return Math.abs(v) >= 1 ? "kW" : "W";
 }
 
 const FlowChart = memo(function FlowChart({
@@ -80,16 +82,16 @@ const FlowChart = memo(function FlowChart({
   const touchOrigin = useRef({ x: 0, y: 0 });
   const [selectedTs, setSelectedTs] = useState<number | null>(null);
 
-  const { values, max, paths, yLabels, hasSolar, hasGrid, selected, selectedX } = useMemo(() => {
+  const { values, paths, yLabels, hasSolar, hasGrid, selected, selectedX } = useMemo(() => {
     const now = Date.now();
     const vals = regularizeFlow(points, windowStart, now);
-    const mx = Math.max(
-      0.4,
-      ...vals.flatMap((p) => [p.solarKw, p.loadKw, p.gridKw].filter((v): v is number => v != null && v > 0)),
-    );
+    const nums = vals.flatMap((p) => [p.solarKw, p.loadKw, p.gridKw].filter((v): v is number => v != null));
+    const mx = Math.max(0.4, ...nums.filter((v) => v > 0), 0);
+    const mn = Math.min(0, ...nums.filter((v) => v < 0), 0);
+    const span = Math.max(0.4, mx - mn);
     const hourOf = (ts: number) => (ts - windowStart) / 3_600_000;
     const xOf = (ts: number) => chartLeft + (hourOf(ts) / 24) * graphWidth;
-    const yOf = (v: number) => plotBottom - (v / mx) * plotH;
+    const yOf = (v: number) => plotBottom - ((v - mn) / span) * plotH;
     let peakIdx = -1;
     let peakLoad = -1;
     for (let i = 0; i < vals.length; i += 1) {
@@ -104,9 +106,9 @@ const FlowChart = memo(function FlowChart({
       ?? vals.reduce<FlowPoint | null>((acc, p) => (p.timestamp > (acc?.timestamp || 0) && (p.solarKw != null || p.gridKw != null || p.loadKw != null) ? p : acc), null)
       ?? vals[vals.length - 1];
     const niceMax = Math.ceil(mx * 10) / 10;
+    const niceMin = mn < 0 ? Math.floor(mn * 10) / 10 : 0;
     return {
       values: vals,
-      max: mx,
       hasSolar: solarD.length > 0,
       hasGrid: gridD.length > 0,
       selected: sel,
@@ -119,12 +121,19 @@ const FlowChart = memo(function FlowChart({
         peakY: peak && peak.loadKw != null ? yOf(peak.loadKw) : 0,
         hasPeak: peak != null && peak.loadKw != null,
         currentX: xOf(now),
+        yOf,
       },
-      yLabels: [
-        { kw: niceMax, y: plotTop },
-        { kw: niceMax / 2, y: plotTop + plotH / 2 },
-        { kw: 0, y: plotBottom },
-      ],
+      yLabels: niceMin < 0
+        ? [
+            { kw: niceMax, y: plotTop },
+            { kw: 0, y: yOf(0) },
+            { kw: niceMin, y: plotBottom },
+          ]
+        : [
+            { kw: niceMax, y: plotTop },
+            { kw: niceMax / 2, y: plotTop + plotH / 2 },
+            { kw: 0, y: plotBottom },
+          ],
     };
   }, [points, windowStart, graphWidth, selectedTs]);
 
@@ -200,9 +209,9 @@ const FlowChart = memo(function FlowChart({
           {selected ? (
             <>
               <Line x1={selectedX} y1={plotTop} x2={selectedX} y2={plotBottom} stroke={pickStroke} strokeWidth="1" />
-              {selected.solarKw != null ? <Circle cx={selectedX} cy={plotBottom - (selected.solarKw / max) * plotH} r="2.8" fill="#F5C42E" /> : null}
-              {selected.loadKw != null ? <Circle cx={selectedX} cy={plotBottom - (selected.loadKw / max) * plotH} r="2.8" fill="#2DDB6C" /> : null}
-              {selected.gridKw != null ? <Circle cx={selectedX} cy={plotBottom - (selected.gridKw / max) * plotH} r="2.8" fill="#4A85FF" /> : null}
+              {selected.solarKw != null ? <Circle cx={selectedX} cy={paths.yOf(selected.solarKw)} r="2.8" fill="#F5C42E" /> : null}
+              {selected.loadKw != null ? <Circle cx={selectedX} cy={paths.yOf(selected.loadKw)} r="2.8" fill="#2DDB6C" /> : null}
+              {selected.gridKw != null ? <Circle cx={selectedX} cy={paths.yOf(selected.gridKw)} r="2.8" fill="#4A85FF" /> : null}
             </>
           ) : null}
         </Svg>

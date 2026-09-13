@@ -507,6 +507,12 @@ function buildExportBuckets(inverterSamples, tomznSamples, bucketMs) {
   return exportBuckets;
 }
 
+/** Chart-only signed grid kW. Export is negative. Meter counts still skip export. */
+function chartGridKw(powerW, exporting) {
+  const mag = Math.max(0, Number(powerW) || 0);
+  return round((exporting ? -mag : mag) / 1000, 3);
+}
+
 // TOMZN energyKwh ticks for both import and export. Sum only the steps that
 // are NOT in an export bucket so meter/home today-units stay import-only.
 function importKwhFromSnapshots(snapshots, exportBuckets, bucketMs, fromTs, untilTs) {
@@ -1804,39 +1810,47 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   // with TOMZN as the sole source for both grid and home consumption.
   // Missing a source is emitted as null so the chart can hide that line
   // instead of pinning it to 0 (WAPDA off / inverter off).
-  for (const sample of todayTomzn) {
+  for (const sample of todayTomznSnapshots || []) {
+    if (sample.isOnline === false || sample.faultCode === 2048 || sample.faultCode === 8192 || sample.powerW == null || sample.powerW < 0) continue;
     const bucket = Math.floor(sample.timestamp / FLOW_BUCKET_MS) * FLOW_BUCKET_MS;
     const existing = flowBuckets.get(bucket);
+    const powerW = Math.max(0, sample.powerW || 0);
+    const exporting = exportBuckets.has(Math.floor(sample.timestamp / FLOW_BUCKET_MS));
     if (existing) {
-      existing._tomznPowerW = sample.powerW;
+      existing._tomznPowerW = powerW;
       existing._hasTomzn = true;
+      existing._exporting = exporting;
     } else {
       flowBuckets.set(bucket, {
         timestamp: sample.timestamp,
         solarW: 0,
         gridW: 0,
         loadW: 0,
-        _tomznPowerW: sample.powerW,
+        _tomznPowerW: powerW,
         _hasTomzn: true,
         _hasInverter: false,
+        _exporting: exporting,
       });
     }
   }
   const flowHistory = Array.from(flowBuckets.values())
     .sort((a, b) => a.timestamp - b.timestamp)
-    .map((sample) => ({
-      timestamp: sample.timestamp,
-      // Solar — inverter's own reading. null when the inverter was offline.
-      solarKw: sample._hasInverter === false ? null : round((sample.solarW || 0) / 1000, 3),
-      // Grid — TOMZN only. null when WAPDA/TOMZN was offline (don't pin to 0).
-      gridKw: sample._hasTomzn ? round((sample._tomznPowerW || 0) / 1000, 3) : null,
-      // Home — inverter loadW when on; TOMZN when in bypass; null if neither.
-      loadKw: sample.loadW > 0
-        ? round(sample.loadW / 1000, 3)
-        : sample._hasTomzn
-          ? round((sample._tomznPowerW || 0) / 1000, 3)
-          : (sample._hasInverter === false ? null : 0),
-    }));
+    .map((sample) => {
+      const exporting = sample._exporting === true;
+      return {
+        timestamp: sample.timestamp,
+        solarKw: sample._hasInverter === false ? null : round((sample.solarW || 0) / 1000, 3),
+        // Export is negative on the graph only. Meter skip still uses exportBuckets.
+        gridKw: sample._hasTomzn ? chartGridKw(sample._tomznPowerW, exporting) : null,
+        loadKw: sample.loadW > 0
+          ? round(sample.loadW / 1000, 3)
+          : exporting
+            ? (sample._hasInverter === false ? null : 0)
+            : sample._hasTomzn
+              ? round((sample._tomznPowerW || 0) / 1000, 3)
+              : (sample._hasInverter === false ? null : 0),
+      };
+    });
   // Pace window is NOT clamped to cycleStart — consumption rate is continuous
   // across billing boundaries. Clamping here reset observedDays to ~0 right
   // after a rollover, zeroing tomznAverageDaily and dropping to bootstrap.
@@ -3654,12 +3668,13 @@ function registerUnifiedSolarRoutes(app, db) {
       // Skip offline TOMZN snapshots so the grid line hides instead of sitting at 0.
       for (const sample of tomznHistory.filter((s) => s.isOnline !== false && s.faultCode !== 2048 && s.faultCode !== 8192)) {
         const bucket = Math.floor(sample.timestamp / FLOW_BUCKET_MS) * FLOW_BUCKET_MS;
-        const isExport = exportBuckets.has(Math.floor(sample.timestamp / FLOW_BUCKET_MS));
-        const tomznPowerW = isExport ? 0 : Math.max(0, sample.powerW || 0);
+        const exporting = exportBuckets.has(Math.floor(sample.timestamp / FLOW_BUCKET_MS));
+        const tomznPowerW = Math.max(0, sample.powerW || 0);
         const existing = flowBuckets.get(bucket);
         if (existing) {
           existing._tomznPowerW = tomznPowerW;
           existing._hasTomzn = true;
+          existing._exporting = exporting;
         } else {
           flowBuckets.set(bucket, {
             timestamp: sample.timestamp,
@@ -3669,21 +3684,27 @@ function registerUnifiedSolarRoutes(app, db) {
             _tomznPowerW: tomznPowerW,
             _hasTomzn: true,
             _hasInverter: false,
+            _exporting: exporting,
           });
         }
       }
       res.json(Array.from(flowBuckets.values())
         .sort((a, b) => a.timestamp - b.timestamp)
-        .map((sample) => ({
-          timestamp: sample.timestamp,
-          solarKw: sample._hasInverter === false ? null : round((sample.solarW || 0) / 1000, 3),
-          gridKw: sample._hasTomzn ? round((sample._tomznPowerW || 0) / 1000, 3) : null,
-          loadKw: sample.loadW > 0
-            ? round(sample.loadW / 1000, 3)
-            : sample._hasTomzn
-              ? round((sample._tomznPowerW || 0) / 1000, 3)
-              : (sample._hasInverter === false ? null : 0),
-        })));
+        .map((sample) => {
+          const exporting = sample._exporting === true;
+          return {
+            timestamp: sample.timestamp,
+            solarKw: sample._hasInverter === false ? null : round((sample.solarW || 0) / 1000, 3),
+            gridKw: sample._hasTomzn ? chartGridKw(sample._tomznPowerW, exporting) : null,
+            loadKw: sample.loadW > 0
+              ? round(sample.loadW / 1000, 3)
+              : exporting
+                ? (sample._hasInverter === false ? null : 0)
+                : sample._hasTomzn
+                  ? round((sample._tomznPowerW || 0) / 1000, 3)
+                  : (sample._hasInverter === false ? null : 0),
+          };
+        }));
     } catch (error) { res.status(500).json({ error: error.message }); }
   });
 
