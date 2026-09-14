@@ -1099,6 +1099,9 @@ function startTomznDaemon() {
     tomznDaemon.stdout.setEncoding("utf8");
     tomznDaemon.stdout.on("data", (chunk) => {
       tomznDaemonBuffer += chunk;
+      if (tomznDaemonBuffer.length > 256_000) {
+        tomznDaemonBuffer = tomznDaemonBuffer.slice(-64_000);
+      }
       // Process complete lines (one JSON response per line)
       let nlIdx;
       while ((nlIdx = tomznDaemonBuffer.indexOf("\n")) >= 0) {
@@ -2494,55 +2497,65 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
 // Groups snapshots by minute bucket, keeps the latest in each minute, deletes
 // the rest. Only processes snapshots older than 1 hour to avoid touching live
 // data. Idempotent — safe to run repeatedly (no-op once data is 1/min).
-async function downsampleTomznSnapshots(snapshots) {
+// Windowed + $last keep-id so we never $push every _id into RAM (that OOM'd
+// this 846 MB VM). Caps how many 6h windows run per pass so hourly cleanup
+// cannot stall the event loop for minutes.
+const DOWNSAMPLE_WINDOW_MS = 6 * 3_600_000;
+const DOWNSAMPLE_MAX_WINDOWS = 8;
+
+async function downsampleSnapshotsToOnePerMinute(coll) {
   const cutoff = Date.now() - 3_600_000;
-  const groups = await snapshots.aggregate([
-    { $match: { timestamp: { $lt: cutoff } } },
-    { $sort: { timestamp: 1 } },
-    { $group: {
-        _id: { $floor: { $divide: ["$timestamp", 60_000] } },
-        ids: { $push: "$_id" },
-        count: { $sum: 1 },
-    }},
-    { $match: { count: { $gt: 1 } } },
-  ]).toArray();
+  const oldest = await coll.find(
+    { timestamp: { $lt: cutoff } },
+    { projection: { _id: 0, timestamp: 1 } },
+  ).sort({ timestamp: 1 }).limit(1).maxTimeMS(8_000).next();
+  if (!oldest?.timestamp) return 0;
   let deleted = 0;
-  for (const group of groups) {
-    // ids are in ascending timestamp order (from the $sort), so the last one
-    // is the latest snapshot in that minute — keep it, delete the rest.
-    const deleteIds = group.ids.slice(0, -1);
-    if (deleteIds.length > 0) {
-      await snapshots.deleteMany({ _id: { $in: deleteIds } });
-      deleted += deleteIds.length;
+  let windows = 0;
+  for (let start = oldest.timestamp; start < cutoff && windows < DOWNSAMPLE_MAX_WINDOWS; start += DOWNSAMPLE_WINDOW_MS) {
+    windows += 1;
+    const end = Math.min(start + DOWNSAMPLE_WINDOW_MS, cutoff);
+    const groups = await coll.aggregate([
+      { $match: { timestamp: { $gte: start, $lt: end } } },
+      { $sort: { timestamp: 1 } },
+      { $group: {
+          _id: { $floor: { $divide: ["$timestamp", 60_000] } },
+          keepId: { $last: "$_id" },
+          count: { $sum: 1 },
+      }},
+      { $match: { count: { $gt: 1 } } },
+    ], { allowDiskUse: true, maxTimeMS: 20_000 }).toArray();
+    for (const group of groups) {
+      const minuteStart = group._id * 60_000;
+      const result = await coll.deleteMany({
+        timestamp: { $gte: minuteStart, $lt: minuteStart + 60_000 },
+        _id: { $ne: group.keepId },
+      });
+      deleted += result.deletedCount || 0;
     }
   }
   return deleted;
+}
+
+async function downsampleTomznSnapshots(snapshots) {
+  return downsampleSnapshotsToOnePerMinute(snapshots);
 }
 
 // Same as downsampleTomznSnapshots but for the inverter collection. Reduces
 // high-frequency (every 5s) snapshots to 1 per minute, keeping the latest in
 // each minute bucket. Only processes snapshots older than 1 hour.
 async function downsampleInverterSnapshots(inverterSnapshots) {
-  const cutoff = Date.now() - 3_600_000;
-  const groups = await inverterSnapshots.aggregate([
-    { $match: { timestamp: { $lt: cutoff } } },
-    { $sort: { timestamp: 1 } },
-    { $group: {
-        _id: { $floor: { $divide: ["$timestamp", 60_000] } },
-        ids: { $push: "$_id" },
-        count: { $sum: 1 },
-    }},
-    { $match: { count: { $gt: 1 } } },
-  ]).toArray();
-  let deleted = 0;
-  for (const group of groups) {
-    const deleteIds = group.ids.slice(0, -1);
-    if (deleteIds.length > 0) {
-      await inverterSnapshots.deleteMany({ _id: { $in: deleteIds } });
-      deleted += deleteIds.length;
-    }
-  }
-  return deleted;
+  return downsampleSnapshotsToOnePerMinute(inverterSnapshots);
+}
+
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 function registerUnifiedSolarRoutes(app, db) {
@@ -2575,6 +2588,7 @@ function registerUnifiedSolarRoutes(app, db) {
   const dashboardCache = { version: null, payload: null, builtAt: 0 };
   let dashboardBuildInFlight = null;
   const DASHBOARD_CACHE_MAX_AGE_MS = 60_000;
+  const DASHBOARD_BUILD_TIMEOUT_MS = 20_000;
   const bumpDataVersion = () => {
     dataVersion += 1;
     perfStats.dataVersionBumps += 1;
@@ -2591,19 +2605,31 @@ function registerUnifiedSolarRoutes(app, db) {
       perfStats.dashboardCacheHits += 1;
       return dashboardCache.payload;
     }
-    if (dashboardBuildInFlight) return dashboardBuildInFlight;
-    dashboardBuildInFlight = (async () => {
-      try {
-        const payload = await buildDashboard(context);
-        dashboardCache.version = dataVersion;
-        dashboardCache.payload = payload;
-        dashboardCache.builtAt = Date.now();
-        return payload;
-      } finally {
-        dashboardBuildInFlight = null;
+    if (!dashboardBuildInFlight) {
+      dashboardBuildInFlight = buildDashboard(context)
+        .then((payload) => {
+          dashboardCache.version = dataVersion;
+          dashboardCache.payload = payload;
+          dashboardCache.builtAt = Date.now();
+          return payload;
+        })
+        .catch((error) => {
+          console.error("[Solar Engine] dashboard build failed:", error.message);
+          throw error;
+        })
+        .finally(() => {
+          dashboardBuildInFlight = null;
+        });
+    }
+    try {
+      return await withTimeout(dashboardBuildInFlight, DASHBOARD_BUILD_TIMEOUT_MS, "dashboard build");
+    } catch (error) {
+      if (dashboardCache.payload) {
+        console.error("[Solar Engine] dashboard wait timed out — serving last cache:", error.message);
+        return dashboardCache.payload;
       }
-    })();
-    return dashboardBuildInFlight;
+      throw error;
+    }
   };
   // In-memory live cache: holds the freshest TOMZN reading for dashboard display
   // without requiring a database write on every 5s poll. Reset to null on restart.

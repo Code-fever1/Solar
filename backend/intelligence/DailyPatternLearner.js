@@ -93,6 +93,16 @@ function stdDev(arr, mean) {
   return Math.sqrt(variance);
 }
 
+/** Keep learning arrays bounded so 14-day history cannot balloon RAM. */
+function capPush(arr, v, cap = 500) {
+  if (!Number.isFinite(v)) return;
+  if (arr.length < cap) {
+    arr.push(v);
+    return;
+  }
+  arr[Math.floor(Math.random() * cap)] = v;
+}
+
 /** Raw accumulator shared by bucket/day-type/mode stats. */
 function freshStats() {
   return {
@@ -169,9 +179,18 @@ async function learnDailyPatterns(collections, now = Date.now()) {
   const windowStart = now - 14 * MS_PER_DAY;
 
   const [inverterSamples, tomznSamples, allocSamples] = await Promise.all([
-    inverterSnapshots.find({ timestamp: { $gte: windowStart, $lte: now } }).sort({ timestamp: 1 }).limit(20_000).toArray(),
-    tomznSnapshots.find({ timestamp: { $gte: windowStart, $lte: now } }).sort({ timestamp: 1 }).limit(20_000).toArray(),
-    allocations.find({ timestamp: { $gte: windowStart, $lte: now } }).sort({ timestamp: 1 }).limit(20_000).toArray(),
+    inverterSnapshots.find(
+      { timestamp: { $gte: windowStart, $lte: now } },
+      { projection: { _id: 0, timestamp: 1, isOnline: 1, solarW: 1, loadW: 1, inverterMode: 1, gridW: 1, gridWRaw: 1, pv1V: 1, pv2V: 1, solarV: 1, gridV: 1, acOutV: 1 } },
+    ).sort({ timestamp: 1 }).limit(12_000).maxTimeMS(20_000).toArray(),
+    tomznSnapshots.find(
+      { timestamp: { $gte: windowStart, $lte: now } },
+      { projection: { _id: 0, timestamp: 1, isOnline: 1, powerW: 1, voltageV: 1 } },
+    ).sort({ timestamp: 1 }).limit(12_000).maxTimeMS(20_000).toArray(),
+    allocations.find(
+      { timestamp: { $gte: windowStart, $lte: now } },
+      { projection: { _id: 0, timestamp: 1, meterId: 1, delta: 1 } },
+    ).sort({ timestamp: 1 }).limit(12_000).maxTimeMS(20_000).toArray(),
   ]);
 
   // ── Accumulators ──
@@ -194,7 +213,7 @@ async function learnDailyPatterns(collections, now = Date.now()) {
 
   const exportPerDay = new Map(); // pkDateKey -> { kwh, dayType }
   const usagePerDay = new Map();  // pkDateKey -> kwh (allocations)
-  const dayBucketUsage = new Map(); // dayType|bucket|meterId -> per-day usage list
+  const dayBucketUsage = new Map(); // dayType|bucket|meterId -> usage sum
 
   // ── Inverter samples: solar/load/voltage/export/mode/hourly ──
   for (let i = 0; i < inverterSamples.length; i++) {
@@ -222,14 +241,14 @@ async function learnDailyPatterns(collections, now = Date.now()) {
     else { stats.nightCount += 1; dtStats.nightCount += 1; }
 
     // Power samples
-    if (s.solarW > 5) { stats.solarW.push(s.solarW); dtStats.solarW.push(s.solarW); modes[mode].solarW.push(s.solarW); }
-    if (s.loadW > 0) { stats.loadW.push(s.loadW); dtStats.loadW.push(s.loadW); modes[mode].loadW.push(s.loadW); }
+    if (s.solarW > 5) { capPush(stats.solarW, s.solarW); capPush(dtStats.solarW, s.solarW); capPush(modes[mode].solarW, s.solarW); }
+    if (s.loadW > 0) { capPush(stats.loadW, s.loadW); capPush(dtStats.loadW, s.loadW); capPush(modes[mode].loadW, s.loadW); }
 
     // Voltages
     const v = inverterVoltages(s);
-    if (v.solarV > 0) { stats.solarV.push(v.solarV); dtStats.solarV.push(v.solarV); modes[mode].solarV.push(v.solarV); }
-    if (v.gridV > 0) { stats.gridV.push(v.gridV); dtStats.gridV.push(v.gridV); modes[mode].gridV.push(v.gridV); }
-    if (v.homeV > 0) { stats.homeV.push(v.homeV); dtStats.homeV.push(v.homeV); modes[mode].homeV.push(v.homeV); }
+    if (v.solarV > 0) { capPush(stats.solarV, v.solarV); capPush(dtStats.solarV, v.solarV); capPush(modes[mode].solarV, v.solarV); }
+    if (v.gridV > 0) { capPush(stats.gridV, v.gridV); capPush(dtStats.gridV, v.gridV); capPush(modes[mode].gridV, v.gridV); }
+    if (v.homeV > 0) { capPush(stats.homeV, v.homeV); capPush(dtStats.homeV, v.homeV); capPush(modes[mode].homeV, v.homeV); }
 
     // Export: gridW < 0 means feeding back. Integrate kWh using sample spacing.
     const gridW = s.gridW != null ? s.gridW : (s.gridWRaw || 0);
@@ -237,9 +256,9 @@ async function learnDailyPatterns(collections, now = Date.now()) {
       const next = inverterSamples[i + 1];
       const endTs = next && next.timestamp > ts ? next.timestamp : ts + 60_000;
       const kwh = (Math.abs(gridW) * (endTs - ts)) / 3_600_000 / 1000;
-      stats.exportW.push(Math.abs(gridW));
-      dtStats.exportW.push(Math.abs(gridW));
-      modes[mode].exportW.push(Math.abs(gridW));
+      capPush(stats.exportW, Math.abs(gridW));
+      capPush(dtStats.exportW, Math.abs(gridW));
+      capPush(modes[mode].exportW, Math.abs(gridW));
       const day = exportPerDay.get(dateKey) || { kwh: 0, dayType: dt };
       day.kwh += kwh;
       exportPerDay.set(dateKey, day);
@@ -257,12 +276,12 @@ async function learnDailyPatterns(collections, now = Date.now()) {
     const dt = pakistanDayType(ts);
     const bucketId = bucketForHour(pkHourOf(ts));
     if (t.powerW != null && t.powerW > 0) {
-      buckets[bucketId].stats.tomznW.push(t.powerW);
-      buckets[bucketId].byDayType[dt].tomznW.push(t.powerW);
+      capPush(buckets[bucketId].stats.tomznW, t.powerW);
+      capPush(buckets[bucketId].byDayType[dt].tomznW, t.powerW);
     }
     if (t.voltageV != null && t.voltageV > 0) {
-      buckets[bucketId].stats.tomznV.push(t.voltageV);
-      buckets[bucketId].byDayType[dt].tomznV.push(t.voltageV);
+      capPush(buckets[bucketId].stats.tomznV, t.voltageV);
+      capPush(buckets[bucketId].byDayType[dt].tomznV, t.voltageV);
     }
   }
 
@@ -279,16 +298,14 @@ async function learnDailyPatterns(collections, now = Date.now()) {
     hourly[dt].usageSum[hour] += a.delta; hourly[dt].usageCount[hour] += 1;
 
     const key = `${dt}|${bucketId}|${a.meterId}`;
-    const list = dayBucketUsage.get(key) || [];
-    list.push(a.delta);
-    dayBucketUsage.set(key, list);
+    dayBucketUsage.set(key, (dayBucketUsage.get(key) || 0) + a.delta);
   }
 
-  for (const [key, list] of dayBucketUsage) {
+  for (const [key, sum] of dayBucketUsage) {
     const [dt, bucketId, meterId] = key.split("|");
     const target = buckets[bucketId].byDayType[dt];
-    if (meterId === "meter1") target.meter1Usage.push(list.reduce((s, v) => s + v, 0));
-    else if (meterId === "meter2") target.meter2Usage.push(list.reduce((s, v) => s + v, 0));
+    if (meterId === "meter1") capPush(target.meter1Usage, sum, 32);
+    else if (meterId === "meter2") capPush(target.meter2Usage, sum, 32);
   }
 
   // ── Build the profile ──

@@ -34,8 +34,26 @@ const { generateInsight } = require("./InsightGenerator");
 const PATTERN_CACHE_TTL_MS = 5 * 60_000;
 const NOTIFICATION_COOLDOWN_MS = 30 * 60_000;
 
+function insufficientIntelligence(now, reason = "PATTERN_LEARNING_PENDING") {
+  return {
+    headline: "On track",
+    overallStatus: "info",
+    suggestions: [],
+    confidence: 0.1,
+    confidenceLevel: "insufficient_data",
+    meterRecommendation: null,
+    status: "INSUFFICIENT_DATA",
+    title: "On track",
+    message: "Waiting on household data.",
+    severity: "info",
+    reasonCodes: [reason],
+    notification: null,
+    timestamp: now,
+  };
+}
+
 function createEnergyIntelligenceEngine(collections) {
-  const patternCache = { profile: null, generatedAt: 0 };
+  const patternCache = { profile: null, generatedAt: 0, learning: null };
   const meterHysteresis = { lastAdvice: null, lastChangedAt: 0 };
   const solarAnomalyState = { count: 0, recoveryCount: 0, lastAnomalyAt: 0, voltageHistory: [], fluctuationCount: 0 };
   const consumptionState = { count: 0, recoveryCount: 0 };
@@ -52,13 +70,24 @@ function createEnergyIntelligenceEngine(collections) {
   let lastStatus = null;
 
   async function getPatternProfile(now) {
-    if (patternCache.profile && (now - patternCache.generatedAt) < PATTERN_CACHE_TTL_MS) {
-      return patternCache.profile;
+    const cacheFresh = patternCache.profile && (now - patternCache.generatedAt) < PATTERN_CACHE_TTL_MS;
+    if (!cacheFresh && !patternCache.learning) {
+      // Never await learning on the live SSE path — 14-day Mongo loads can
+      // stall /live for seconds and starve the 846 MB VM. Refresh in background
+      // and keep serving the last good profile (or null on first boot).
+      patternCache.learning = learnDailyPatterns(collections, now)
+        .then((profile) => {
+          patternCache.profile = profile;
+          patternCache.generatedAt = Date.now();
+        })
+        .catch((err) => {
+          console.error("[Intelligence] pattern learn failed:", err.message);
+        })
+        .finally(() => {
+          patternCache.learning = null;
+        });
     }
-    const profile = await learnDailyPatterns(collections, now);
-    patternCache.profile = profile;
-    patternCache.generatedAt = now;
-    return profile;
+    return patternCache.profile;
   }
 
   /** Current live burn in METER units/hour (calibrated), blended with the learned hourly curve. */
@@ -92,21 +121,10 @@ function createEnergyIntelligenceEngine(collections) {
     try {
       patternProfile = await getPatternProfile(now);
     } catch (_e) {
-      return {
-        headline: "On track",
-        overallStatus: "info",
-        suggestions: [],
-        confidence: 0.1,
-        confidenceLevel: "insufficient_data",
-        meterRecommendation: null,
-        status: "INSUFFICIENT_DATA",
-        title: "On track",
-        message: "Waiting on household data.",
-        severity: "info",
-        reasonCodes: ["PATTERN_LEARNING_FAILED"],
-        notification: null,
-        timestamp: now,
-      };
+      return insufficientIntelligence(now, "PATTERN_LEARNING_FAILED");
+    }
+    if (!patternProfile) {
+      return insufficientIntelligence(now, "PATTERN_LEARNING_PENDING");
     }
 
     const dayType = pakistanDayType(now);

@@ -12,7 +12,12 @@ app.use(express.json());
 const mongoUrl = process.env.MONGO_URI || "mongodb://localhost:27017";
 const dbName = process.env.MONGO_DB || "ont_monitor";
 const port = Number(process.env.PORT || 3001);
-const client = new MongoClient(mongoUrl);
+const client = new MongoClient(mongoUrl, {
+  maxPoolSize: 8,
+  minPoolSize: 1,
+  serverSelectionTimeoutMS: 5_000,
+  socketTimeoutMS: 20_000,
+});
 const MODEM_TIMEOUT_MS = Number(process.env.MODEM_TIMEOUT_MS || 15_000);
 const HUAWEI_LANGUAGE = "english";
 const FILTER_STATUS_VALUES = new Set(["pending", "synced", "failed"]);
