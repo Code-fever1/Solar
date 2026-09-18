@@ -3,6 +3,10 @@
 # dependencies
 node_modules/
 
+# Python
+__pycache__/
+*.pyc
+
 # Expo
 .expo/
 .expo_home/
