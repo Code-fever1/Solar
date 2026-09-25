@@ -1,0 +1,46 @@
+build:
+  name: Unsigned device IPA
+  steps:
+    - eas/checkout
+    - run:
+        name: Install node modules
+        command: |
+          set -euo pipefail
+          npm install -g npm@11.11.0
+          npm ci --include=dev
+    - eas/prebuild
+    - run:
+        name: Install CocoaPods
+        working_directory: ios
+        command: EXPO_USE_PRECOMPILED_MODULES=0 pod install
+    - run:
+        name: Compile and pack an unsigned IPA
+        command: |
+          set -euo pipefail
+          WORKSPACE=$(find ios -maxdepth 2 -name '*.xcworkspace' ! -path '*/project.xcworkspace' | head -1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          echo "workspace=$WORKSPACE scheme=$SCHEME"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ios/build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+          APP=$(find ios/build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d | head -1)
+          test -n "$APP"
+          echo "app=$APP"
+          rm -rf unsigned-ipa
+          mkdir -p unsigned-ipa/Payload
+          cp -R "$APP" unsigned-ipa/Payload/
+          (cd unsigned-ipa && zip -qry ../voltix-unsigned.ipa Payload)
+          ls -lh voltix-unsigned.ipa
+    - eas/upload_artifact:
+        name: Upload unsigned IPA
+        inputs:
+          type: application-archive
+          path: voltix-unsigned.ipa

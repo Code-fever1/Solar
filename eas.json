@@ -1,0 +1,17 @@
+{
+  "cli": {
+    "version": ">= 24.7.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "ipa": {
+      "withoutCredentials": true,
+      "ios": {
+        "withoutCredentials": true,
+        "simulator": false,
+        "image": "latest",
+        "config": "unsigned-ipa.yml"
+      }
+    }
+  }
+}

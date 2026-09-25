@@ -8,7 +8,16 @@
     "scheme": "voltix",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/images/logo.png"
+      "icon": "./assets/images/logo.png",
+      "bundleIdentifier": "com.voltix.app",
+      "buildNumber": "2",
+      "supportsTablet": false,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      }
     },
     "android": {
       "icon": "./assets/images/logo.png",
@@ -52,6 +61,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "5aadae66-9171-438c-94da-b6f5741f8adc"
+      }
+    },
+    "owner": "alijah.dev"
   }
 }

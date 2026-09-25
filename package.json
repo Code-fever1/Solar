@@ -20,6 +20,7 @@
     "expo-intent-launcher": "~57.0.1",
     "expo-linear-gradient": "^57.0.1",
     "expo-linking": "~57.0.3",
+    "expo-modules-core": "57.0.9",
     "expo-router": "~57.0.7",
     "expo-splash-screen": "~57.0.4",
     "expo-status-bar": "~57.0.1",
@@ -54,5 +55,14 @@
     "web": "expo start --web",
     "lint": "expo lint"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "ios": {
+        "buildFromSource": [
+          ".*"
+        ]
+      }
+    }
+  }
 }
