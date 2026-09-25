@@ -80,6 +80,11 @@ function classifyGridState({
     // Inverter is reporting — use its grid signals
     isInverterBatteryMode = inverterMode === "B";
     wapdaAvailable = gridConnected && !isInverterBatteryMode;
+    // TOMZN still seeing grid voltage wins over a single inverter B glitch.
+    if (!wapdaAvailable && tomznOnline !== false && tomznV >= CONFIG.tomznMinVoltageV && !tomznCutoffFault) {
+      wapdaAvailable = true;
+      isInverterBatteryMode = false;
+    }
   } else {
     // Inverter is offline — TOMZN is the source of truth for WAPDA
     // TOMZN online + voltage > threshold + no cutoff fault = WAPDA available

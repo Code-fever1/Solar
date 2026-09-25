@@ -37,26 +37,21 @@ const INVERTER_FAIL_THRESHOLD = 4;
 const TOMZN_LIVE_MAX_AGE_MS = 2_500;
 // Stale-data detection: when TOMZN's WiFi dies, the local Tuya poll fails.
 // We track consecutive poll failures — after TOMZN_FAIL_THRESHOLD failures,
-// we mark the device offline. The fingerprint approach also catches the case
-// where the poll succeeds but returns identical cached values.
-// Secondary signal: when the inverter switches to battery mode (QMOD="B"),
-// the grid is down, which means TOMZN (grid meter) is also offline.
+// we mark the device offline.
 //
-// TCP PROBE: When the fingerprint is stale (TOMZN_TCP_CHECK_THRESHOLD identical
-// readings), we do a direct TCP connect to the home router's public IP. If the
-// home network is unreachable, the TOMZN device (on that network) is definitely
-// offline — mark it offline immediately instead of waiting for the full 10-count.
-// Once latched offline via TCP, the device stays offline until EITHER the Tuya
-// API returns new/different data (fingerprint changes) OR the TCP probe succeeds
-// again on a subsequent poll.
+// Identical readings are NORMAL (hybrid idle, steady load, energy counter
+// rounded to 0.01 kWh). Never flip the grid offline just because the
+// fingerprint hasn't changed — that was the hero "Wapda Offline" jerk.
+// Fingerprint + TCP only apply to cloud_fallback, where Tuya can cache a
+// dead device's last phase_a.
+//
+// Inverter mode B is a secondary signal only when the meter itself lost
+// voltage. A single L→B glitch while TOMZN still shows ~230V must not
+// zero the grid.
 //
 // STANDBY EXEMPTION: When the user manually turns the TOMZN switch OFF
 // (standby / intentional grid cut), the device stays accessible and replies
-// to polls — it just reports 0V/0A/0W. Both the fingerprint detection and
-// the inverter battery-mode cross-check are SKIPPED when switchOn is false,
-// so the device remains "online" and the frontend shows "Standby" (yellow)
-// instead of "Offline" (red). True offline only triggers after 10 consecutive
-// poll failures (device truly unreachable).
+// to polls — it just reports 0V/0A/0W. Show "Standby" (yellow), not "Offline".
 const TOMZN_STALE_THRESHOLD = 10;
 const TOMZN_FAIL_THRESHOLD = 10;
 const TOMZN_TCP_CHECK_THRESHOLD = 3;  // after 3 identical readings, TCP-probe
@@ -2689,10 +2684,10 @@ function registerUnifiedSolarRoutes(app, db) {
     if (pollInFlight) return pollInFlight;
     pollInFlight = (async () => {
       let snapshot;
+      let pollOk = false;
       try {
         snapshot = await requestTomzn(force);
-        // Poll succeeded — reset fail counter
-        tomznStaleTracker.failCount = 0;
+        pollOk = true;
         // Standby: the user opened the TOMZN relay. Tuya often reports
         // isOnline=false for a switch-off device even though the poll
         // succeeded. Keep it online so the app shows Standby, not Offline.
@@ -2726,57 +2721,49 @@ function registerUnifiedSolarRoutes(app, db) {
           throw pollErr;
         }
       }
-      // ── Stale-data detection (fingerprint + TCP probe) ──
-      // The Tuya cloud API may cache phase_a values on its servers. We
-      // fingerprint key values across consecutive polls. If they're identical
-      // for TOMZN_STALE_THRESHOLD polls, override isOnline to false.
-      //
-      // TCP PROBE: After TOMZN_TCP_CHECK_THRESHOLD (3) identical readings, we
-      // do a direct TCP connect to the home router. If the home network is
-      // unreachable, the TOMZN device is definitely offline — mark it offline
-      // immediately and latch it. The latch stays until EITHER the Tuya API
-      // returns new data (fingerprint changes) OR the TCP probe succeeds again.
-      //
-      // STANDBY EXEMPTION: When the user manually turns the TOMZN switch OFF
-      // (standby / intentional grid cut), the device is still accessible and
-      // replies to polls — it just reports 0V/0A/0W because no power flows.
-      // Identical zero readings are EXPECTED in standby, not a sign of stale
-      // cached data. Skip fingerprint detection when switchOn is false so the
-      // device stays "online" and the frontend shows "Standby" instead of
-      // "Offline". True offline is handled by the fail counter (10 consecutive
-      // poll failures → unreachable).
-      const tuyaReportsOnline = snapshot.isOnline;
+      // ── Online / stale handling ──
+      // Local TCP answering is proof the meter is alive. Frozen watts/volts
+      // (hybrid idle, energy rounded to 0.01 kWh) must stay Online.
+      // Cloud fallback can cache a dead device — only then use fingerprint+TCP.
       const switchOn = snapshot.switchOn;
-      const fingerprint = `${snapshot.energyKwh}|${snapshot.powerW}|${snapshot.voltageV}|${snapshot.currentA}`;
-      if (!tuyaReportsOnline || !switchOn) {
-        // Device reported offline, OR switch is off (standby) — reset fingerprint
-        // counter and clear the TCP offline latch. In standby, identical readings
-        // are normal, not stale.
+      const fromLocal = pollOk && snapshot.source !== "cloud_fallback";
+      const healthyVoltage = (snapshot.voltageV || 0) >= 160;
+      if (fromLocal) {
+        tomznStaleTracker.failCount = 0;
         tomznStaleTracker.fingerprint = null;
         tomznStaleTracker.count = 0;
         tomznStaleTracker.forceOffline = false;
-      } else {
-        if (fingerprint === tomznStaleTracker.fingerprint) {
+        if (healthyVoltage) snapshot.isOnline = true;
+      } else if (pollOk && (snapshot.isOnline === false || (!healthyVoltage && switchOn))) {
+        // Cloud said offline or returned a dead phase. Ignore one glitch poll,
+        // then publish. Cutoff/unavailable faults skip the skip so the hero
+        // does not keep showing last-good grid.
+        const cutoffFault = snapshot.faultCode === 2048 || snapshot.faultCode === 8192;
+        tomznStaleTracker.failCount += 1;
+        if (!cutoffFault && tomznStaleTracker.failCount < 2 && liveTomznRef.value) {
+          return { record: { ...liveTomznRef.value, timestamp: now }, allocatedDelta: 0 };
+        }
+      } else if (pollOk) {
+        tomznStaleTracker.failCount = 0;
+        const fingerprint = `${snapshot.energyKwh}|${snapshot.powerW}|${snapshot.voltageV}|${snapshot.currentA}`;
+        if (!snapshot.isOnline || !switchOn) {
+          tomznStaleTracker.fingerprint = null;
+          tomznStaleTracker.count = 0;
+          tomznStaleTracker.forceOffline = false;
+        } else if (fingerprint === tomznStaleTracker.fingerprint) {
           tomznStaleTracker.count += 1;
         } else {
-          // New data from Tuya — fingerprint changed. Clear the TCP offline latch
-          // because the device is clearly alive and reporting fresh values.
           tomznStaleTracker.fingerprint = fingerprint;
           tomznStaleTracker.count = 0;
           tomznStaleTracker.forceOffline = false;
         }
-        // TCP probe: after a few identical readings, check if the home network
-        // is actually reachable. If not, the TOMZN device is offline — latch it
-        // immediately instead of waiting for the full 10-count.
         if (tomznStaleTracker.count >= TOMZN_TCP_CHECK_THRESHOLD && !tomznStaleTracker.forceOffline) {
           const tcpReachable = await pingTomznTcp();
           if (!tcpReachable) {
-            console.log(`[Solar Engine] TOMZN TCP probe failed at ${tomznStaleTracker.count} identical readings — marking offline immediately`);
+            console.log(`[Solar Engine] TOMZN cloud TCP probe failed at ${tomznStaleTracker.count} identical readings — marking offline`);
             tomznStaleTracker.forceOffline = true;
           }
         }
-        // Once latched offline via TCP, keep checking — if the TCP probe succeeds
-        // again on a subsequent poll, clear the latch (device is back on the network).
         if (tomznStaleTracker.forceOffline) {
           const tcpReachable = await pingTomznTcp();
           if (tcpReachable) {
@@ -2784,22 +2771,15 @@ function registerUnifiedSolarRoutes(app, db) {
             tomznStaleTracker.forceOffline = false;
           }
         }
-        if (tomznStaleTracker.count >= TOMZN_STALE_THRESHOLD || tomznStaleTracker.forceOffline) {
+        if (tomznStaleTracker.forceOffline && tomznStaleTracker.count >= TOMZN_STALE_THRESHOLD) {
           snapshot.isOnline = false;
         }
       }
       // ── Inverter mode cross-check ──
-      // When the inverter switches to battery mode (QMOD="B"), the grid is down.
-      // TOMZN (grid meter) can't be online if there's no grid. Use this as a
-      // secondary offline signal.
-      //
-      // STANDBY EXEMPTION: When the user manually turned the TOMZN switch OFF,
-      // they intentionally cut the grid — the inverter switching to battery
-      // mode is the expected consequence, not a fault. The TOMZN device itself
-      // is still accessible and replying to polls. Skip this cross-check when
-      // switchOn is false.
+      // Mode B can glitch for a single poll while WAPDA is still up. Only
+      // treat the grid meter as dead when it also lost voltage.
       const invSnap = liveInverterRef.value;
-      if (invSnap && invSnap.inverterMode === "B" && snapshot.isOnline && switchOn) {
+      if (invSnap && invSnap.inverterMode === "B" && snapshot.isOnline && switchOn && (snapshot.voltageV || 0) < 100) {
         snapshot.isOnline = false;
         snapshot.voltageV = 0;
         snapshot.currentA = 0;

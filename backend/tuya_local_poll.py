@@ -308,6 +308,9 @@ def _poll_cloud(force=False):
     voltage_v = phase["voltage_v"] if phase else 0
     current_a = phase["current_a"] if phase else 0
     power_w = phase["power_w"] if phase else 0
+    # Cloud online_state flaps. Healthy phase_a means the meter is still on.
+    if voltage_v >= 160:
+        is_online = True
     if not is_online:
         voltage_v = 0
         current_a = 0
