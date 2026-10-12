@@ -1,5 +1,5 @@
 const express = require("express");
-const { MongoClient } = require("mongodb");
+const { MongoClient, ObjectId } = require("mongodb");
 const cors = require("cors");
 const http = require("http");
 const https = require("https");
@@ -12,12 +12,7 @@ app.use(express.json());
 const mongoUrl = process.env.MONGO_URI || "mongodb://localhost:27017";
 const dbName = process.env.MONGO_DB || "ont_monitor";
 const port = Number(process.env.PORT || 3001);
-const client = new MongoClient(mongoUrl, {
-  maxPoolSize: 8,
-  minPoolSize: 1,
-  serverSelectionTimeoutMS: 5_000,
-  socketTimeoutMS: 20_000,
-});
+const client = new MongoClient(mongoUrl);
 const MODEM_TIMEOUT_MS = Number(process.env.MODEM_TIMEOUT_MS || 15_000);
 const HUAWEI_LANGUAGE = "english";
 const FILTER_STATUS_VALUES = new Set(["pending", "synced", "failed"]);
@@ -447,10 +442,15 @@ function mergeDevice(statusDoc, managedDoc) {
   const status = withoutMongoId(statusDoc) || {};
   const managed = withoutMongoId(managedDoc) || {};
   const deviceId = managed.device_id || status.device_id;
+  const wan2PhysicalEnabled =
+    typeof status.wan2_physical_enabled === "boolean"
+      ? status.wan2_physical_enabled
+      : status.wan2_enabled;
 
   return {
     device_id: deviceId,
     ...status,
+    wan2_physical_enabled: wan2PhysicalEnabled,
     name: managed.name || null,
     type: managed.type || null,
     ip: managed.ip || null,
@@ -2325,6 +2325,7 @@ async function startServer() {
           parameter: cleanString(req.body.parameter),
           value: req.body.value == null ? null : String(req.body.value),
           type: cleanString(req.body.type),
+          parameterValues: Array.isArray(req.body.parameterValues) ? req.body.parameterValues : undefined,
         };
 
 
@@ -2343,6 +2344,34 @@ async function startServer() {
         res.status(201).json({
           id: String(result.insertedId),
           ...command,
+        });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    app.get("/api/devices/:id/commands/:commandId", async (req, res) => {
+      try {
+        const deviceId = cleanString(req.params.id);
+        const commandId = cleanString(req.params.commandId);
+        if (!deviceId || !commandId || !ObjectId.isValid(commandId)) {
+          return res.status(400).json({ error: "device id and command id are required" });
+        }
+
+        const doc = await deviceCommands.findOne({
+          _id: new ObjectId(commandId),
+          device_id: deviceId,
+        });
+        if (!doc) return res.status(404).json({ error: "command not found" });
+
+        res.json({
+          id: String(doc._id),
+          device_id: doc.device_id,
+          action: doc.action,
+          status: doc.status,
+          error: doc.error || null,
+          updated_at: doc.updated_at || null,
+          synced_at: doc.synced_at || null,
         });
       } catch (err) {
         res.status(500).json({ error: err.message });

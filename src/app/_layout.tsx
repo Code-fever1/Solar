@@ -8,15 +8,16 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFonts } from "expo-font";
 import { DarkTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppState, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { EnergyProvider } from "@/context/EnergyContext";
 import { IdleProvider, useIdle } from "@/context/IdleContext";
-import { SceneThemeProvider } from "@/context/SceneThemeContext";
+import { SceneThemeProvider, useSceneTheme } from "@/context/SceneThemeContext";
 import { DevOverlayPreview } from "@/components/DevOverlayPreview";
+import { prefersReducedMotion, startMotionPreferences, subscribeReduceMotion } from "@/lib/motion";
 import { hasOverlayPermission, startOverlay, stopOverlay } from "@/native/FloatingOverlay";
 
 const OVERLAY_API_URL = "http://104.43.56.204:3001/api/solar/live";
@@ -43,6 +44,8 @@ export default function RootLayout() {
     }, 3000);
     return () => clearTimeout(timer);
   }, [fontsLoaded, fontError]);
+
+  useEffect(() => startMotionPreferences(), []);
 
   // ── Floating overlay: starts when app goes to background, stops on foreground ──
   // The overlay is a native Android foreground service that draws a mini widget
@@ -104,11 +107,7 @@ export default function RootLayout() {
           <SceneThemeProvider>
             <IdleTouchGate>
             <View style={{ flex: 1 }}>
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0B0F1A" } }}>
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="overlay-editor" options={{ animation: "slide_from_right" }} />
-              <Stack.Screen name="+not-found" />
-            </Stack>
+            <AppStack />
             {__DEV__ ? <DevOverlayPreview /> : null}
             </View>
             </IdleTouchGate>
@@ -118,6 +117,27 @@ export default function RootLayout() {
       </ThemeProvider>
     </SafeAreaProvider>
     </GestureHandlerRootView>
+  );
+}
+
+function AppStack() {
+  const { screenBg } = useSceneTheme();
+  const [reduceMotion, setReduceMotion] = useState(prefersReducedMotion());
+  useEffect(() => subscribeReduceMotion(setReduceMotion), []);
+  return (
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: screenBg },
+        animation: reduceMotion ? "none" : "default",
+        gestureEnabled: true,
+        fullScreenGestureEnabled: true,
+      }}
+    >
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="overlay-editor" options={{ animation: reduceMotion ? "none" : "slide_from_right" }} />
+      <Stack.Screen name="+not-found" />
+    </Stack>
   );
 }
 

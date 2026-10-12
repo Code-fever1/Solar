@@ -4,9 +4,11 @@ import { SceneBackground } from "@/components/SceneBackground";
 import type { MeterId, MeterState } from '@/context/energy-types';
 import { useEnergy } from '@/context/EnergyContext';
 import { useSceneTheme } from "@/context/SceneThemeContext";
+import { SpringPressable } from "@/components/SpringPressable";
+import { useCoucouEnter } from "@/lib/motion";
 import { Repeat } from 'lucide-react-native';
 import { memo, useState } from 'react';
-import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Animated, Dimensions, Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width: screenWidth } = Dimensions.get('window');
@@ -51,6 +53,7 @@ export function NewMetersScreen() {
   } = useEnergy();
 
   const [showChangeoverModal, setShowChangeoverModal] = useState(false);
+  const modalMotion = useCoucouEnter(showChangeoverModal);
 
   const meter1 = meters.meter1;
   const meter2 = meters.meter2;
@@ -85,12 +88,12 @@ export function NewMetersScreen() {
               </Text>
             </Text>
           </GlassCard>
-          <Pressable onPress={() => setShowChangeoverModal(true)}>
+          <SpringPressable onPress={() => setShowChangeoverModal(true)}>
             <GlassCard style={s.changeoverBtn} intensity={35} tintAmount={0.10}>
               <Repeat size={15} color="#7BA8FF" />
               <Text style={s.changeoverText}>Changeover</Text>
             </GlassCard>
-          </Pressable>
+          </SpringPressable>
         </View>
 
         {/* ── AI Forecast & Budget ── */}
@@ -144,8 +147,9 @@ export function NewMetersScreen() {
       </ScrollView>
 
       {/* ── Changeover Confirmation Modal ── */}
-      <Modal visible={showChangeoverModal} transparent animationType="fade" onRequestClose={() => setShowChangeoverModal(false)}>
+      <Modal visible={showChangeoverModal} transparent animationType="none" onRequestClose={() => setShowChangeoverModal(false)}>
         <View style={s.modalOverlay}>
+          <Animated.View style={{ opacity: modalMotion.opacity, transform: [{ scale: modalMotion.scale }] }}>
           <GlassCard style={s.modalCard} blur>
             <Text style={[s.modalTitle, { color: theme.text }]}>Switch to {targetMeter === 'meter1' ? 'Meter 1' : 'Meter 2'}?</Text>
             <Text style={[s.modalSub, { color: theme.textSecondary }]}>
@@ -154,14 +158,15 @@ export function NewMetersScreen() {
             </Text>
             <Text style={[s.modalNote, { color: theme.textMuted }]}>Switching takes 2 seconds.</Text>
             <View style={s.modalBtnRow}>
-              <Pressable style={[s.modalCancelBtn]} onPress={() => setShowChangeoverModal(false)}>
+              <SpringPressable style={[s.modalCancelBtn]} onPress={() => setShowChangeoverModal(false)}>
                 <Text style={[s.modalCancelText, { color: theme.textSecondary }]}>Cancel</Text>
-              </Pressable>
-              <Pressable style={s.modalSwitchBtn} onPress={handleChangeover}>
+              </SpringPressable>
+              <SpringPressable style={s.modalSwitchBtn} onPress={handleChangeover}>
                 <Text style={[s.modalSwitchText, { color: isLight ? '#4A85FF' : '#84A2F0' }]}>Switch</Text>
-              </Pressable>
+              </SpringPressable>
             </View>
           </GlassCard>
+          </Animated.View>
         </View>
       </Modal>
     </View>

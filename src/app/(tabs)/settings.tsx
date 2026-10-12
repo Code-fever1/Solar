@@ -1,6 +1,7 @@
 import { GlassCard } from "@/components/GlassCard";
 import { SceneBackground } from "@/components/SceneBackground";
-import { TabSlideWrapper } from "@/components/TabSlideWrapper";
+import { SpringPressable } from "@/components/SpringPressable";
+import { flowLayout } from "@/lib/motion";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
 import { ensureOverlayPermission, stopOverlay } from "@/native/FloatingOverlay";
@@ -11,7 +12,7 @@ import { BlurView } from "expo-blur";
 import { router } from "expo-router";
 import { Activity, BarChart2, CalendarDays, Edit3, Eye, EyeOff, RefreshCw, Save, Sparkles } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
-import { Alert, DeviceEventEmitter, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, DeviceEventEmitter, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
 
@@ -151,6 +152,7 @@ export default function SettingsScreen() {
       await setManualBaseline("meter1", meter1, Date.now());
       await setManualBaseline("meter2", meter2, Date.now());
       Alert.alert("Baselines saved", "Both meter baselines are set for the billing cycle.");
+      flowLayout();
       setEditingBaselines(false);
     } catch {
       Alert.alert("Could not save baselines", "Check the server connection and try again.");
@@ -199,6 +201,7 @@ export default function SettingsScreen() {
       Alert.alert("Readings updated", "Both meters re-anchored. The algorithm is preserved — future logs will be relative to these new readings.");
       setForgetM1("");
       setForgetM2("");
+      flowLayout();
       setShowForgetSwap(false);
     } catch {
       Alert.alert("Could not save", "Check the server connection and try again.");
@@ -226,7 +229,6 @@ export default function SettingsScreen() {
   };
 
   return (
-    <TabSlideWrapper index={4}>
     <View style={s.screen}>
       <SceneBackground />
       <ScrollView contentContainerStyle={[s.container, { paddingTop: insets.top + 10, paddingBottom: 28 }]} showsVerticalScrollIndicator={false}>
@@ -267,7 +269,7 @@ export default function SettingsScreen() {
               <View style={s.changeoverRight}>
                 <Text style={[s.aboutTitle, { color: theme.text }]}>About Changeover</Text>
                 <Text style={[s.aboutDesc, { color: theme.textSecondary }]}>Switch between meters to control which meter records the consumption.</Text>
-                <Pressable style={s.swapBtn} onPress={handleSwap}>
+                <SpringPressable style={s.swapBtn} onPress={handleSwap}>
                   <BlurView
                     intensity={30}
                     tint="dark"
@@ -280,17 +282,17 @@ export default function SettingsScreen() {
                     <RefreshCw size={18} color="#32E56B" />
                     <Text style={s.swapBtnText}>Swap Source</Text>
                   </View>
-                </Pressable>
+                </SpringPressable>
               </View>
             </View>
 
             {/* Forget Swap — re-anchor both meters without touching the algorithm */}
             <View style={s.forgetSwapSection}>
-              <Pressable style={s.forgetSwapToggle} onPress={() => setShowForgetSwap(!showForgetSwap)}>
+              <SpringPressable style={s.forgetSwapToggle} onPress={() => { flowLayout(); setShowForgetSwap(!showForgetSwap); }}>
                 <Edit3 size={14} color="#F8C653" />
                 <Text style={s.forgetSwapToggleText}>Forgot to swap?</Text>
                 <Text style={s.forgetSwapChevron}>{showForgetSwap ? "▲" : "▼"}</Text>
-              </Pressable>
+              </SpringPressable>
 
               {showForgetSwap && (
                 <View style={s.forgetSwapForm}>
@@ -331,14 +333,14 @@ export default function SettingsScreen() {
                     </View>
                   </View>
 
-                  <Pressable
+                  <SpringPressable
                     style={[s.primaryBtn, { backgroundColor: '#8B6914' }, savingForgetSwap && s.btnDisabled]}
                     onPress={handleForgetSwap}
                     disabled={savingForgetSwap}
                   >
                     <Save size={16} color="#F8C653" />
                     <Text style={[s.primaryBtnText, { color: '#F8C653' }]}>{savingForgetSwap ? "Saving…" : "Update readings"}</Text>
-                  </Pressable>
+                  </SpringPressable>
                 </View>
               )}
             </View>
@@ -399,15 +401,15 @@ export default function SettingsScreen() {
               </View>
 
               {editingBaselines ? (
-                <Pressable style={[s.primaryBtn, { backgroundColor: '#1A5CE5' }, savingBaselines && s.btnDisabled]} onPress={handleSaveBaselines} disabled={savingBaselines}>
+                <SpringPressable style={[s.primaryBtn, { backgroundColor: '#1A5CE5' }, savingBaselines && s.btnDisabled]} onPress={handleSaveBaselines} disabled={savingBaselines}>
                   <Save size={16} color="#FFF" />
                   <Text style={[s.primaryBtnText, { color: "#FFF" }]}>{savingBaselines ? "Saving…" : "Save 28th baselines"}</Text>
-                </Pressable>
+                </SpringPressable>
               ) : (
-                <Pressable style={s.editBtn} onPress={() => setEditingBaselines(true)}>
+                <SpringPressable style={s.editBtn} onPress={() => { flowLayout(); setEditingBaselines(true); }}>
                   <Edit3 size={15} color="#4A85FF" />
                   <Text style={s.editBtnText}>Edit baselines</Text>
-                </Pressable>
+                </SpringPressable>
               )}
             </GlassCard>
         </View>
@@ -474,10 +476,10 @@ export default function SettingsScreen() {
               )}
             </View>
 
-            <Pressable style={[s.primaryBtn, { backgroundColor: '#4C2882' }, savingReadings && s.btnDisabled]} onPress={handleSaveReadings} disabled={savingReadings}>
+            <SpringPressable style={[s.primaryBtn, { backgroundColor: '#4C2882' }, savingReadings && s.btnDisabled]} onPress={handleSaveReadings} disabled={savingReadings}>
               <Save size={16} color="#FFF" />
               <Text style={[s.primaryBtnText, { color: "#FFF" }]}>{savingReadings ? "Saving…" : "Log readings"}</Text>
-            </Pressable>
+            </SpringPressable>
           </GlassCard>
         </View>
 
@@ -509,10 +511,10 @@ export default function SettingsScreen() {
                   </View>
                 </View>
 
-                <Pressable style={[s.primaryBtn, { backgroundColor: '#164831' }, savingLastMonth && s.btnDisabled]} onPress={handleSaveLastMonth} disabled={savingLastMonth}>
+                <SpringPressable style={[s.primaryBtn, { backgroundColor: '#164831' }, savingLastMonth && s.btnDisabled]} onPress={handleSaveLastMonth} disabled={savingLastMonth}>
                   <Save size={16} color="#32E56B" />
                   <Text style={[s.primaryBtnText, { color: '#32E56B' }]}>{savingLastMonth ? "Saving…" : "Save last month total"}</Text>
-                </Pressable>
+                </SpringPressable>
               </View>
 
               <View style={[s.lastMonthSep, { backgroundColor: theme.border }]} />
@@ -565,7 +567,7 @@ export default function SettingsScreen() {
                   </Text>
                 </View>
               </View>
-              <Pressable
+              <SpringPressable
                 onPress={toggleOverlay}
                 style={[
                   s.toggleTrack,
@@ -573,7 +575,7 @@ export default function SettingsScreen() {
                 ]}
               >
                 <View style={[s.toggleThumb, { transform: [{ translateX: overlayEnabled ? 22 : 0 }] }]} />
-              </Pressable>
+              </SpringPressable>
             </View>
           </GlassCard>
         </View>
@@ -584,7 +586,7 @@ export default function SettingsScreen() {
               <Edit3 size={14} color="#7DD3FC" />
               <Text style={[s.sectionTitle, { color: theme.textSecondary }]}>DEVELOPER</Text>
             </View>
-            <Pressable
+            <SpringPressable
               onPress={() => router.push("/overlay-editor")}
             >
               <GlassCard style={s.card}>
@@ -593,12 +595,11 @@ export default function SettingsScreen() {
                   Visually tune SVG wiring paths per weather background
                 </Text>
               </GlassCard>
-            </Pressable>
+            </SpringPressable>
           </View>
         )}
       </ScrollView>
     </View>
-    </TabSlideWrapper>
   );
 }
 

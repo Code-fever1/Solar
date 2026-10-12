@@ -13,8 +13,9 @@ import {
   type FlowLive,
   type FlowMemory,
 } from "@/utils/ops-workflows";
+import { SpringPressable } from "@/components/SpringPressable";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 
 function focusForDevice(device: OpsDevice): "db" | "inverter" | "dongle" | "green" {
@@ -160,14 +161,14 @@ export const OpsFlowRunner = memo(function OpsFlowRunner({
       ) : null}
 
       {screen.primary ? (
-        <Pressable onPress={() => go("primary")} style={[s.btn, { backgroundColor: accent }]}>
+        <SpringPressable onPress={() => go("primary")} style={[s.btn, { backgroundColor: accent }]}>
           <Text style={s.btnText}>{screen.primary}</Text>
-        </Pressable>
+        </SpringPressable>
       ) : null}
       {screen.secondary ? (
-        <Pressable onPress={() => go("secondary")} style={s.btnGhost}>
+        <SpringPressable onPress={() => go("secondary")} style={s.btnGhost}>
           <Text style={[s.btnGhostText, { color: cardTheme.textSecondary }]}>{screen.secondary}</Text>
-        </Pressable>
+        </SpringPressable>
       ) : null}
     </Fade>
   );

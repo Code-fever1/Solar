@@ -1,6 +1,7 @@
+import { FluidPager } from "@/components/FluidPager";
 import { GlassCard } from "@/components/GlassCard";
 import { SceneBackground } from "@/components/SceneBackground";
-import { TabSlideWrapper } from "@/components/TabSlideWrapper";
+import { SpringPressable } from "@/components/SpringPressable";
 import { UsageSummaryCard } from "@/components/UsageSummaryCard";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
@@ -22,9 +23,8 @@ import {
   Zap
 } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
+import { ScrollView } from "react-native-gesture-handler";
 import {
-  Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -115,9 +115,9 @@ export default function HistoryScreen() {
 
   useEffect(() => {
     pillTranslateX.value = withSpring(pillOffset, {
-      damping: 22,
-      stiffness: 260,
-      mass: 0.9,
+      stiffness: 157.91,
+      damping: 18.1,
+      mass: 1,
     });
   }, [pillOffset, pillTranslateX]);
 
@@ -126,7 +126,6 @@ export default function HistoryScreen() {
   }));
 
   return (
-    <TabSlideWrapper index={2}>
     <View style={styles.screen}>
       <SceneBackground />
       <ScrollView
@@ -157,22 +156,21 @@ export default function HistoryScreen() {
             const Icon = t.icon;
             const isActive = tab === t.key;
             return (
-              <Pressable
+              <SpringPressable
                 key={t.key}
                 onPress={() => setTab(t.key)}
                 style={styles.tab}
               >
                 <Icon size={14} color={isActive ? "#35E378" : theme.textSecondary} />
                 <Text style={[styles.tabText, isActive && styles.tabTextActive, { color: isActive ? undefined : theme.textSecondary }]}>{t.label}</Text>
-              </Pressable>
+              </SpringPressable>
             );
           })}
         </View>
 
-        {/* Tab Content */}
-        {tab === "usage" && <UsageTab />}
-        {tab === "fronus" && <FronusTab inverter={inverter} liveReady={liveReady} />}
-        {tab === "tomzn" && (
+        <FluidPager index={tabIndex} onIndexChange={(next) => setTab(tabs[next].key)}>
+          <UsageTab />
+          <FronusTab inverter={inverter} liveReady={liveReady} />
           <TomznTab
             liveReady={liveReady}
             tomznLive={tomznLive}
@@ -182,10 +180,9 @@ export default function HistoryScreen() {
             refreshing={refreshing}
             spinStyle={spinStyle}
           />
-        )}
+        </FluidPager>
       </ScrollView>
     </View>
-    </TabSlideWrapper>
   );
 }
 
@@ -401,11 +398,11 @@ function TomznTab({
         <View style={styles.fetchedRow}>
           <Clock size={10} color={theme.textMuted} />
           <Text style={[styles.fetchedText, { color: theme.textSecondary }]}>Last fetched: {fetchedAt}</Text>
-          <Pressable onPress={onRefresh} style={styles.refreshBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <SpringPressable onPress={onRefresh} style={styles.refreshBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Animated.View style={spinStyle}>
               <RefreshCw size={13} color="#548EFF" />
             </Animated.View>
-          </Pressable>
+          </SpringPressable>
         </View>
 
         {/* Live Telemetry Section */}

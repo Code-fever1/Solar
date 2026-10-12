@@ -242,6 +242,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
   const dataVersionRef = useRef<number>(0);
   const lastLiveSigRef = useRef("");
   const lastUsageTickRef = useRef<{ energyKwh: number; at: number; exporting: boolean } | null>(null);
+  // Highest cycle usage shown for the current billing cycle. A dashboard
+  // payload must not snap this back near 0 until cycleStart actually changes.
+  const cycleUsageHoldRef = useRef<{ cycleStart: number; byMeter: Record<MeterId, number> } | null>(null);
   const startLiveStreamRef = useRef<(() => void) | null>(null);
   const startDashboardPollingRef = useRef<(() => void) | null>(null);
   const startIdlePollingRef = useRef<(() => void) | null>(null);
@@ -419,6 +422,34 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
         }
       }
     }
+    const cycleStart = Number(next.meta?.cycleStart) || 0;
+    const held = cycleUsageHoldRef.current;
+    const sameCycle = Boolean(held && held.cycleStart === cycleStart && cycleStart > 0);
+    if (next.meters && sameCycle && held) {
+      const meters = { ...next.meters };
+      let changed = false;
+      for (const meterId of ["meter1", "meter2"] as MeterId[]) {
+        const incoming = meters[meterId]?.cycleUsage || 0;
+        const shown = held.byMeter[meterId] || 0;
+        // Same billing cycle cannot collapse toward 0. A new cycleStart may.
+        if (shown >= 0.05 && incoming < shown * 0.5) {
+          meters[meterId] = {
+            ...meters[meterId],
+            cycleUsage: shown,
+            remainingUnits: Math.max(0, (meters[meterId].targetUnits || 0) - shown),
+          };
+          changed = true;
+        }
+      }
+      if (changed) next.meters = meters;
+    }
+    cycleUsageHoldRef.current = {
+      cycleStart,
+      byMeter: {
+        meter1: next.meters?.meter1?.cycleUsage || 0,
+        meter2: next.meters?.meter2?.cycleUsage || 0,
+      },
+    };
     setSnapshot(next);
     if (next.boardSwitches) {
       const parsed = parseBoardState(next.boardSwitches);
@@ -689,6 +720,9 @@ export function EnergyProvider({ children }: { children: ReactNode }) {
               cycleUsage: Math.round(((activeMeter.cycleUsage || 0) + importStep) * 1000) / 1000,
             },
           };
+          const shown = next.meters[activeId].cycleUsage || 0;
+          const hold = cycleUsageHoldRef.current;
+          if (hold) hold.byMeter[activeId] = Math.max(hold.byMeter[activeId] || 0, shown);
         }
         return next;
       });

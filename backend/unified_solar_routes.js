@@ -3,8 +3,10 @@
 /**
  * The solar dashboard has one source of truth: TOMZN's cumulative kWh reading.
  * Every positive delta is written once to the allocation ledger and assigned to
- * the meter that was active at that moment. Manual meter readings never replace
- * TOMZN usage; they reconcile the displayed physical-meter reading from then on.
+ * the meter that was active at that moment. If the server or the meter is down,
+ * the next good total still adds the whole increase, as long as that increase
+ * fits the time we were blind. Manual meter readings never replace TOMZN usage;
+ * they reconcile the displayed physical-meter reading from then on.
  */
 
 const http = require("http");
@@ -1280,6 +1282,28 @@ async function ensureState(stateCollection) {
   return state;
 }
 
+// 15 kW is above the 10 kW inverter and a heavy bypass load. This only rejects
+// a replaced counter. Missed units always come from the TOMZN total itself.
+const MAX_CATCHUP_KW = 15;
+const GAP_CATCHUP_MS = 3 * 60 * 1000;
+
+function maxPlausibleImportKwh(elapsedMs) {
+  const hours = Math.max(elapsedMs, 60_000) / 3_600_000;
+  return Math.max(1, hours * MAX_CATCHUP_KW);
+}
+
+// Frozen offline polls keep rewriting the same total. The outage starts at the
+// first snapshot of that total, not at the latest copy.
+async function counterPlateauStartedAt(snapshots, energyKwh, fallbackTs) {
+  const target = round(energyKwh, 3);
+  if (!(target > 0)) return fallbackTs;
+  const row = await snapshots.find({
+    energyKwh: { $gte: target - 0.001, $lte: target + 0.001 },
+  }).sort({ timestamp: 1 }).limit(1).next();
+  const ts = finiteNumber(row?.timestamp);
+  return ts != null && ts > 0 ? ts : fallbackTs;
+}
+
 async function recordTomzn({ stateCollection, snapshots, allocations, inverterSnapshots, snapshot, billingFlowState, invalidateStateCache }) {
   const now = Date.now();
   let state = await ensureState(stateCollection);
@@ -1310,41 +1334,52 @@ async function recordTomzn({ stateCollection, snapshots, allocations, inverterSn
   const lastImportEnergyKwh = state.lastImportEnergyKwh ?? previous?.energyKwh ?? energyKwh;
 
   let allocatedDelta = 0;
-  if (!isExporting) {
-    // Counter reset detection: if energyKwh dropped below lastImportEnergyKwh,
-    // the TOMZN meter was reset (e.g. factory reset, firmware update). Start
-    // fresh from the new value — don't create a negative delta. Old readings
-    // are preserved in the allocations + snapshots collections.
-    if (energyKwh >= lastImportEnergyKwh) {
-      const delta = round(energyKwh - lastImportEnergyKwh);
-      // Deltas larger than 50 units in one poll are a counter replacement/reset issue,
-      // not household consumption. Keep the snapshot but wait for a manual reconciliation.
-      if (delta > 0 && delta <= 50) {
+  // Counter reset: energy dropped. Keep the old ledger and start again from
+  // the new total — a negative delta is not consumption.
+  if (energyKwh >= lastImportEnergyKwh) {
+    const delta = round(energyKwh - lastImportEnergyKwh);
+    if (delta > 0) {
+      let baselineAt = previous?.timestamp || state.updatedAt || now;
+      let elapsedMs = Math.max(0, now - baselineAt);
+      let maxDelta = maxPlausibleImportKwh(elapsedMs);
+      if (delta > maxDelta) {
+        const stallAt = await counterPlateauStartedAt(snapshots, lastImportEnergyKwh, baselineAt);
+        if (stallAt < baselineAt) {
+          baselineAt = stallAt;
+          elapsedMs = Math.max(0, now - baselineAt);
+          maxDelta = maxPlausibleImportKwh(elapsedMs);
+        }
+      }
+      // A short export window is not consumption. A long blind gap is: the
+      // first poll back can land in export, and dropping the whole increase
+      // would miss the units used while we were down.
+      const catchUpGap = elapsedMs >= GAP_CATCHUP_MS;
+      const countAsImport = !isExporting || catchUpGap;
+      if (countAsImport && delta <= maxDelta) {
         allocatedDelta = delta;
         await allocations.insertOne({
           timestamp: now,
-          fromTimestamp: previous?.timestamp || now,
+          fromTimestamp: baselineAt,
           meterId: state.activeMeter,
           delta,
           startEnergyKwh: lastImportEnergyKwh,
           endEnergyKwh: energyKwh,
-          source: "TOMZN",
+          source: catchUpGap ? "TOMZN_GAP" : "TOMZN",
+          gapMs: elapsedMs,
         });
+        if (catchUpGap) {
+          console.log(`[Solar Engine] TOMZN gap catch-up +${delta} kWh over ${Math.round(elapsedMs / 60000)} min → ${state.activeMeter}`);
+        }
+      } else if (countAsImport) {
+        console.warn(`[Solar Engine] TOMZN counter jump +${delta} kWh in ${Math.round(elapsedMs / 60000)} min ignored (max ${round(maxDelta, 1)} kWh). Baseline moved to ${energyKwh}.`);
       }
     }
-    // Update lastImportEnergyKwh to current reading (only when not exporting).
-    // This is the base for the next import-period delta calculation.
-    state.lastImportEnergyKwh = energyKwh;
-  } else {
-    // When exporting: don't create an allocation (export energy is not
-    // consumption), but DO update lastImportEnergyKwh to the current reading.
-    // TOMZN's counter increases during export too (it can't distinguish
-    // import vs export), so if we freeze lastImportEnergyKwh, the export-
-    // period counter increase leaks into the next import-period delta as
-    // a false consumption spike. By tracking the counter during export, the
-    // next non-export delta only counts the actual import increase.
-    state.lastImportEnergyKwh = energyKwh;
   }
+  // Always advance the import baseline, including export and a rejected jump.
+  // The counter also rises while exporting; freezing it would bill that rise
+  // as import on the next poll. A replaced meter must advance too, or every
+  // later poll would add the same phantom delta again.
+  state.lastImportEnergyKwh = energyKwh;
 
   const newState = { ...state, lastTomzn: record, updatedAt: now };
   await stateCollection.replaceOne({ _id: PRIMARY_STATE_ID }, newState, { upsert: true });
@@ -2292,12 +2327,21 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   }
   for (const meterId of METER_IDS) {
     const config = state.meters[meterId];
-    let rawAfterAnchor = await meterUsageSince(allocations, meterId, Math.max(config.anchorAt || cycleStart, cycleStart), now);
+    // Count from the anchor, not from max(anchor, cycleStart). The 28th noon
+    // baseline is anchor + usage up to that noon. Starting the reading at noon
+    // drops that usage, so reading < baseline and cycle units clamp to 0.
+    // Live ticks then climb and the next dashboard snaps them back to 0.
+    const anchorFrom = Number(config.anchorAt) > 0 ? Number(config.anchorAt) : cycleStart;
+    let rawAfterAnchor = await meterUsageSince(allocations, meterId, anchorFrom, now);
+    let rawThisCycle = anchorFrom >= cycleStart
+      ? rawAfterAnchor
+      : await meterUsageSince(allocations, meterId, cycleStart, now);
     let meterTodayUncalibrated = meterImportToday[meterId] || todayUsage[meterId] || 0;
 
     // Add live, unpersisted consumption to the active meter's cycle reading.
     if (meterId === state.activeMeter && unallocatedDelta > 0) {
       rawAfterAnchor += unallocatedDelta;
+      rawThisCycle += unallocatedDelta;
     }
 
     // Manual readings today override the TOMZN-derived scale for this meter so the
@@ -2307,7 +2351,9 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
 
     const afterAnchor = calibratedUnits(config, rawAfterAnchor);
     const reading = round((config.anchorReading ?? config.cycleBaselineReading) + afterAnchor, 3);
-    const cycleUsageValue = Math.max(0, round(reading - config.cycleBaselineReading, 3));
+    const fromBaseline = round(reading - (config.cycleBaselineReading || 0), 3);
+    const fromLedger = round(calibratedUnits(config, rawThisCycle), 3);
+    const cycleUsageValue = round(Math.max(0, fromBaseline, fromLedger), 3);
     const remainingUnits = Math.max(0, round(state.slabTargetUnits - cycleUsageValue, 3));
     const meterTodayBase = calibratedUnits(config, meterTodayUncalibrated);
     const meterToday = round(Math.max(0, meterTodayBase + manualTodayUsage), 3);

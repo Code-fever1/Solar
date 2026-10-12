@@ -7,12 +7,12 @@ import type {
   OverlayPoint,
   WireKind,
 } from "@/overlay/types";
+import { SpringPressable } from "@/components/SpringPressable";
 import { router } from "expo-router";
 import { ArrowLeft, Copy, Plus, Trash2 } from "lucide-react-native";
 import { useCallback, useMemo, useState } from "react";
 import {
   Image,
-  Pressable,
   ScrollView,
   Share,
   StyleSheet,
@@ -247,55 +247,55 @@ export default function OverlayEditorScreen() {
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.iconBtn}>
+        <SpringPressable onPress={() => router.back()} style={styles.iconBtn}>
           <ArrowLeft size={20} color="#EAF2FA" />
-        </Pressable>
+        </SpringPressable>
         <View style={styles.headerTextWrap}>
           <Text style={styles.title}>Overlay Editor</Text>
           <Text style={styles.subtitle}>{sceneId} · {TARGET_LABELS[target]}</Text>
         </View>
-        <Pressable onPress={exportJson} style={styles.iconBtn}>
+        <SpringPressable onPress={exportJson} style={styles.iconBtn}>
           <Copy size={18} color="#7DD3FC" />
-        </Pressable>
+        </SpringPressable>
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sceneRow}>
         {HERO_SCENE_LIST.map((id) => (
-          <Pressable
+          <SpringPressable
             key={id}
             onPress={() => selectScene(id)}
             style={[styles.sceneChip, sceneId === id && styles.sceneChipActive]}
           >
             <Text style={[styles.sceneChipText, sceneId === id && styles.sceneChipTextActive]}>{id}</Text>
-          </Pressable>
+          </SpringPressable>
         ))}
       </ScrollView>
 
       <Text style={styles.sectionLabel}>Wires</Text>
       <View style={styles.targetRow}>
         {WIRE_TARGETS.map((wire) => (
-          <Pressable
+          <SpringPressable
             key={wire}
             onPress={() => setTarget(wire)}
             style={[styles.targetChip, target === wire && { borderColor: TARGET_COLORS[wire] }]}
           >
             <View style={[styles.targetDot, { backgroundColor: TARGET_COLORS[wire] }]} />
             <Text style={styles.targetText}>{TARGET_LABELS[wire]}</Text>
-          </Pressable>
+          </SpringPressable>
         ))}
       </View>
 
       <Text style={styles.sectionLabel}>Anchors</Text>
       <View style={[styles.targetRow, styles.anchorRow]}>
         {ANCHOR_TARGETS.map((anchor) => (
-          <Pressable
+          <SpringPressable
             key={anchor}
             onPress={() => setTarget(anchor)}
             style={[styles.targetChip, target === anchor && { borderColor: TARGET_COLORS[anchor] }]}
           >
             <View style={[styles.targetDot, { backgroundColor: TARGET_COLORS[anchor] }]} />
             <Text style={styles.targetText}>{TARGET_LABELS[anchor]}</Text>
-          </Pressable>
+          </SpringPressable>
         ))}
       </View>
 
@@ -307,7 +307,7 @@ export default function OverlayEditorScreen() {
         />
         {layout.width > 0 && (
           <>
-            <Pressable
+            <SpringPressable
               style={StyleSheet.absoluteFill}
               onPress={(event) => placeTargetAt(event.nativeEvent.locationX, event.nativeEvent.locationY)}
             />
@@ -377,14 +377,14 @@ export default function OverlayEditorScreen() {
         <View style={styles.toolbarRow}>
           {isWireTarget(target) ? (
             <>
-              <Pressable onPress={appendPoint} style={styles.toolBtn}>
+              <SpringPressable onPress={appendPoint} style={styles.toolBtn}>
                 <Plus size={16} color="#EAF2FA" />
                 <Text style={styles.toolBtnText}>Add</Text>
-              </Pressable>
-              <Pressable onPress={clearActivePath} style={styles.toolBtn}>
+              </SpringPressable>
+              <SpringPressable onPress={clearActivePath} style={styles.toolBtn}>
                 <Trash2 size={16} color="#FCA5A5" />
                 <Text style={[styles.toolBtnText, styles.toolBtnDanger]}>Clear</Text>
-              </Pressable>
+              </SpringPressable>
             </>
           ) : null}
           <Text style={styles.pointCount}>{activeMetaText}</Text>

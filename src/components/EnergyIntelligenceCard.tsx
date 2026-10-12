@@ -11,8 +11,9 @@ import {
     TrendingDown,
     Zap,
 } from "lucide-react-native";
+import { SpringPressable } from "@/components/SpringPressable";
 import { memo, useEffect, useMemo, useRef } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import Animated, {
     Easing,
     useAnimatedStyle,
@@ -188,9 +189,9 @@ export const EnergyIntelligenceCard = memo(function EnergyIntelligenceCard({
               </Text>
             </View>
             {helpActive ? (
-              <Pressable onPress={onHelpPress} hitSlop={10} style={styles.helpTap}>
+              <SpringPressable onPress={onHelpPress} hitSlop={10} style={styles.helpTap}>
                 <OpsHelpBadge active color={helpColor} />
-              </Pressable>
+              </SpringPressable>
             ) : null}
           </View>
         </View>

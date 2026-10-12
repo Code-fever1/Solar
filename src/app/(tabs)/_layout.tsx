@@ -1,17 +1,17 @@
+import { SpringPressable } from "@/components/SpringPressable";
 import { useSceneTheme } from "@/context/SceneThemeContext";
-import { setPendingSlideDirection, setSwipeNavigateFn } from "@/components/TabSlideWrapper";
+import { forFluidTab, prefersReducedMotion, smoothSpring, subscribeReduceMotion, tabPageTransition } from "@/lib/motion";
 import { Tabs } from "expo-router";
 import { BlurView } from "expo-blur";
 import { Activity, CalendarDays, House, Settings as SettingsIcon, Zap } from "lucide-react-native";
+import { useEffect, useState } from "react";
 import {
     Platform,
-    Pressable,
     StyleSheet,
     Text,
     View,
     useWindowDimensions,
 } from "react-native";
-import { useEffect } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
     useAnimatedStyle,
@@ -45,13 +45,6 @@ function TabBar({ state, navigation }: any) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const containerWidth = Math.min(width - 20, 480);
-
-  // Expose navigation state for swipe gestures (TabSlideWrapper reads this).
-  (globalThis as any).__tabNavState = {
-    index: state.index,
-    routes: state.routes.map((r: any) => r.name),
-    navigate: navigation.navigate.bind(navigation),
-  };
 
   const { sheetColors, textSecondary, isLight } = useSceneTheme();
   const { seam, sky } = sheetColors;
@@ -98,9 +91,10 @@ function TabBar({ state, navigation }: any) {
   // Update position whenever the active tab changes.
   useEffect(() => {
     translateX.value = withSpring(pillOffset, {
-      damping: 22,
-      stiffness: 260,
-      mass: 0.9,
+      stiffness: smoothSpring.stiffness,
+      damping: smoothSpring.damping,
+      mass: smoothSpring.mass,
+      overshootClamping: true,
     });
   }, [pillOffset, translateX]);
 
@@ -154,21 +148,15 @@ function TabBar({ state, navigation }: any) {
               canPreventDefault: true,
             });
             if (!isFocused && !event.defaultPrevented) {
-              // Set slide direction BEFORE navigating so the incoming screen
-              // knows which direction to slide from (no flash).
-              setPendingSlideDirection(index > state.index ? 1 : -1);
               navigation.navigate(route.name);
             }
           };
 
           return (
             <View key={route.key} style={styles.tabWrapper}>
-              <Pressable
+              <SpringPressable
                 onPress={onPress}
-                style={({ pressed }) => [
-                  styles.tab,
-                  pressed && { opacity: 0.5 },
-                ]}
+                style={styles.tab}
               >
                 <View style={styles.tabContent}>
                   <Icon
@@ -187,7 +175,7 @@ function TabBar({ state, navigation }: any) {
                     {label}
                   </Text>
                 </View>
-              </Pressable>
+              </SpringPressable>
               {index < tabCount - 1 && <View style={styles.separator} />}
             </View>
           );
@@ -198,24 +186,10 @@ function TabBar({ state, navigation }: any) {
 }
 
 export default function TabsLayout() {
-  const tabNames = ["index", "meters", "history", "logs", "settings"];
+  const { screenBg } = useSceneTheme();
+  const [reduceMotion, setReduceMotion] = useState(prefersReducedMotion());
 
-  // Register swipe navigation handler so TabSlideWrapper can trigger
-  // tab switches from swipe gestures. Direction: -1 = back, 1 = forward.
-  useEffect(() => {
-    setSwipeNavigateFn((direction: number) => {
-      // Use the router to navigate — we need the current index from the DOM state.
-      // This is set via the tab bar's navigation state.
-      const nav = (globalThis as any).__tabNavState;
-      if (!nav) return;
-      const { index, routes, navigate } = nav;
-      const targetIndex = index + direction;
-      if (targetIndex < 0 || targetIndex >= routes.length) return;
-      setPendingSlideDirection(direction);
-      navigate(routes[targetIndex]);
-    });
-    return () => { setSwipeNavigateFn((() => {}) as any); };
-  }, []);
+  useEffect(() => subscribeReduceMotion(setReduceMotion), []);
 
   return (
     <Tabs
@@ -224,7 +198,12 @@ export default function TabsLayout() {
       tabBar={(props) => <TabBar {...props} />}
       screenOptions={{
         headerShown: false,
+        lazy: false,
         freezeOnBlur: false,
+        sceneStyle: { backgroundColor: screenBg },
+        transitionSpec: tabPageTransition(),
+        sceneStyleInterpolator: forFluidTab,
+        animation: reduceMotion ? "none" : undefined,
         tabBarStyle: {
           position: "relative",
           backgroundColor: "transparent",

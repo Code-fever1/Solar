@@ -11,11 +11,13 @@ import {
   type OpsSeverity,
 } from "@/utils/ops-guide";
 import { startNode, type FlowLive } from "@/utils/ops-workflows";
+import { SpringPressable } from "@/components/SpringPressable";
+import { useCoucouEnter } from "@/lib/motion";
 import { Check, HelpCircle, X } from "lucide-react-native";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Animated,
   Modal,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -60,6 +62,7 @@ export const OpsGuideSheet = memo(function OpsGuideSheet({
   anchor: OpsAnchor;
 }) {
   const insets = useSafeAreaInsets();
+  const enter = useCoucouEnter(visible);
   const color = SEVERITY_COLOR[guide.severity];
   const { flags } = guide;
   const {
@@ -147,18 +150,18 @@ export const OpsGuideSheet = memo(function OpsGuideSheet({
           : "Done";
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={visible} animationType="none" transparent onRequestClose={onClose}>
       <View style={s.modalRoot}>
-        <Pressable style={s.backdrop} onPress={onClose} />
-        <View style={[s.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+        <SpringPressable feedback="none" style={s.backdrop} onPress={onClose} />
+        <Animated.View style={[s.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 8, opacity: enter.opacity, transform: [{ scale: enter.scale }] }]}>
           <View style={s.sheetGrab} />
           <View style={s.sheetTop}>
             <View style={{ flex: 1 }}>
               <Text style={[s.sheetLive, { color }]}>{headerTitle}</Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={12} style={s.closeBtn}>
+            <SpringPressable onPress={onClose} hitSlop={12} style={s.closeBtn}>
               <X size={16} color="#8A9BAE" />
-            </Pressable>
+            </SpringPressable>
           </View>
 
           {phase === "setup" ? (
@@ -175,9 +178,9 @@ export const OpsGuideSheet = memo(function OpsGuideSheet({
                 flags={flags}
                 accent={color}
               />
-              <Pressable onPress={() => { void confirmBoard(); }} style={[s.primaryBtn, { backgroundColor: color }]}>
+              <SpringPressable onPress={() => { void confirmBoard(); }} style={[s.primaryBtn, { backgroundColor: color }]}>
                 <Text style={s.primaryBtnText}>{saving ? "Saving…" : "Looks right"}</Text>
-              </Pressable>
+              </SpringPressable>
             </>
           ) : null}
 
@@ -194,7 +197,7 @@ export const OpsGuideSheet = memo(function OpsGuideSheet({
                 ) : goals.map((g) => {
                   const markColor = g.mark === "green" ? "#32E56B" : g.mark === "yellow" ? "#F8C653" : null;
                   return (
-                    <Pressable
+                    <SpringPressable
                       key={g.id}
                       onPress={() => pickGoal(g)}
                       style={[
@@ -211,7 +214,7 @@ export const OpsGuideSheet = memo(function OpsGuideSheet({
                       ) : null}
                       <Text style={s.goalTitle}>{g.title}</Text>
                       {g.why ? <Text style={s.goalWhy}>{g.why}</Text> : null}
-                    </Pressable>
+                    </SpringPressable>
                   );
                 })}
               </View>
@@ -242,12 +245,12 @@ export const OpsGuideSheet = memo(function OpsGuideSheet({
                   {flags.inverterUp ? "Inverter is online." : "Saved."}
                 </Text>
               </View>
-              <Pressable onPress={onClose} style={[s.primaryBtn, { backgroundColor: color }]}>
+              <SpringPressable onPress={onClose} style={[s.primaryBtn, { backgroundColor: color }]}>
                 <Text style={s.primaryBtnText}>Close</Text>
-              </Pressable>
+              </SpringPressable>
             </>
           ) : null}
-        </View>
+        </Animated.View>
       </View>
     </Modal>
   );

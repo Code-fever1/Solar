@@ -1,11 +1,11 @@
 import { GlassCard } from "@/components/GlassCard";
 import { SceneBackground } from "@/components/SceneBackground";
-import { TabSlideWrapper } from "@/components/TabSlideWrapper";
+import { SpringPressable } from "@/components/SpringPressable";
 import { useEnergy } from "@/context/EnergyContext";
 import { useSceneTheme } from "@/context/SceneThemeContext";
 import { Activity, Clock, Trash2 } from "lucide-react-native";
 import { useMemo } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 function formatDateTime(timestamp: number): string {
@@ -72,7 +72,6 @@ export default function LogsScreen() {
   };
 
   return (
-    <TabSlideWrapper index={3}>
     <View style={styles.screen}>
       <SceneBackground />
       <ScrollView
@@ -181,13 +180,13 @@ export default function LogsScreen() {
                   </View>
 
                   {/* Right: delete */}
-                  <Pressable
+                  <SpringPressable
                     style={styles.deleteBtn}
                     hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                     onPress={() => handleDelete(log.id, meterLabel, log.reading)}
                   >
                     <Trash2 size={15} color="#FF5252" />
-                  </Pressable>
+                  </SpringPressable>
                 </View>
               );
             })}
@@ -203,7 +202,6 @@ export default function LogsScreen() {
         )}
       </ScrollView>
     </View>
-    </TabSlideWrapper>
   );
 }
 
