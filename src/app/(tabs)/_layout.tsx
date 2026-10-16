@@ -1,6 +1,6 @@
 import { SpringPressable } from "@/components/SpringPressable";
 import { useSceneTheme } from "@/context/SceneThemeContext";
-import { forFluidTab, prefersReducedMotion, smoothSpring, subscribeReduceMotion, tabPageTransition } from "@/lib/motion";
+import { forFluidTab, prefersReducedMotion, subscribeReduceMotion, tabPageTransition } from "@/lib/motion";
 import { Tabs } from "expo-router";
 import { BlurView } from "expo-blur";
 import { Activity, CalendarDays, House, Settings as SettingsIcon, Zap } from "lucide-react-native";
@@ -13,133 +13,40 @@ import {
     useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Animated, {
-    useAnimatedStyle,
-    useSharedValue,
-    withSpring,
-} from "react-native-reanimated";
-
-const rgba = (c: [number, number, number], a: number) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
-
-// Brighten a color toward white so it stays readable on dark backgrounds.
-// `amount` = 0 returns original, 1 returns white.
-function brighten([r, g, b]: [number, number, number], amount: number): [number, number, number] {
-  return [
-    Math.round(r + (255 - r) * amount),
-    Math.round(g + (255 - g) * amount),
-    Math.round(b + (255 - b) * amount),
-  ];
-}
-
-// Darken a color toward black so it stays readable on light backgrounds.
-// `amount` = 0 returns original, 1 returns black.
-function darken([r, g, b]: [number, number, number], amount: number): [number, number, number] {
-  return [
-    Math.round(r * (1 - amount)),
-    Math.round(g * (1 - amount)),
-    Math.round(b * (1 - amount)),
-  ];
-}
 
 function TabBar({ state, navigation }: any) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const containerWidth = Math.min(width - 20, 480);
-
-  const { sheetColors, textSecondary, isLight } = useSceneTheme();
-  const { seam, sky } = sheetColors;
-
-  // Brighten the sky color for the accent so the selected tab's icon/text
-  // are always clearly readable, even on dark scenes like night (sky [6,21,45]).
-  // On light scenes (fog, morning), darken instead so it reads on a light bar.
-  const accentRgb = isLight ? darken(sky, 0.45) : brighten(sky, 0.55);
-
-  // Glassmorphism navbar:
-  //  - BlurView (expo-blur) gives real backdrop blur on iOS.
-  //  - On Android (blurMethod='none'), BlurView renders semi-transparent —
-  //    we layer a scene-tinted wash on top to simulate the frosted look.
-  //  - The seam color ties the bar to the scene's dominant tone.
-  //  - The accent color is the active tab highlight (scene's light source).
-  const floorColor = `rgb(${sky[0]},${sky[1]},${sky[2]})`;
-  const accent = rgba(accentRgb, 1);
-  const inactiveColor = isLight ? "rgba(15,23,42,0.5)" : textSecondary;
-
-  // Scene-tinted wash layered over the blur — this is what makes the glass
-  // feel like it belongs to the current wallpaper, not a generic overlay.
-  const tintWash = rgba(seam, isLight ? 0.55 : 0.72);
-  // Top inner glow — light catching the upper edge of the glass bar.
-  const topGlowColor = rgba(accentRgb, 0.30);
-  // Active pill: frosted glass with sky-tinted accent
-  const pillAccent = rgba(accentRgb, 0.12);
-  const pillBorder = rgba(accentRgb, 0.30);
-  const pillGlow = rgba(accentRgb, 0.50);
-
+  const containerWidth = Math.min(width - 24, 480);
+  const onHome = state.routes[state.index]?.name === "index";
   const titles: Record<string, string> = { index: "Home", meters: "Energy", logs: "Logs", history: "Summary", settings: "Settings" };
-
-  const tabCount = state.routes.length;
-  // Account for paddingHorizontal (8 each side) in the bar container.
-  const usableWidth = containerWidth - 16;
-  const tabWidth = usableWidth / tabCount;
-  // Pill fills most of the tab slot — wider bubble that's clearly visible.
-  const pillWidth = Math.min(tabWidth - 8, 76);
-
-  // Animated sliding pill — translateX moves to center the pill in the active tab.
-  // Offset by 8 to account for the bar's left padding.
-  const pillOffset = 8 + state.index * tabWidth + (tabWidth - pillWidth) / 2;
-  const translateX = useSharedValue(pillOffset);
-
-  // Update position whenever the active tab changes.
-  useEffect(() => {
-    translateX.value = withSpring(pillOffset, {
-      stiffness: smoothSpring.stiffness,
-      damping: smoothSpring.damping,
-      mass: smoothSpring.mass,
-      overshootClamping: true,
-    });
-  }, [pillOffset, translateX]);
-
-  const pillStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
-  }));
 
   return (
     <View
       style={[
         styles.outer,
         {
-          paddingBottom: Math.max(insets.bottom, 6) + 2,
-          backgroundColor: floorColor,
+          paddingBottom: Math.max(insets.bottom, 8),
+          backgroundColor: onHome ? "#0B0F14" : "transparent",
         },
       ]}
     >
       <View style={[styles.barContainer, { width: containerWidth }]}>
-        {/* Real backdrop blur (iOS) / semi-transparent fallback (Android) */}
         <BlurView
-          intensity={isLight ? 45 : 60}
-          tint={isLight ? "light" : "dark"}
+          intensity={40}
+          tint="dark"
           style={StyleSheet.absoluteFill}
           blurMethod={Platform.OS === "android" ? "none" : undefined}
         />
-        {/* Scene-tinted wash over the blur — ties glass to the wallpaper */}
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: tintWash }]} />
-        {/* Top inner glow — light catching the glass edge */}
-        <View style={[styles.topGlow, { borderTopColor: topGlowColor }]} />
-        {/* Outer border — subtle rim defines the glass */}
-        <View style={[styles.glassRim, { borderColor: isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.08)" }]} />
-
-        {/* Sliding active pill — compact bubble that animates between tabs */}
-        <Animated.View style={[styles.pillContainer, { width: pillWidth }, pillStyle]}>
-          <View style={styles.pill}>
-            <View style={[styles.pillAccent, { backgroundColor: pillAccent }]} />
-            <View style={[styles.pillBorder, { borderColor: pillBorder }]} />
-            <View style={[styles.pillTopGlow, { borderTopColor: pillGlow }]} />
-          </View>
-        </Animated.View>
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(18,24,33,0.84)" }]} />
+        <View style={styles.topGlow} />
+        <View style={styles.glassRim} />
 
         {state.routes.map((route: any, index: number) => {
           const isFocused = state.index === index;
           const label = titles[route.name] ?? route.name;
           const Icon = route.name === "index" ? House : route.name === "meters" ? Zap : route.name === "logs" ? Activity : route.name === "settings" ? SettingsIcon : CalendarDays;
+          const color = isFocused ? "#F2F5F8" : "#8A94A3";
 
           const onPress = () => {
             const event = navigation.emit({
@@ -153,31 +60,13 @@ function TabBar({ state, navigation }: any) {
           };
 
           return (
-            <View key={route.key} style={styles.tabWrapper}>
-              <SpringPressable
-                onPress={onPress}
-                style={styles.tab}
-              >
-                <View style={styles.tabContent}>
-                  <Icon
-                    color={isFocused ? accent : inactiveColor}
-                    size={19}
-                    strokeWidth={isFocused ? 2.5 : 2}
-                  />
-                  <Text
-                    style={[
-                      styles.label,
-                      { color: isFocused ? accent : inactiveColor },
-                      isFocused && styles.labelActive,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {label}
-                  </Text>
-                </View>
-              </SpringPressable>
-              {index < tabCount - 1 && <View style={styles.separator} />}
-            </View>
+            <SpringPressable key={route.key} onPress={onPress} style={styles.tab} accessibilityRole="tab" accessibilityState={{ selected: isFocused }} accessibilityLabel={label}>
+              <Icon color={color} size={19} strokeWidth={isFocused ? 2.4 : 2} />
+              {isFocused ? <View style={styles.amberDot} /> : <View style={styles.dotSpacer} />}
+              <Text style={[styles.label, { color }, isFocused && styles.labelActive]} numberOfLines={1}>
+                {label}
+              </Text>
+            </SpringPressable>
           );
         })}
       </View>
@@ -224,102 +113,55 @@ export default function TabsLayout() {
 const styles = StyleSheet.create({
   outer: {
     alignItems: "center",
-    paddingTop: 0,
+    paddingTop: 8,
   },
-  // Glass bar container — holds the blur + tint layers + tabs
   barContainer: {
-    height: 60,
-    borderRadius: 22,
+    height: 62,
+    borderRadius: 28,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 8,
+    paddingHorizontal: 6,
     overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
   },
-  // Top inner glow — bright line at the top edge of the glass bar
   topGlow: {
     position: "absolute",
     top: 0,
-    left: 10,
-    right: 10,
-    height: 1.5,
-    borderTopWidth: 1.5,
-    borderRadius: 1,
+    left: 18,
+    right: 18,
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.16)",
   },
-  // Subtle white rim around the entire bar
   glassRim: {
     ...StyleSheet.absoluteFill,
-    borderRadius: 22,
+    borderRadius: 28,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
   },
-  tabWrapper: {
-    flex: 1,
-    height: 46,
-    flexDirection: "row",
-    alignItems: "center",
-  },
   tab: {
     flex: 1,
-    height: 46,
+    height: 52,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 16,
-    position: "relative",
+    gap: 1,
   },
-  // Thin semi-transparent vertical divider between tab options
-  separator: {
-    width: StyleSheet.hairlineWidth,
-    height: 26,
-    backgroundColor: "rgba(255,255,255,0.10)",
+  amberDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#F5B83D",
+    marginTop: 1,
   },
-  // Active pill — compact frosted glass bubble, centered in each tab slot.
-  // Slides between tabs via animated translateX.
-  pillContainer: {
-    position: "absolute",
-    top: 8,
-    bottom: 8,
-    left: 0,
-    zIndex: 0,
-  },
-  pill: {
-    ...StyleSheet.absoluteFill,
-    borderRadius: 14,
-    overflow: "hidden",
-  },
-  pillAccent: {
-    ...StyleSheet.absoluteFill,
-  },
-  pillBorder: {
-    ...StyleSheet.absoluteFill,
-    borderWidth: 1,
-    borderRadius: 14,
-  },
-  pillTopGlow: {
-    position: "absolute",
-    top: 0,
-    left: 6,
-    right: 6,
-    height: 1.5,
-    borderTopWidth: 1.5,
-    borderRadius: 1,
-  },
-  tabContent: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 3,
-    zIndex: 1,
+  dotSpacer: {
+    width: 4,
+    height: 4,
+    marginTop: 1,
   },
   label: {
-    fontFamily: "Outfit",
+    fontFamily: "Outfit_400Regular",
     fontSize: 10,
-    letterSpacing: 0.2,
+    letterSpacing: 0.1,
   },
   labelActive: {
-    fontWeight: "700",
+    fontFamily: "Outfit_600SemiBold",
   },
 });
