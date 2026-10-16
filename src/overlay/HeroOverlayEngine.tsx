@@ -144,8 +144,14 @@ function useWireMotion({
   const dashOffset = useSharedValue(0);
   const coreDashOffset = useSharedValue(0);
   const pulse = useSharedValue(0.5);
+  // Plain numbers only. Reading another shared value's `.value` here runs during
+  // render and, with the React Compiler on, trips "Expected static flag was missing".
+  const initialIdle = wireStyle.idleOpacity ?? flow.idleOpacity ?? 0.18;
+  const initialCeiling = wireStyle.powerCeilingW ?? 6000;
+  const initialFloor = wireStyle.activeOpacityFloor ?? 0.35;
+  const initialCeil = wireStyle.activeOpacityCeiling ?? 1;
   const targetOpacity = useSharedValue(
-    wireOpacity(flow.active, flow.power, idleSV.value, ceilingSV.value, floorSV.value, ceilOpSV.value),
+    wireOpacity(flow.active, flow.power, initialIdle, initialCeiling, initialFloor, initialCeil),
   );
   const glowDashOpacity = useSharedValue(0.4);
   const coreDashOpacity = useSharedValue(0.6);

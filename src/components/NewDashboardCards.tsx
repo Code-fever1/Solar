@@ -169,7 +169,8 @@ export const EnergyReceivedCard = memo(function EnergyReceivedCard({ totalEnergy
     }, 10_000);
     return () => clearInterval(iv);
   }, []);
-  const t = cardTheme ?? useCardTheme(isLight);
+  const fallbackTheme = useCardTheme(isLight);
+  const t = cardTheme ?? fallbackTheme;
   const solarShare = totalEnergy > 0 ? Math.round((solarEnergy / totalEnergy) * 100) : 0;
   const gridShare = totalEnergy > 0 ? 100 - solarShare : 0;
   const dominant = solarShare >= gridShare ? 'solar' : 'grid';
@@ -241,7 +242,8 @@ export const EnergyUsedCard = memo(function EnergyUsedCard({ totalHomeUsage, liv
     }, 10_000);
     return () => clearInterval(iv);
   }, []);
-  const t = cardTheme ?? useCardTheme(isLight);
+  const fallbackTheme = useCardTheme(isLight);
+  const t = cardTheme ?? fallbackTheme;
   const hasTrend = vsYesterdayPercent != null;
   const isLower = hasTrend && vsYesterdayPercent <= 0;
   const statusColor = loadStatus === 'High' ? '#EF4C4C' : loadStatus === 'Low' ? '#7A8499' : '#32E56B';
@@ -326,7 +328,8 @@ export const ForecastBudgetCard = memo(function ForecastBudgetCard({
   cycleStartTs?: number; billingEndTs?: number;
   isLight?: boolean; cardTheme?: CardTheme;
 }) {
-  const t = cardTheme ?? useCardTheme(isLight);
+  const fallbackTheme = useCardTheme(isLight);
+  const t = cardTheme ?? fallbackTheme;
   const totalTarget = 400;
   const totalRemaining = meter1Left + meter2Left;
   const totalUsed = meter1Used + meter2Used;
