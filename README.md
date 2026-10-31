@@ -1,49 +1,21 @@
-<div align="center">
-
-<!-- Hero Banner -->
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0E1116&height=140&section=header&text=Voltix&fontSize=86&fontColor=F8C653&animation=fadeIn&fontAlignY=38" width="100%"/>
-
-<!-- Typing Slogan -->
-<a href="https://github.com/your-username/voltix">
-  <img src="https://readme-typing-svg.demolab.com?font=Plus+Jakarta+Sans&weight=700&size=22&duration=3000&pause=1000&color=F8C653&center=true&vCenter=true&width=650&lines=Personalized+Energy+Intelligence;Solar+%E2%80%A2+WAPDA+Grid+%E2%80%A2+Battery+%E2%80%A2+Dual+Meters;Single-Line+Expandable+HUD+%E2%80%A2+Smart+DB+Guide;Adaptive+Household+Telemetry+Engine" alt="Voltix Typing Slogan" />
-</a>
-
-<br/>
-
-<!-- Shields & Badges -->
-<p>
-  <img alt="Platform" src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white"/>
-  <img alt="Framework" src="https://img.shields.io/badge/Expo-SDK%2057-000020?style=for-the-badge&logo=expo&logoColor=white"/>
-  <img alt="React Native" src="https://img.shields.io/badge/React%20Native-0.86-61DAFB?style=for-the-badge&logo=react&logoColor=black"/>
-  <img alt="Backend" src="https://img.shields.io/badge/Backend-Node.js%20%7C%20Express-339933?style=for-the-badge&logo=node.js&logoColor=white"/>
-  <img alt="Database" src="https://img.shields.io/badge/DB-MongoDB%20Replica-47A248?style=for-the-badge&logo=mongodb&logoColor=white"/>
-  <img alt="Language" src="https://img.shields.io/badge/TypeScript-6.0-3178C6?style=for-the-badge&logo=typescript&logoColor=white"/>
+<p align="center">
+  <img src="docs/readme-hero.svg" width="100%" alt="Voltix opening screen: solar, home load, grid export, and the active meter"/>
 </p>
 
-<p>
-  <img alt="Status" src="https://img.shields.io/badge/Status-Production%20Active-brightgreen?style=flat-square"/>
-  <img alt="Version" src="https://img.shields.io/badge/version-1.0.0%20(v17)-blue?style=flat-square"/>
-  <img alt="Telemetry Engine" src="https://img.shields.io/badge/Engine-Intelligence%20v2-F59E0B?style=flat-square"/>
-  <img alt="Architecture" src="https://img.shields.io/badge/Overlay-Single--Line%20HUD-38BDF8?style=flat-square"/>
-  <img alt="License" src="https://img.shields.io/badge/license-Private-red?style=flat-square"/>
+<p align="center">
+  <img alt="Android" src="https://img.shields.io/badge/Android-live-32E56B?style=flat-square"/>
+  <img alt="Expo" src="https://img.shields.io/badge/Expo-57-111827?style=flat-square"/>
+  <img alt="Engine" src="https://img.shields.io/badge/Engine-Intelligence%20v2-F8C653?style=flat-square"/>
 </p>
 
-<br/>
+**Voltix** is the first screen of a hybrid house. Solar, the WAPDA meter, the load in the rooms, and which of the two meters should be running — all in one glance, without opening a stack of cards.
 
-> **Voltix** is an autonomous residential energy intelligence and telemetry platform designed for hybrid solar ecosystems. It fuses solar inverter telemetry, grid-side IoT smart metering, dual utility tariff structures, physical distribution board state machine modeling, and machine learning into an instant glanceable interface — featuring a **Single-Line Expandable Floating HUD**, **Physical DB Board Visualizer**, and an **Adaptive Meter Quota Advisor**.
-
-<br/>
-
-<a href="#quick-navigation">
-  <img src="https://img.shields.io/badge/Explore%20Architecture%20%26%20Features-Click%20To%20Scroll-F8C653?style=for-the-badge&labelColor=0E1116" alt="Scroll Down"/>
-</a>
-
-</div>
+The picture above is that opening view: a live scene on top, then Solar, Inverter, Grid, and the active meter, then today’s energy and the units left.
 
 ---
 
 <a name="quick-navigation"></a>
-## 🧭 Table of Contents
+## Contents
 
 - [The Core Problem](#-the-core-problem)
 - [System Architecture](#-system-architecture)
