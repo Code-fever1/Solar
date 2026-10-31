@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/readme-hero.svg" width="100%" alt="Voltix opening screen: solar, home load, grid export, and the active meter"/>
+  <img src="docs/readme-hero.jpg" width="420" alt="Voltix opening screen: morning house, solar and grid flow, energy received and used"/>
 </p>
 
 <p align="center">
