@@ -27,10 +27,60 @@ from datetime import datetime, timezone
 
 import tinytuya
 
-DEVICE_ID = "bfe285c48ecd96460b5zfm"
-DEVICE_IP = os.environ.get("TOMZN_DEVICE_IP", "113.203.197.44")
-LOCAL_KEY = os.environ.get("TOMZN_LOCAL_KEY", "KDdxg#}[Y_j@1UP@")
+
+def _load_env_file(path):
+    """Fill unset variables from a .env file. Existing values win. '#' is kept."""
+    if not os.path.isfile(path):
+        return
+    with open(path, encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or os.environ.get(key):
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            os.environ[key] = value
+
+
+def _load_local_env():
+    here = os.path.dirname(os.path.abspath(__file__))
+    seen = set()
+    for candidate in (
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(here, ".env"),
+        os.path.join(here, "..", ".env"),
+        os.path.join(os.getcwd(), "..", ".env"),
+    ):
+        resolved = os.path.abspath(candidate)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        _load_env_file(resolved)
+
+
+_load_local_env()
+
+DEVICE_ID = os.environ.get("TOMZN_DEVICE_ID", "").strip()
+DEVICE_IP = (os.environ.get("TOMZN_DEVICE_IP") or os.environ.get("HOME_PUBLIC_IP") or "").strip()
+LOCAL_KEY = os.environ.get("TOMZN_LOCAL_KEY", "").strip()
 PORT = int(os.environ.get("TOMZN_DEVICE_PORT", "6668"))
+
+if not DEVICE_ID or not DEVICE_IP or not LOCAL_KEY:
+    print(
+        json.dumps({
+            "error": "TOMZN local poll needs TOMZN_DEVICE_ID, TOMZN_DEVICE_IP (or HOME_PUBLIC_IP), and TOMZN_LOCAL_KEY",
+        }),
+        file=sys.stderr,
+    )
 
 sys.path.insert(0, os.path.expanduser("~/tuya-local-key"))
 from tuya_devices import load_session, build_manager

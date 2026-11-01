@@ -9,6 +9,7 @@
  * they reconcile the displayed physical-meter reading from then on.
  */
 
+require("./load-env");
 const http = require("http");
 const https = require("https");
 const { execFile } = require("child_process");
@@ -19,7 +20,14 @@ const { guessBoard, recordBoardCorrection } = require("./intelligence/BoardSwitc
 const PRIMARY_STATE_ID = "primary";
 const METER_IDS = new Set(["meter1", "meter2"]);
 const PAKISTAN_OFFSET = "+05:00";
-const INVERTER_ZONE_DEVICE_ID = "500291B991A9";
+function readEnv(name) {
+  const value = process.env[name];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+// Same device and hosts as before, supplied by the environment (see .env.example).
+// INVERTERZONE_DEVICE_ID is the older name.
+const INVERTER_ZONE_DEVICE_ID = readEnv("INVERTER_ZONE_DEVICE_ID") || readEnv("INVERTERZONE_DEVICE_ID");
 const INVERTER_ZONE_API_HOST = "inverterzone.com";
 const INVERTER_ZONE_API_PATH = "/api/getRealtimeData";
 const INVERTER_POLL_MAX_AGE_MS = 2_500;
@@ -102,7 +110,7 @@ const TOMZN_PERSIST_MIN_INTERVAL_MS = 60_000;
 const INVERTER_PERSIST_MIN_INTERVAL_MS = 60_000;
 const WEATHER_POLL_MAX_AGE_MS = 30 * 60_000;
 const BHAKKAR_COORDINATES = { latitude: 31.6269, longitude: 71.0657 };
-const HOME_PUBLIC_IP = "113.203.197.44";
+const HOME_PUBLIC_IP = readEnv("HOME_PUBLIC_IP");
 
 // ── Phase 1: Performance instrumentation (read-only, no behavior change) ──
 // Accumulates counters/timings that are exposed via /api/solar/perf and logged
@@ -139,12 +147,16 @@ const perfStats = {
 
 // Check if the home router is alive via TCP connect to port 7547 (TR-069/CWMP
 // management port, which is open on the router). ICMP ping is blocked from the
-// Azure VM, and ports 80/443/22 are filtered, but 7547 responds. If the TCP
+// app server, and ports 80/443/22 are filtered, but 7547 responds. If the TCP
 // connection succeeds or gets ECONNREFUSED (host up, port closed), the router
 // is powered → UPS backup is working. Timeout = power loss.
 const HOME_PING_PORT = 7547;
 function pingHome() {
   return new Promise((resolve) => {
+    if (!HOME_PUBLIC_IP) {
+      resolve(false);
+      return;
+    }
     const net = require("net");
     const socket = new net.Socket();
     let settled = false;
@@ -564,7 +576,7 @@ function requestJson(options, body, timeoutMs = 12_000) {
 // ── InverterZone cloud API poller ──
 // Fetches real-time inverter data from the InverterZone cloud API at
 // https://inverterzone.com/api/getRealtimeData (POST, form-encoded deviceId).
-// This replaces the previous direct-IP connection to 113.203.197.44:3286.
+// This replaces the previous direct-IP connection to the inverter's public port.
 // The cloud API provides richer data (battery, fan speed, device name, etc.)
 // and works from anywhere without port-forwarding.
 const INVERTER_RATED_W = 10000;
@@ -586,11 +598,15 @@ const net = require("net");
 // offline condition, we TCP-connect directly to the inverter's public IP:port.
 // If the TCP connection succeeds, the inverter is reachable (online). If it
 // fails, the inverter is genuinely offline.
-const INVERTER_DIRECT_IP = "113.203.197.44";
-const INVERTER_DIRECT_PORT = 3286;
+const INVERTER_DIRECT_IP = readEnv("INVERTER_DIRECT_IP") || HOME_PUBLIC_IP;
+const INVERTER_DIRECT_PORT = Number(process.env.INVERTER_DIRECT_PORT || 3286);
 
 function checkInverterDirectReachable() {
   return new Promise((resolve) => {
+    if (!INVERTER_DIRECT_IP) {
+      resolve(false);
+      return;
+    }
     const socket = new net.Socket();
     socket.setTimeout(2_000);
     socket.once("connect", () => {
@@ -4046,6 +4062,9 @@ function registerUnifiedSolarRoutes(app, db) {
     }, { timezone: "Asia/Karachi" });
   } catch (error) {
     console.error("[Solar Engine] monthly baseline scheduler unavailable:", error.message);
+  }
+  if (!HOME_PUBLIC_IP || !INVERTER_ZONE_DEVICE_ID) {
+    console.error("[Solar Engine] Set HOME_PUBLIC_IP and INVERTER_ZONE_DEVICE_ID (see .env.example) before expecting live probes.");
   }
   console.log("[Solar Engine] unified TOMZN allocation routes registered");
 }

@@ -20,8 +20,15 @@ expo-env.d.ts
 *.jks
 *.p8
 *.p12
+*.pfx
 *.key
+*.pem
+*.ppk
 *.mobileprovision
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
 
 # Metro
 .metro-health-check*
@@ -33,10 +40,11 @@ yarn-error.*
 
 # macOS
 .DS_Store
-*.pem
 
-# local env files
-.env*.local
+# local env files (keep tracked templates such as .env.example)
+.env
+.env.*
+!.env.example
 
 # typescript
 *.tsbuildinfo
