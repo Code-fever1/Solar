@@ -153,8 +153,9 @@ const perfStats = {
 const HOME_PING_PORT = 7547;
 function pingHome() {
   return new Promise((resolve) => {
+    // null = probe not configured. Callers must not treat that as "host down".
     if (!HOME_PUBLIC_IP) {
-      resolve(false);
+      resolve(null);
       return;
     }
     const net = require("net");
@@ -603,8 +604,10 @@ const INVERTER_DIRECT_PORT = Number(process.env.INVERTER_DIRECT_PORT || 3286);
 
 function checkInverterDirectReachable() {
   return new Promise((resolve) => {
+    // null = direct probe not configured (no INVERTER_DIRECT_IP / HOME_PUBLIC_IP).
+    // That is not a failed probe and must not latch the inverter offline.
     if (!INVERTER_DIRECT_IP) {
-      resolve(false);
+      resolve(null);
       return;
     }
     const socket = new net.Socket();
@@ -2468,7 +2471,9 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   let ups = null;
   if (inverterOffline && gridCutoffOrUnavailable) {
     const reachable = await pingHome();
-    ups = { active: reachable, label: reachable ? "UPS Backup" : "Power Loss" };
+    if (reachable !== null) {
+      ups = { active: reachable, label: reachable ? "UPS Backup" : "Power Loss" };
+    }
   }
 
   const _perfResult = {
@@ -2821,15 +2826,18 @@ function registerUnifiedSolarRoutes(app, db) {
         }
         if (tomznStaleTracker.count >= TOMZN_TCP_CHECK_THRESHOLD && !tomznStaleTracker.forceOffline) {
           const tcpReachable = await pingTomznTcp();
-          if (!tcpReachable) {
+          // null means HOME_PUBLIC_IP is unset. Skip the latch and keep cloud data.
+          if (tcpReachable === false) {
             console.log(`[Solar Engine] TOMZN cloud TCP probe failed at ${tomznStaleTracker.count} identical readings — marking offline`);
             tomznStaleTracker.forceOffline = true;
           }
         }
         if (tomznStaleTracker.forceOffline) {
           const tcpReachable = await pingTomznTcp();
-          if (tcpReachable) {
+          if (tcpReachable === true) {
             console.log("[Solar Engine] TOMZN TCP probe succeeded — clearing offline latch");
+            tomznStaleTracker.forceOffline = false;
+          } else if (tcpReachable === null) {
             tomznStaleTracker.forceOffline = false;
           }
         }
@@ -2926,7 +2934,11 @@ function registerUnifiedSolarRoutes(app, db) {
           // Latched offline — keep TCP-checking each poll. If the inverter
           // comes back on the network, clear the latch and keep the snapshot.
           const inverterReachable = await checkInverterDirectReachable();
-          if (inverterReachable) {
+          if (inverterReachable === null) {
+            // No direct address configured. Cloud data is still arriving, so
+            // drop the latch instead of treating a missing probe as failure.
+            inverterForceOffline = false;
+          } else if (inverterReachable) {
             console.log("[Solar Engine] inverter TCP probe succeeded — clearing offline latch");
             inverterForceOffline = false;
           } else {
@@ -2936,13 +2948,15 @@ function registerUnifiedSolarRoutes(app, db) {
         } else if (inverterStaleCount >= INVERTER_STALE_THRESHOLD) {
           // Enough consecutive identical readings — TCP check to verify.
           const inverterReachable = await checkInverterDirectReachable();
-          if (!inverterReachable) {
+          if (inverterReachable === null) {
+            // Probe not configured. Keep the cloud snapshot; do not latch offline.
+          } else if (!inverterReachable) {
             // Inverter is genuinely offline — cloud is serving stale cached data
             console.error(`[Solar Engine] inverter offline (stale cloud data after ${inverterStaleCount} identical + TCP check failed)`);
             inverterForceOffline = true;
             throw new Error("Inverter offline: stale cloud data confirmed by TCP check");
           }
-          // TCP succeeded — inverter is online, data just hasn't changed
+          // TCP succeeded, or no probe is configured — data just hasn't changed
           // (e.g. nighttime, low load). Keep the snapshot.
         }
 
@@ -2974,6 +2988,8 @@ function registerUnifiedSolarRoutes(app, db) {
         //    TCP check to the inverter's public IP:port:
         //    - TCP succeeds → inverter is online, keep last good snapshot
         //    - TCP fails → inverter is offline, mark offline NOW
+        //    - No direct address configured → not a failed probe; keep the
+        //      normal consecutive-failure threshold
         //
         // This eliminates the 4-failure delay (~20s). The user sees "offline"
         // within one poll cycle (~5s) + TCP check (2s).
@@ -2988,17 +3004,19 @@ function registerUnifiedSolarRoutes(app, db) {
         } else {
           // API call failed — TCP check the inverter directly
           const inverterReachable = await checkInverterDirectReachable();
-          if (inverterReachable) {
+          if (inverterReachable === true) {
             // Inverter is reachable — keep last good snapshot, don't mark offline
             console.error(`[Solar Engine] inverter poll failed (TCP ok, keeping last good):`, error.message);
             if (liveInverterRef.value && liveInverterRef.value.isOnline !== false) {
               return liveInverterRef.value;
             }
-          } else {
+          } else if (inverterReachable === false) {
             // Inverter is not reachable — mark offline NOW
             console.error(`[Solar Engine] inverter offline (TCP check failed):`, error.message);
             inverterFailCount = INVERTER_FAIL_THRESHOLD;
           }
+          // null: direct probe is not configured. Leave the normal fail
+          // threshold in place and do not count a missing address as TCP failure.
         }
 
         if (inverterFailCount < INVERTER_FAIL_THRESHOLD && liveInverterRef.value && liveInverterRef.value.isOnline !== false) {
@@ -3166,9 +3184,13 @@ function registerUnifiedSolarRoutes(app, db) {
       const now = Date.now();
       if (!upsCache || now - upsCache.timestamp > 10_000) {
         const reachable = await pingHome();
-        upsCache = { active: reachable, label: reachable ? "UPS" : "Power Down", timestamp: now };
+        upsCache = reachable === null
+          ? { unconfigured: true, timestamp: now }
+          : { active: reachable, label: reachable ? "UPS" : "Power Down", timestamp: now };
       }
-      ups = { active: upsCache.active, label: upsCache.label };
+      if (!upsCache.unconfigured) {
+        ups = { active: upsCache.active, label: upsCache.label };
+      }
     } else {
       upsCache = null;
     }
