@@ -9,6 +9,7 @@
  * they reconcile the displayed physical-meter reading from then on.
  */
 
+require("./load-env");
 const http = require("http");
 const https = require("https");
 const { execFile } = require("child_process");
@@ -19,7 +20,14 @@ const { guessBoard, recordBoardCorrection } = require("./intelligence/BoardSwitc
 const PRIMARY_STATE_ID = "primary";
 const METER_IDS = new Set(["meter1", "meter2"]);
 const PAKISTAN_OFFSET = "+05:00";
-const INVERTER_ZONE_DEVICE_ID = "500291B991A9";
+function readEnv(name) {
+  const value = process.env[name];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+// Same device and hosts as before, supplied by the environment (see .env.example).
+// INVERTERZONE_DEVICE_ID is the older name.
+const INVERTER_ZONE_DEVICE_ID = readEnv("INVERTER_ZONE_DEVICE_ID") || readEnv("INVERTERZONE_DEVICE_ID");
 const INVERTER_ZONE_API_HOST = "inverterzone.com";
 const INVERTER_ZONE_API_PATH = "/api/getRealtimeData";
 const INVERTER_POLL_MAX_AGE_MS = 2_500;
@@ -102,7 +110,7 @@ const TOMZN_PERSIST_MIN_INTERVAL_MS = 60_000;
 const INVERTER_PERSIST_MIN_INTERVAL_MS = 60_000;
 const WEATHER_POLL_MAX_AGE_MS = 30 * 60_000;
 const BHAKKAR_COORDINATES = { latitude: 31.6269, longitude: 71.0657 };
-const HOME_PUBLIC_IP = "113.203.197.44";
+const HOME_PUBLIC_IP = readEnv("HOME_PUBLIC_IP");
 
 // ── Phase 1: Performance instrumentation (read-only, no behavior change) ──
 // Accumulates counters/timings that are exposed via /api/solar/perf and logged
@@ -139,12 +147,17 @@ const perfStats = {
 
 // Check if the home router is alive via TCP connect to port 7547 (TR-069/CWMP
 // management port, which is open on the router). ICMP ping is blocked from the
-// Azure VM, and ports 80/443/22 are filtered, but 7547 responds. If the TCP
+// app server, and ports 80/443/22 are filtered, but 7547 responds. If the TCP
 // connection succeeds or gets ECONNREFUSED (host up, port closed), the router
 // is powered → UPS backup is working. Timeout = power loss.
 const HOME_PING_PORT = 7547;
 function pingHome() {
   return new Promise((resolve) => {
+    // null = probe not configured. Callers must not treat that as "host down".
+    if (!HOME_PUBLIC_IP) {
+      resolve(null);
+      return;
+    }
     const net = require("net");
     const socket = new net.Socket();
     let settled = false;
@@ -564,7 +577,7 @@ function requestJson(options, body, timeoutMs = 12_000) {
 // ── InverterZone cloud API poller ──
 // Fetches real-time inverter data from the InverterZone cloud API at
 // https://inverterzone.com/api/getRealtimeData (POST, form-encoded deviceId).
-// This replaces the previous direct-IP connection to 113.203.197.44:3286.
+// This replaces the previous direct-IP connection to the inverter's public port.
 // The cloud API provides richer data (battery, fan speed, device name, etc.)
 // and works from anywhere without port-forwarding.
 const INVERTER_RATED_W = 10000;
@@ -586,11 +599,17 @@ const net = require("net");
 // offline condition, we TCP-connect directly to the inverter's public IP:port.
 // If the TCP connection succeeds, the inverter is reachable (online). If it
 // fails, the inverter is genuinely offline.
-const INVERTER_DIRECT_IP = "113.203.197.44";
-const INVERTER_DIRECT_PORT = 3286;
+const INVERTER_DIRECT_IP = readEnv("INVERTER_DIRECT_IP") || HOME_PUBLIC_IP;
+const INVERTER_DIRECT_PORT = Number(process.env.INVERTER_DIRECT_PORT || 3286);
 
 function checkInverterDirectReachable() {
   return new Promise((resolve) => {
+    // null = direct probe not configured (no INVERTER_DIRECT_IP / HOME_PUBLIC_IP).
+    // That is not a failed probe and must not latch the inverter offline.
+    if (!INVERTER_DIRECT_IP) {
+      resolve(null);
+      return;
+    }
     const socket = new net.Socket();
     socket.setTimeout(2_000);
     socket.once("connect", () => {
@@ -2452,7 +2471,9 @@ async function buildDashboard({ stateCollection, allocations, snapshots, manualL
   let ups = null;
   if (inverterOffline && gridCutoffOrUnavailable) {
     const reachable = await pingHome();
-    ups = { active: reachable, label: reachable ? "UPS Backup" : "Power Loss" };
+    if (reachable !== null) {
+      ups = { active: reachable, label: reachable ? "UPS Backup" : "Power Loss" };
+    }
   }
 
   const _perfResult = {
@@ -2805,15 +2826,18 @@ function registerUnifiedSolarRoutes(app, db) {
         }
         if (tomznStaleTracker.count >= TOMZN_TCP_CHECK_THRESHOLD && !tomznStaleTracker.forceOffline) {
           const tcpReachable = await pingTomznTcp();
-          if (!tcpReachable) {
+          // null means HOME_PUBLIC_IP is unset. Skip the latch and keep cloud data.
+          if (tcpReachable === false) {
             console.log(`[Solar Engine] TOMZN cloud TCP probe failed at ${tomznStaleTracker.count} identical readings — marking offline`);
             tomznStaleTracker.forceOffline = true;
           }
         }
         if (tomznStaleTracker.forceOffline) {
           const tcpReachable = await pingTomznTcp();
-          if (tcpReachable) {
+          if (tcpReachable === true) {
             console.log("[Solar Engine] TOMZN TCP probe succeeded — clearing offline latch");
+            tomznStaleTracker.forceOffline = false;
+          } else if (tcpReachable === null) {
             tomznStaleTracker.forceOffline = false;
           }
         }
@@ -2910,7 +2934,11 @@ function registerUnifiedSolarRoutes(app, db) {
           // Latched offline — keep TCP-checking each poll. If the inverter
           // comes back on the network, clear the latch and keep the snapshot.
           const inverterReachable = await checkInverterDirectReachable();
-          if (inverterReachable) {
+          if (inverterReachable === null) {
+            // No direct address configured. Cloud data is still arriving, so
+            // drop the latch instead of treating a missing probe as failure.
+            inverterForceOffline = false;
+          } else if (inverterReachable) {
             console.log("[Solar Engine] inverter TCP probe succeeded — clearing offline latch");
             inverterForceOffline = false;
           } else {
@@ -2920,13 +2948,15 @@ function registerUnifiedSolarRoutes(app, db) {
         } else if (inverterStaleCount >= INVERTER_STALE_THRESHOLD) {
           // Enough consecutive identical readings — TCP check to verify.
           const inverterReachable = await checkInverterDirectReachable();
-          if (!inverterReachable) {
+          if (inverterReachable === null) {
+            // Probe not configured. Keep the cloud snapshot; do not latch offline.
+          } else if (!inverterReachable) {
             // Inverter is genuinely offline — cloud is serving stale cached data
             console.error(`[Solar Engine] inverter offline (stale cloud data after ${inverterStaleCount} identical + TCP check failed)`);
             inverterForceOffline = true;
             throw new Error("Inverter offline: stale cloud data confirmed by TCP check");
           }
-          // TCP succeeded — inverter is online, data just hasn't changed
+          // TCP succeeded, or no probe is configured — data just hasn't changed
           // (e.g. nighttime, low load). Keep the snapshot.
         }
 
@@ -2958,6 +2988,8 @@ function registerUnifiedSolarRoutes(app, db) {
         //    TCP check to the inverter's public IP:port:
         //    - TCP succeeds → inverter is online, keep last good snapshot
         //    - TCP fails → inverter is offline, mark offline NOW
+        //    - No direct address configured → not a failed probe; keep the
+        //      normal consecutive-failure threshold
         //
         // This eliminates the 4-failure delay (~20s). The user sees "offline"
         // within one poll cycle (~5s) + TCP check (2s).
@@ -2972,17 +3004,19 @@ function registerUnifiedSolarRoutes(app, db) {
         } else {
           // API call failed — TCP check the inverter directly
           const inverterReachable = await checkInverterDirectReachable();
-          if (inverterReachable) {
+          if (inverterReachable === true) {
             // Inverter is reachable — keep last good snapshot, don't mark offline
             console.error(`[Solar Engine] inverter poll failed (TCP ok, keeping last good):`, error.message);
             if (liveInverterRef.value && liveInverterRef.value.isOnline !== false) {
               return liveInverterRef.value;
             }
-          } else {
+          } else if (inverterReachable === false) {
             // Inverter is not reachable — mark offline NOW
             console.error(`[Solar Engine] inverter offline (TCP check failed):`, error.message);
             inverterFailCount = INVERTER_FAIL_THRESHOLD;
           }
+          // null: direct probe is not configured. Leave the normal fail
+          // threshold in place and do not count a missing address as TCP failure.
         }
 
         if (inverterFailCount < INVERTER_FAIL_THRESHOLD && liveInverterRef.value && liveInverterRef.value.isOnline !== false) {
@@ -3150,9 +3184,13 @@ function registerUnifiedSolarRoutes(app, db) {
       const now = Date.now();
       if (!upsCache || now - upsCache.timestamp > 10_000) {
         const reachable = await pingHome();
-        upsCache = { active: reachable, label: reachable ? "UPS" : "Power Down", timestamp: now };
+        upsCache = reachable === null
+          ? { unconfigured: true, timestamp: now }
+          : { active: reachable, label: reachable ? "UPS" : "Power Down", timestamp: now };
       }
-      ups = { active: upsCache.active, label: upsCache.label };
+      if (!upsCache.unconfigured) {
+        ups = { active: upsCache.active, label: upsCache.label };
+      }
     } else {
       upsCache = null;
     }
@@ -4046,6 +4084,9 @@ function registerUnifiedSolarRoutes(app, db) {
     }, { timezone: "Asia/Karachi" });
   } catch (error) {
     console.error("[Solar Engine] monthly baseline scheduler unavailable:", error.message);
+  }
+  if (!HOME_PUBLIC_IP || !INVERTER_ZONE_DEVICE_ID) {
+    console.error("[Solar Engine] Set HOME_PUBLIC_IP and INVERTER_ZONE_DEVICE_ID (see .env.example) before expecting live probes.");
   }
   console.log("[Solar Engine] unified TOMZN allocation routes registered");
 }

@@ -18,9 +18,10 @@ import { IdleProvider, useIdle } from "@/context/IdleContext";
 import { SceneThemeProvider, useSceneTheme } from "@/context/SceneThemeContext";
 import { DevOverlayPreview } from "@/components/DevOverlayPreview";
 import { prefersReducedMotion, startMotionPreferences, subscribeReduceMotion } from "@/lib/motion";
+import { SOLAR_LIVE_URL } from "@/config/api";
 import { hasOverlayPermission, startOverlay, stopOverlay } from "@/native/FloatingOverlay";
 
-const OVERLAY_API_URL = "http://104.43.56.204:3001/api/solar/live";
+const OVERLAY_API_URL = SOLAR_LIVE_URL;
 const OVERLAY_ENABLED_KEY = "overlayEnabled";
 
 SplashScreen.preventAutoHideAsync();

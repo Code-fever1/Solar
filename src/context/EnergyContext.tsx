@@ -21,6 +21,7 @@ import {
     type CachedDashboardSnapshot,
     type CachedTomznLive,
 } from "@/utils/offline-dashboard";
+import { SOLAR_API_URL } from "@/config/api";
 import type { BoardSwitchState } from "@/utils/ops-guide";
 import type {
     AlertItem,
@@ -135,7 +136,7 @@ type EnergyContextValue = {
   saveBoardSwitches: (state: BoardSwitchState, predicted?: BoardSwitchState | null) => Promise<void>;
 };
 
-const API_URL = "http://104.43.56.204:3001/api/solar";
+const API_URL = SOLAR_API_URL;
 const SYNC_INTERVAL_MS = 30_000;  // full dashboard delta sync every 30s
 const FLOW_INTERVAL_MS = 60_000;  // flow history every 60s
 const IDLE_LIVE_INTERVAL_MS = 5_000;  // lightweight live poll when idle (replaces SSE)

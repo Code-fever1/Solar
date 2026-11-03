@@ -20,7 +20,7 @@ export function startInverterPoller() {
 async function fetchAndStoreInverterData() {
   // TODO: Replace this simulated fetch with actual reverse-engineered API requests 
   // to InverterZone or direct Modbus TCP integration if local.
-  // URL provided: https://inverterzone.com/device/500291B991A9
+  // Device id: INVERTER_ZONE_DEVICE_ID (see .env.example).
   
   const hour = new Date().getHours();
   const isDaytime = hour >= 7 && hour <= 18;

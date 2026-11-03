@@ -6,11 +6,11 @@ Read the exact versioned docs at https://docs.expo.dev/versions/v57.0.0/ before 
 
 ## Server Details
 
-- **Azure VM IP**: `104.43.56.204`
-- **SSH key**: `~/Documents/vm1_key_0322.pem` (i.e. `/home/alijah/Documents/vm1_key_0322.pem`)
-- **SSH user**: `azureuser`
-- **SSH command**: `ssh -i ~/Documents/vm1_key_0322.pem azureuser@104.43.56.204`
-- **SCP command**: `scp -i ~/Documents/vm1_key_0322.pem <local> azureuser@104.43.56.204:~/`
+- **Server IP**: `<SERVER_IP>` (`EXPO_PUBLIC_API_HOST` in `.env`, see `.env.example`)
+- **SSH key**: `<PATH_TO_KEY>`
+- **SSH user**: `<SSH_USER>`
+- **SSH command**: `ssh -i <PATH_TO_KEY> <SSH_USER>@<SERVER_IP>`
+- **SCP command**: `scp -i <PATH_TO_KEY> <local> <SSH_USER>@<SERVER_IP>:~/`
 - **Backend port**: `3001`
 - **Backend process manager**: PM2 — process name `backend_api`
 - **Backend main file**: `~/backend_api.js` (on server)
@@ -27,16 +27,18 @@ Read the exact versioned docs at https://docs.expo.dev/versions/v57.0.0/ before 
 
 ```bash
 # 1. Syntax check locally
-cd /home/alijah/Documents/PROJECTS/Solar/backend && node -c <file>.js
+cd <LOCAL_PROJECT>/backend && node -c <file>.js
 
 # 2. Upload to server
-scp -i ~/Documents/vm1_key_0322.pem -o StrictHostKeyChecking=no \
-  /home/alijah/Documents/PROJECTS/Solar/backend/<file>.js azureuser@104.43.56.204:~/
+scp -i <PATH_TO_KEY> -o StrictHostKeyChecking=no \
+  <LOCAL_PROJECT>/backend/<file>.js <SSH_USER>@<SERVER_IP>:~/
 
 # 3. Syntax check on server + restart
-ssh -i ~/Documents/vm1_key_0322.pem azureuser@104.43.56.204 \
+ssh -i <PATH_TO_KEY> <SSH_USER>@<SERVER_IP> \
   'node -c ~/<file>.js && pm2 restart backend_api && sleep 4 && pm2 logs backend_api --lines 5 --nostream'
 ```
+
+Do not hardcode the server address, SSH user, key path, device ids, or device keys. Put them in `.env` (from `.env.example`) or the shell. Runtime defaults stay the same when those variables are set: API port `3001`, inverter TCP port `3286`, TOMZN port `6668`, and `INVERTER_DIRECT_IP` falls back to `HOME_PUBLIC_IP`.
 
 Files to deploy (depending on what changed):
 - `backend_api.js` — main server entry

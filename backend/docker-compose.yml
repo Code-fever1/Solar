@@ -5,9 +5,9 @@ services:
     image: postgres:15-alpine
     container_name: gridwise_postgres
     environment:
-      POSTGRES_USER: gridwise
-      POSTGRES_PASSWORD: gridwise_password
-      POSTGRES_DB: gridwisedb
+      POSTGRES_USER: ${POSTGRES_USER:-gridwise}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-gridwisedb}
     ports:
       - "5432:5432"
     volumes:

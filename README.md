@@ -396,10 +396,13 @@ voltix/
 git clone https://github.com/your-username/voltix.git
 cd voltix
 
-# 2. Install dependencies
+# 2. Configure the API host (see .env.example). Do not commit .env.
+cp .env.example .env
+
+# 3. Install dependencies
 npm install
 
-# 3. Start Expo development bundler
+# 4. Start Expo development bundler
 npx expo start
 ```
 
@@ -423,12 +426,14 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 cd backend && node -c unified_solar_routes.js
 
 # 2. Upload to production server
-scp -i ~/Documents/vm1_key_0322.pem unified_solar_routes.js azureuser@104.43.56.204:~/
+scp -i <PATH_TO_KEY> unified_solar_routes.js <SSH_USER>@<SERVER_IP>:~/
 
 # 3. Restart PM2 process
-ssh -i ~/Documents/vm1_key_0322.pem azureuser@104.43.56.204 \
+ssh -i <PATH_TO_KEY> <SSH_USER>@<SERVER_IP> \
   'pm2 restart backend_api && pm2 logs backend_api --lines 15 --nostream'
 ```
+
+Set `<SERVER_IP>`, `<SSH_USER>`, and `<PATH_TO_KEY>` locally. The app reads `EXPO_PUBLIC_API_HOST` and the backend reads `HOME_PUBLIC_IP`, `INVERTER_ZONE_DEVICE_ID`, and the `TOMZN_*` variables from `.env` (see `.env.example`). Do not commit those values.
 
 ---
 
